@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Finanças Pessoais</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">💸 Finanças</div>
+    <div class="auth">
+      <span id="userLabel" class="muted"></span>
+      <button id="btnLogout" class="btn secondary hidden">Sair</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section id="authCard" class="card">
+      <h1>Acesse sua carteira digital</h1>
+      <p class="muted">Login para manter seus dados seguros no Supabase.</p>
+      <div class="grid2">
+        <div>
+          <label>Email</label>
+          <input id="email" type="email" placeholder="voce@exemplo.com" />
+        </div>
+        <div>
+          <label>Senha</label>
+          <input id="password" type="password" placeholder="••••••••" />
+        </div>
+      </div>
+      <div class="row">
+        <button id="btnSignIn" class="btn">Entrar</button>
+        <button id="btnSignUp" class="btn secondary">Criar conta</button>
+      </div>
+    </section>
+    <script type="module" src="./app.js"></script>
+  </main>
+</body>
+</html>
