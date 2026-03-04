@@ -8,7 +8,7 @@ async function loadAppSettings() {
     _appSettingsCache = {};
     (data || []).forEach(row => { _appSettingsCache[row.key] = row.value; });
     // Apply logo override (if any)
-    const logo = _appSettingsCache['app_logo_url'] || localStorage.getItem('app_logo_url');
+    const logo = _appSettingsCache['app_logo_url'];
     if (logo && typeof setAppLogo === 'function') setAppLogo(logo);
 
     // Apply menu visibility (if configured)
