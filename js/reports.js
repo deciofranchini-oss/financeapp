@@ -894,6 +894,69 @@ function getAmtField(fieldId) {
   const abs = Math.abs(parseFloat(clean) || 0);
   return _amtSignState[fieldId] ? -abs : abs;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Amount inputs: auto-decimals (centavos) mask
+// Goal: user never needs to type comma/decimal separator.
+// Examples while typing digits:
+//   "1"   → "0,01"
+//   "12"  → "0,12"
+//   "123" → "1,23"
+// Works well on mobile numeric keypad.
+//
+// Notes:
+// - We keep the sign separated via the existing +/- button state.
+// - We always format in pt-BR with comma decimal separator.
+// - We intentionally keep caret at end (simple + robust).
+// ─────────────────────────────────────────────────────────────
+
+function _formatCentsBRFromDigits(digits) {
+  const d = String(digits || '').replace(/\D/g, '');
+  if (!d) return '';
+  const n = parseInt(d, 10);
+  if (!isFinite(n)) return '';
+  const v = (n / 100);
+  return v.toFixed(2).replace('.', ',');
+}
+
+function bindAmtAutoDecimals(fieldId) {
+  const el = document.getElementById(fieldId);
+  if (!el) return;
+  if (el.dataset && el.dataset.amtAutoDecimals === '1') return; // avoid double binding
+  if (el.dataset) el.dataset.amtAutoDecimals = '1';
+
+  const applyMask = () => {
+    const raw = (el.value || '').toString();
+    const digits = raw.replace(/\D/g, '');
+    const masked = _formatCentsBRFromDigits(digits);
+    el.value = masked;
+    try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {}
+  };
+
+  el.addEventListener('input', () => {
+    if (!el.value) return;
+    applyMask();
+  });
+
+  el.addEventListener('blur', () => {
+    if (!el.value) return;
+    applyMask();
+  });
+
+  el.addEventListener('paste', () => {
+    setTimeout(() => {
+      if (!el.value) return;
+      applyMask();
+    }, 0);
+  });
+}
+
+function bindAllAmtAutoDecimals(fieldIds) {
+  const ids = Array.isArray(fieldIds)
+    ? fieldIds
+    : ['txAmount','accountBalance','budgetAmount','scAmount','occAmount'];
+  ids.forEach(id => { try { bindAmtAutoDecimals(id); } catch(e) {} });
+}
 function fmtDate(d){if(!d)return'—';const[y,m,day]=d.split('T')[0].split('-');return`${day}/${m}/${y}`;}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 

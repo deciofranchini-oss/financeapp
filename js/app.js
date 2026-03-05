@@ -141,6 +141,14 @@ async function bootApp(){
   // Logos (can be overridden by app_settings)
   setAppLogo(APP_LOGO_URL);
 
+  // Amount fields: auto-decimals (centavos) mask so user never types comma.
+  // Defined in js/reports.js (global). Safe no-op if function not available.
+  try {
+    if (typeof bindAllAmtAutoDecimals === 'function') {
+      bindAllAmtAutoDecimals(['txAmount','accountBalance','budgetAmount','scAmount','occAmount']);
+    }
+  } catch(e) {}
+
   // Carregar dados base
   try {
     await Promise.all([loadAccounts(),loadCategories(),loadPayees(),loadAppSettings(),loadScheduled().catch(()=>{})]);

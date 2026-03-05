@@ -291,7 +291,9 @@ function sortTx(field){if(state.txSortField===field)state.txSortAsc=!state.txSor
 function txRow(t, showAccount=true) {
   return `<tr class="tx-row-clickable ${(t.status||'confirmed')==='pending' ? 'tx-pending' : ''}" data-tx-id="${t.id}" onclick="openTxDetail('${t.id}')" style="cursor:pointer" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''">
     <td class="text-muted" style="white-space:nowrap">${fmtDate(t.date)}${(t.status||'confirmed')==='pending' ? ' <span class="badge" style="margin-left:6px;background:var(--yellow-lt,#fef9c3);color:#92400e;border:1px solid #fcd34d">Pendente</span>' : ''}</td>
-    ${showAccount ? `<td><span class="badge badge-muted">${esc(t.accounts?.name||'—')}</span></td>` : ''}
+    ${showAccount
+      ? `<td class="tx-col-account"><span class="badge badge-muted">${esc(t.accounts?.name||'—')}</span></td>`
+      : `<td class="tx-col-account" style="display:none"><span class="badge badge-muted">${esc(t.accounts?.name||'—')}</span></td>`}
     <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.description||'—')}</td>
     <td class="text-muted">${esc(t.payees?.name||'—')}</td>
     <td>${t.categories?`<span class="badge" style="background:${t.categories.color}18;color:${t.categories.color};border:1px solid ${t.categories.color}30">${esc(t.categories.name)}</span>`:'—'}</td>
@@ -402,7 +404,7 @@ function renderTransactionsGrouped(txs) {
       <div id="txGroupBody-${k}" class="tx-group-body">
         <div class="table-wrap" style="margin:0">
           <table style="border-radius:0">
-            <thead><tr><th onclick="sortTx('date')">Data ⇅</th><th>Descrição</th><th>Beneficiário</th><th>Categoria</th><th onclick="sortTx('amount')">Valor ⇅</th><th style="width:60px"></th></tr></thead>
+            <thead><tr><th onclick="sortTx('date')">Data ⇅</th><th class="tx-col-account" style="display:none">Conta</th><th>Descrição</th><th>Beneficiário</th><th>Categoria</th><th onclick="sortTx('amount')">Valor ⇅</th><th style="width:60px"></th></tr></thead>
             <tbody>${g.txs.map(t => txRow(t, false)).join('')}</tbody>
           </table>
         </div>
