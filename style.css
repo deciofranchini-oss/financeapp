@@ -16,7 +16,7 @@
   --sidebar-w:240px;--topbar-h:58px;--bottom-h:64px;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
-html{font-size:16.5px;-webkit-text-size-adjust:100%;}
+html{font-size:15px;-webkit-text-size-adjust:100%;}
 body{font-family:var(--font-sans);background:var(--bg);color:var(--text);height:100vh;height:100dvh;display:flex;overflow:hidden;-webkit-font-smoothing:antialiased;}
 
 /* SIDEBAR */
@@ -1243,102 +1243,96 @@ canvas { cursor: default; }
 ────────────────────────────────────────────────────────────── */
 @media (max-width: 640px){
 
-/* ========== TRANSAÇÕES (tabela -> card layout) ========== */
-#page-transactions #txFlatCard .table-wrap{ overflow: visible; }
-#page-transactions #txFlatCard table thead{ display:none; }
+  /* ========== TRANSAÇÕES (tabela -> card layout) ========== */
+  #page-transactions #txFlatCard .table-wrap{ overflow: visible; }
+  #page-transactions #txFlatCard table thead{ display:none; }
 
-#page-transactions #txFlatCard table,
-#page-transactions #txFlatCard tbody,
-#page-transactions #txFlatCard tr,
-#page-transactions #txFlatCard td{
-  display:block;
-  width:100%;
-}
+  #page-transactions #txFlatCard table,
+  #page-transactions #txFlatCard tbody,
+  #page-transactions #txFlatCard tr,
+  #page-transactions #txFlatCard td{
+    display:block;
+    width:100%;
+  }
 
-/* Cada linha vira um card */
-#page-transactions #txBody tr{
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  padding: 12px;
-  margin: 10px 0;
-}
-#page-transactions #txBody td{ padding:0; border:0; }
+  /* Cada linha vira um card */
+  #page-transactions #txBody tr{
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    padding: 12px;
+    margin: 10px 0;
+  }
+  #page-transactions #txBody td{ padding:0; border:0; }
 
-/* Grid compacto por coluna (ordem real do HTML) */
-/* 1 Data, 2 Conta, 3 Descrição, 4 Beneficiário, 5 Categoria, 6 Valor, 7 Ações */
-#page-transactions #txBody tr{
-  display:grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px 10px;
-  align-items:start;
-}
+  /* Grid compacto por coluna (ordem real do HTML) */
+  /* 1 Data, 2 Conta, 3 Descrição, 4 Beneficiário, 5 Categoria, 6 Valor, 7 Ações */
+  #page-transactions #txBody tr{
+    display:grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px 10px;
+    align-items:start;
+  }
 
-/* Descrição (título) */
-#page-transactions #txBody tr td:nth-child(3){
-  grid-column: 1 / 2;
-  font-weight: 700;
-  font-size: 1.05rem;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
-}
+  /* Descrição (título) */
+  #page-transactions #txBody tr td:nth-child(3){
+    grid-column: 1 / 2;
+    font-weight: 650;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
 
-/* Valor sempre visível (maior) */
-#page-transactions #txBody tr td:nth-child(6){
-  grid-column: 2 / 3;
-  justify-self:end;
-  font-weight: 850;
-  font-size: 1.30rem;
-  white-space:nowrap;
-}
+  /* Valor sempre visível */
+  #page-transactions #txBody tr td:nth-child(6){
+    grid-column: 2 / 3;
+    justify-self:end;
+    font-weight: 750;
+    white-space:nowrap;
+  }
 
-/* Data e Conta (um pouco maiores) */
-#page-transactions #txBody tr td:nth-child(1){
-  grid-column: 1 / 2;
-  color: var(--muted);
-  font-size:.92rem;
-  white-space:nowrap;
-}
-#page-transactions #txBody tr td:nth-child(2){
-  grid-column: 2 / 3;
-  justify-self:end;
-  font-size:.92rem;
-  white-space:nowrap;
-}
+  /* Data e Conta */
+  #page-transactions #txBody tr td:nth-child(1){
+    grid-column: 1 / 2;
+    color: var(--muted);
+    font-size:.80rem;
+    white-space:nowrap;
+  }
+  #page-transactions #txBody tr td:nth-child(2){
+    grid-column: 2 / 3;
+    justify-self:end;
+    white-space:nowrap;
+  }
 
-/* Beneficiário (esquerda) */
-#page-transactions #txBody tr td:nth-child(4){
-  grid-column: 1 / 2;
-  color: var(--text2);
-  font-size: 1.00rem;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
-}
+  /* Beneficiário e Categoria */
+  #page-transactions #txBody tr td:nth-child(4){
+    grid-column: 1 / 2;
+    color: var(--muted);
+    font-size:.80rem;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  #page-transactions #txBody tr td:nth-child(5){
+    grid-column: 2 / 3;
+    justify-self:end;
+    max-width: 55vw;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
 
-/* Categoria abaixo do beneficiário (esquerda) */
-#page-transactions #txBody tr td:nth-child(5){
-  grid-column: 1 / 2;
-  justify-self:start;
-  color: var(--muted);
-  font-size:.90rem;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
-}
-
-/* Ações embaixo (sem estourar largura) */
-#page-transactions #txBody tr td:nth-child(7){
-  grid-column: 1 / -1;
-  padding-top: 10px;
-}
-#page-transactions #txBody tr td:nth-child(7) > div{
-  display:flex;
-  justify-content:flex-end;
-  gap:10px;
-  flex-wrap:wrap;
-}
+  /* Ações embaixo (sem estourar largura) */
+  #page-transactions #txBody tr td:nth-child(7){
+    grid-column: 1 / -1;
+    padding-top: 8px;
+  }
+  #page-transactions #txBody tr td:nth-child(7) > div{
+    display:flex;
+    justify-content:flex-end;
+    gap:8px;
+    flex-wrap:wrap;
+  }
 
 
   /* ========== PROGRAMADOS: Próximos 30 dias (tabela -> cards) ========== */
@@ -1377,20 +1371,18 @@ canvas { cursor: default; }
   #page-scheduled #scheduledUpcomingBody tr td:nth-child(4){
     grid-column: 2 / 3;
     justify-self:end;
-    font-weight:850;
-    font-size:1.30rem;
+    font-weight:750;
     white-space:nowrap;
   }
   #page-scheduled #scheduledUpcomingBody tr td:nth-child(1){
     grid-column: 1 / 2;
     color: var(--muted);
-    font-size:.92rem;
+    font-size:.80rem;
     white-space:nowrap;
   }
   #page-scheduled #scheduledUpcomingBody tr td:nth-child(3){
     grid-column: 2 / 3;
     justify-self:end;
-    font-size:.92rem;
     white-space:nowrap;
   }
   #page-scheduled #scheduledUpcomingBody tr td:nth-child(5){
@@ -1415,72 +1407,424 @@ canvas { cursor: default; }
     margin-top:8px;
     flex-wrap:wrap;
   }
-/* Toque mais confortável no mobile */
-button,.btn,.icon-btn{
-  min-height:40px;
-  min-width:40px;
-  font-size:1rem;
 }
 
-}
+/* =====================================================
+   FINTRACK MOBILE TRANSACTION UI IMPROVEMENTS
+   Melhor leitura no telefone
+   ===================================================== */
 
-/* ─────────────────────────────────────────────────────────────
-   TYPOGRAPHY: global readability improvements (all devices)
-   Added to improve mobile and overall legibility
-────────────────────────────────────────────────────────────── */
-html{ font-size: 16.5px; }
-body{ font-size: 1rem; line-height: 1.35; }
-button, input, select, textarea{ font: inherit; }
+@media (max-width:640px){
 
-/* Slightly stronger hierarchy */
-h1{ font-size: 1.55rem; }
-h2{ font-size: 1.35rem; }
-h3{ font-size: 1.20rem; }
+  /* estrutura do card */
+  #page-transactions #txBody tr{
+    display:grid;
+    grid-template-columns: 1fr auto;
+    gap:8px 10px;
+    align-items:start;
+  }
 
-/* ─────────────────────────────────────────────────────────────
-   MOBILE refinements: bigger text, category under payee, bigger amounts
-────────────────────────────────────────────────────────────── */
-@media (max-width: 640px){
-  html{ font-size: 17.5px; }
+  /* DATA */
+  #page-transactions #txBody tr td:nth-child(1){
+    grid-column:1 / 2;
+    font-size:.80rem;
+    color:var(--muted);
+  }
 
-  /* Transactions: emphasize amount, keep payee + category on the left */
+  /* CONTA */
+  #page-transactions #txBody tr td:nth-child(2){
+    grid-column:2 / 3;
+    justify-self:end;
+    font-size:.80rem;
+  }
+
+  /* DESCRIÇÃO */
   #page-transactions #txBody tr td:nth-child(3){
-    font-size: 1.05rem;
+    grid-column:1 / 2;
+    font-size:1rem;
+    font-weight:600;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
   }
+
+  /* BENEFICIÁRIO (maior) */
   #page-transactions #txBody tr td:nth-child(4){
-    grid-column: 1 / 2;
-    justify-self: start;
-    font-size: .95rem;
-    font-weight: 550;
+    grid-column:1 / 2;
+    font-size:1.1rem;
+    font-weight:700;
   }
-  /* Category below payee (left) */
+
+  /* CATEGORIA abaixo do beneficiário */
   #page-transactions #txBody tr td:nth-child(5){
+    grid-column:1 / 2;
+    font-size:.85rem;
+    color:var(--muted);
+  }
+
+  /* VALOR bem maior para facilitar leitura */
+  #page-transactions #txBody tr td:nth-child(6){
+    grid-column:2 / 3;
+    justify-self:end;
+    font-size:1.45rem;
+    font-weight:800;
+    white-space:nowrap;
+  }
+
+  /* AÇÕES */
+  #page-transactions #txBody tr td:nth-child(7){
+    grid-column:1 / -1;
+    margin-top:6px;
+  }
+
+  #page-transactions #txBody tr td:nth-child(7) > div{
+    display:flex;
+    justify-content:flex-end;
+    gap:8px;
+    flex-wrap:wrap;
+  }
+
+}
+
+/* =====================================================
+   MOBILE: aplicar layout de cards também no modo AGRUPADO
+   (Transações agrupadas por conta)
+   ===================================================== */
+@media (max-width: 640px){
+
+  /* Pega QUALQUER tabela dentro da página de transações */
+  #page-transactions .table-wrap{ overflow: visible; }
+  #page-transactions table thead{ display:none; }
+
+  #page-transactions table,
+  #page-transactions tbody,
+  #page-transactions tr,
+  #page-transactions td{
+    display:block;
+    width:100%;
+  }
+
+  /* Linha padrão vira card */
+  #page-transactions tbody tr{
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    padding: 12px;
+    margin: 10px 0;
+  }
+  #page-transactions tbody td{ padding:0; border:0; }
+
+  /* EXCEÇÃO: linhas de "título do grupo" (nome da conta)
+     Normalmente são linhas com 1 célula ocupando tudo (colspan)
+     ou com classe/estilo diferenciado. Este seletor cobre o caso
+     mais comum: apenas 1 <td> na linha.
+  */
+  #page-transactions tbody tr:has(> td:only-child){
+    border: 0;
+    background: transparent;
+    padding: 6px 4px;
+    margin: 14px 0 6px;
+  }
+  #page-transactions tbody tr:has(> td:only-child) td{
+    font-weight: 750;
+    font-size: 1rem;
+    color: var(--text);
+  }
+
+  /* Grid para linhas "normais" (as que têm colunas) */
+  #page-transactions tbody tr:not(:has(> td:only-child)){
+    display:grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px 10px;
+    align-items:start;
+  }
+
+  /* Mapeamento por ordem de colunas (igual ao modo lista):
+     1 Data, 2 Conta, 3 Descrição, 4 Beneficiário, 5 Categoria, 6 Valor, 7 Ações
+     Se no agrupado a coluna "Conta" não existir, não tem problema:
+     o seletor só não encontra e o resto continua funcionando.
+  */
+
+  /* Descrição */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(3){
     grid-column: 1 / 2;
-    justify-self: start;
-    max-width: 100%;
+    font-size: 1rem;
+    font-weight: 600;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+
+  /* Beneficiário maior */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(4){
+    grid-column: 1 / 2;
+    font-size: 1.1rem;
+    font-weight: 750;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+
+  /* Categoria abaixo do beneficiário (sempre à esquerda) */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(5){
+    grid-column: 1 / 2;
     font-size: .85rem;
     color: var(--muted);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
   }
-  /* Amount bigger */
-  #page-transactions #txBody tr td:nth-child(6){
-    font-size: 1.22rem;
+
+  /* Valor bem maior */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(6){
+    grid-column: 2 / 3;
+    justify-self: end;
+    font-size: 1.55rem;
     font-weight: 850;
+    white-space:nowrap;
   }
 
-  /* Scheduled upcoming: bigger amounts */
-  #page-scheduled #scheduledUpcomingBody tr td:nth-child(4){
-    font-size: 1.22rem;
-    font-weight: 850;
+  /* Data */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(1){
+    grid-column: 1 / 2;
+    font-size: .80rem;
+    color: var(--muted);
+    white-space:nowrap;
   }
 
-  /* Scheduled cards: better readability */
-  .sc-card-title{ font-size: 1.05rem; }
-  .sc-card-sub{ font-size: .90rem; }
-  .sc-card-amount{ font-size: 1.18rem; font-weight: 850; }
+  /* Conta (quando existir no modo lista) */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(2){
+    grid-column: 2 / 3;
+    justify-self: end;
+    font-size: .80rem;
+    white-space:nowrap;
+  }
 
-  /* Touch targets */
-  .icon-btn, .btn, button{
-    min-height: 40px;
-    min-width: 40px;
+  /* Ações embaixo */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(7){
+    grid-column: 1 / -1;
+    margin-top: 6px;
+  }
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(7) > div{
+    display:flex;
+    justify-content:flex-end;
+    gap:8px;
+    flex-wrap:wrap;
   }
 }
+
+/* =====================================================
+   MOBILE: valores maiores e sempre alinhados à direita
+   (lista normal + agrupado por conta)
+   ===================================================== */
+
+@media (max-width:640px){
+
+  /* valor da transação */
+  #page-transactions td:nth-child(6){
+    font-size:1.65rem;
+    font-weight:900;
+    text-align:right;
+    justify-self:end;
+    white-space:nowrap;
+  }
+
+  /* reforço para qualquer classe usada para valores */
+  #page-transactions .amount,
+  #page-transactions .tx-amount,
+  #page-transactions .value{
+    font-size:1.65rem;
+    font-weight:900;
+    text-align:right;
+    justify-self:end;
+    white-space:nowrap;
+  }
+
+}
+
+/* =====================================================
+   MOBILE: valores maiores e sempre alinhados à direita
+   (lista normal + agrupado por conta)
+   ===================================================== */
+
+@media (max-width:640px){
+
+  /* valor da transação */
+  #page-transactions td:nth-child(6){
+    font-size:1.65rem;
+    font-weight:900;
+    text-align:right;
+    justify-self:end;
+    white-space:nowrap;
+  }
+
+  /* reforço para qualquer classe usada para valores */
+  #page-transactions .amount,
+  #page-transactions .tx-amount,
+  #page-transactions .value{
+    font-size:1.65rem;
+    font-weight:900;
+    text-align:right;
+    justify-self:end;
+    white-space:nowrap;
+  }
+
+}
+
+/* =====================================================
+   MOBILE: aplicar layout de cards também no modo AGRUPADO
+   (Transações agrupadas por conta)
+   ===================================================== */
+@media (max-width: 640px){
+
+  /* Pega QUALQUER tabela dentro da página de transações */
+  #page-transactions .table-wrap{ overflow: visible; }
+  #page-transactions table thead{ display:none; }
+
+  #page-transactions table,
+  #page-transactions tbody,
+  #page-transactions tr,
+  #page-transactions td{
+    display:block;
+    width:100%;
+  }
+
+  /* Linha padrão vira card */
+  #page-transactions tbody tr{
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    padding: 12px;
+    margin: 10px 0;
+  }
+  #page-transactions tbody td{ padding:0; border:0; }
+
+  /* EXCEÇÃO: linhas de "título do grupo" (nome da conta)
+     Normalmente são linhas com 1 célula ocupando tudo (colspan)
+     ou com classe/estilo diferenciado. Este seletor cobre o caso
+     mais comum: apenas 1 <td> na linha.
+  */
+  #page-transactions tbody tr:has(> td:only-child){
+    border: 0;
+    background: transparent;
+    padding: 6px 4px;
+    margin: 14px 0 6px;
+  }
+  #page-transactions tbody tr:has(> td:only-child) td{
+    font-weight: 750;
+    font-size: 1rem;
+    color: var(--text);
+  }
+
+  /* Grid para linhas "normais" (as que têm colunas) */
+  #page-transactions tbody tr:not(:has(> td:only-child)){
+    display:grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px 10px;
+    align-items:start;
+  }
+
+  /* Mapeamento por ordem de colunas (igual ao modo lista):
+     1 Data, 2 Conta, 3 Descrição, 4 Beneficiário, 5 Categoria, 6 Valor, 7 Ações
+     Se no agrupado a coluna "Conta" não existir, não tem problema:
+     o seletor só não encontra e o resto continua funcionando.
+  */
+
+  /* Descrição */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(3){
+    grid-column: 1 / 2;
+    font-size: 1rem;
+    font-weight: 600;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+
+  /* Beneficiário maior */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(4){
+    grid-column: 1 / 2;
+    font-size: 1.1rem;
+    font-weight: 750;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+
+  /* Categoria abaixo do beneficiário (sempre à esquerda) */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(5){
+    grid-column: 1 / 2;
+    font-size: .85rem;
+    color: var(--muted);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+
+  /* Valor bem maior */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(6){
+    grid-column: 2 / 3;
+    justify-self: end;
+    font-size: 1.55rem;
+    font-weight: 850;
+    white-space:nowrap;
+  }
+
+  /* Data */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(1){
+    grid-column: 1 / 2;
+    font-size: .80rem;
+    color: var(--muted);
+    white-space:nowrap;
+  }
+
+  /* Conta (quando existir no modo lista) */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(2){
+    grid-column: 2 / 3;
+    justify-self: end;
+    font-size: .80rem;
+    white-space:nowrap;
+  }
+
+  /* Ações embaixo */
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(7){
+    grid-column: 1 / -1;
+    margin-top: 6px;
+  }
+  #page-transactions tbody tr:not(:has(> td:only-child)) td:nth-child(7) > div{
+    display:flex;
+    justify-content:flex-end;
+    gap:8px;
+    flex-wrap:wrap;
+  }
+}
+
+/* =====================================================
+   MOBILE: valores maiores e sempre alinhados à direita
+   (lista normal + agrupado por conta)
+   ===================================================== */
+
+@media (max-width:640px){
+
+  /* valor da transação */
+  #page-transactions td:nth-child(6){
+    font-size:1.65rem;
+    font-weight:900;
+    text-align:right;
+    justify-self:end;
+    white-space:nowrap;
+  }
+
+  /* reforço para qualquer classe usada para valores */
+  #page-transactions .amount,
+  #page-transactions .tx-amount,
+  #page-transactions .value{
+    font-size:1.65rem;
+    font-weight:900;
+    text-align:right;
+    justify-self:end;
+    white-space:nowrap;
+  }
+
+}
+
+
