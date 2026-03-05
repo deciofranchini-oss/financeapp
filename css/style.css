@@ -82,7 +82,7 @@ body{font-family:var(--font-sans);background:var(--bg);color:var(--text);height:
 #page-dashboard .grid-4{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
 #page-dashboard .stat-card{padding:14px;}
 #page-dashboard .stat-label{margin-bottom:6px;}
-#page-dashboard .stat-value{font-size:1.60rem;font-variant-numeric:tabular-nums;}
+#page-dashboard .stat-value{font-size:1.50rem;font-variant-numeric:tabular-nums;}
 #page-dashboard .stat-sub{margin-top:5px;}
 
 /* Dashboard value colors */
@@ -92,10 +92,15 @@ body{font-family:var(--font-sans);background:var(--bg);color:var(--text);height:
 #page-dashboard .stat-value .amount-neg{ color: var(--red); }
 
 
+
+/* Dashboard stat values smaller on mobile */
+@media (max-width:768px){
+  #page-dashboard .stat-value{font-size:1.35rem;}
+}
 /* Keep dashboard cards readable on very small screens */
 @media (max-width:420px){
   #page-dashboard .grid-4{grid-template-columns:1fr;}
-  #page-dashboard .stat-value{font-size:1.40rem;}
+  #page-dashboard .stat-value{font-size:1.25rem;}
 }
 
 /* ACCOUNT CARDS */
