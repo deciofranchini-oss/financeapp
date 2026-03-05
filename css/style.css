@@ -88,7 +88,7 @@ body{font-family:var(--font-sans);background:var(--bg);color:var(--text);height:
 /* Keep dashboard cards readable on very small screens */
 @media (max-width:420px){
   #page-dashboard .grid-4{grid-template-columns:1fr;}
-  #page-dashboard .stat-value{font-size:2.05rem;}
+  #page-dashboard .stat-value{font-size:1.25rem;}
 }
 
 /* ACCOUNT CARDS */
