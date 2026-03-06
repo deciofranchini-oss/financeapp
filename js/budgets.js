@@ -1,14 +1,19 @@
-// ── Budgets v2 ────────────────────────────────────────────────────────────
-// Features:
-//   • Monthly (with auto_reset) and Annual budgets, shown separately by tab
-//   • Category hierarchy: parent budget accumulates spending of all children
-//   • History: last 12 months per category with totals/averages
-//   • Edit modal restores full state from _budgetCache
+// ── Budgets v2 ─────────────────────────────────────────────────────────────
+// Backward-compatible: funciona com ou sem a migration budget_type/auto_reset/year/notes
 
-'use strict';
+let _budgetView  = 'monthly';
+let _budgetCache = [];
+let _dbHasBudgetType = null; // null = ainda não testado
 
-let _budgetView  = 'monthly'; // 'monthly' | 'annual'
-let _budgetCache = [];        // last loaded budgets (for edit modal lookup)
+// ── DB capability detection ────────────────────────────────────────────────
+
+async function _checkBudgetSchema() {
+  if (_dbHasBudgetType !== null) return _dbHasBudgetType;
+  // Testa se a coluna budget_type existe com uma query leve
+  const { error } = await famQ(sb.from('budgets').select('budget_type').limit(1));
+  _dbHasBudgetType = !error || !error.message?.includes('budget_type');
+  return _dbHasBudgetType;
+}
 
 // ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -16,11 +21,9 @@ function _lastDayOf(y, m) {
   return new Date(+y, +m, 0).getDate();
 }
 
-// Set of IDs that count toward catId (self + children + grandchildren)
 function _categoryFamily(catId) {
   const ids = new Set([catId]);
   state.categories.forEach(c => { if (c.parent_id === catId) ids.add(c.id); });
-  // second pass: grandchildren
   const lvl1 = new Set(ids);
   state.categories.forEach(c => { if (lvl1.has(c.parent_id) && c.id !== catId) ids.add(c.id); });
   return ids;
@@ -34,12 +37,12 @@ function _buildRawSpending(txs) {
   return map;
 }
 
-// ── Selectors init ────────────────────────────────────────────────────────
+// ── Year selectors ────────────────────────────────────────────────────────
 
 function _populateYearSelectors() {
   const cur  = new Date().getFullYear();
   const html = Array.from({ length: 7 }, (_, i) => cur - 3 + i)
-    .map(y => `<option value="${y}" ${y === cur ? 'selected' : ''}>${y}</option>`)
+    .map(y => `<option value="${y}"${y === cur ? ' selected' : ''}>${y}</option>`)
     .join('');
   ['budgetYear', 'budgetModalYear'].forEach(id => {
     const el = document.getElementById(id);
@@ -96,22 +99,47 @@ async function loadBudgets() {
 
   grid.innerHTML = '<div class="budget-loading"><span>⏳</span> Carregando...</div>';
 
-  // 1. Load budgets
-  let bq = famQ(sb.from('budgets').select('*, categories(id,name,icon,color,parent_id)'))
-    .eq('budget_type', _budgetView);
+  const hasNewSchema = await _checkBudgetSchema();
 
-  if (_budgetView === 'monthly') {
+  // 1. Buscar orçamentos do período
+  let bq = famQ(sb.from('budgets').select('*, categories(id,name,icon,color,parent_id)'));
+
+  if (hasNewSchema) {
+    bq = bq.eq('budget_type', _budgetView);
+    if (_budgetView === 'monthly') {
+      const ms = `${period.year}-${String(period.month).padStart(2, '0')}-01`;
+      bq = bq.eq('month', ms);
+    } else {
+      bq = bq.eq('year', period.year);
+    }
+  } else {
+    // Banco antigo: só mensal por mês
+    if (_budgetView === 'annual') {
+      // Sem suporte anual no banco antigo — mostrar aviso e sair
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
+        <div class="es-icon">⚠️</div>
+        <p>Orçamentos anuais requerem a migration do banco.<br>
+        <span style="font-size:.82rem;color:var(--muted)">Execute o arquivo <code>migration_budgets_v2.sql</code> no Supabase para habilitar.</span></p>
+      </div>`;
+      return;
+    }
     const ms = `${period.year}-${String(period.month).padStart(2, '0')}-01`;
     bq = bq.eq('month', ms);
-  } else {
-    bq = bq.eq('year', period.year);
   }
 
   const { data: budgets, error: be } = await bq;
-  if (be) { toast(be.message, 'error'); return; }
+  if (be) {
+    toast('Erro ao carregar orçamentos: ' + be.message, 'error');
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
+      <div class="es-icon">❌</div>
+      <p>Erro ao carregar orçamentos</p>
+      <small style="color:var(--muted)">${esc(be.message)}</small>
+    </div>`;
+    return;
+  }
   _budgetCache = budgets || [];
 
-  // 2. Load spending (expenses only)
+  // 2. Buscar gastos do período
   let txQ = famQ(sb.from('transactions').select('category_id,amount')).lt('amount', 0);
   if (_budgetView === 'monthly') {
     const y = String(period.year), m = String(period.month).padStart(2, '0');
@@ -123,7 +151,7 @@ async function loadBudgets() {
   const { data: txs } = await txQ;
   const raw = _buildRawSpending(txs);
 
-  // 3. Resolve spending per budget (hierarchy)
+  // 3. Gasto por orçamento (soma hierarquia)
   const resolved = {};
   _budgetCache.forEach(b => {
     const fam = _categoryFamily(b.category_id);
@@ -131,68 +159,75 @@ async function loadBudgets() {
     fam.forEach(cid => { resolved[b.id] += (raw[cid] || 0); });
   });
 
-  // 4. Empty state
+  // 4. Estado vazio
   if (!_budgetCache.length) {
     const lbl = _budgetView === 'monthly'
       ? new Date(period.year, period.month - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })
       : String(period.year);
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
       <div class="es-icon">🎯</div>
-      <p>Nenhum orçamento ${_budgetView === 'monthly' ? 'mensal' : 'anual'} para <strong>${lbl}</strong></p>
+      <p>Nenhum orçamento para <strong>${lbl}</strong></p>
       <button class="btn btn-primary" style="margin-top:14px" onclick="openBudgetModal()">+ Criar orçamento</button>
     </div>`;
     return;
   }
 
-  // 5. Sort: over-budget first → % desc
+  // 5. Ordenar: estourado primeiro, depois % desc
   const sorted = [..._budgetCache].sort((a, b) =>
     (resolved[b.id] / (b.amount || 1)) - (resolved[a.id] / (a.amount || 1))
   );
 
-  grid.innerHTML = sorted.map(b => _budgetCardHTML(b, resolved[b.id])).join('');
+  grid.innerHTML = sorted.map(b => _budgetCardHTML(b, resolved[b.id], raw)).join('');
 }
 
 // ── Card HTML ─────────────────────────────────────────────────────────────
 
-function _budgetCardHTML(b, spent) {
+function _budgetCardHTML(b, spent, raw) {
   const pct   = b.amount > 0 ? Math.min(100, (spent / b.amount) * 100) : 0;
-  const over  = spent > b.amount;
+  const over  = spent > b.amount && b.amount > 0;
   const near  = !over && pct >= 80;
   const cat   = b.categories || {};
-  const color = over ? 'var(--red)' : near ? '#f59e0b' : (cat.color || 'var(--accent)');
+  const color = over ? 'var(--red)' : near ? 'var(--amber)' : (cat.color || 'var(--accent)');
   const rem   = b.amount - spent;
 
-  const parentCat = cat.parent_id ? state.categories.find(c => c.id === cat.parent_id) : null;
-  const children  = state.categories.filter(c => c.parent_id === b.category_id && c.type === 'despesa');
+  const parentCat = cat.parent_id
+    ? state.categories.find(c => c.id === cat.parent_id) : null;
+  const children = state.categories.filter(c => c.parent_id === b.category_id && c.type === 'despesa');
 
-  const childTags = children.length
+  // Tags de subcategorias com gasto > 0
+  const childTagsHtml = children.length
     ? `<div class="budget-child-tags">
-        <span style="font-size:.68rem;color:var(--muted);margin-right:3px">Inclui:</span>
-        ${children.map(c =>
-          `<span class="budget-child-tag" style="background:${c.color || 'var(--accent)'}22;color:${c.color || 'var(--accent)'}">
-            ${c.icon || ''} ${esc(c.name)}
-          </span>`).join('')}
-       </div>` : '';
+        <span style="font-size:.68rem;color:var(--muted);margin-right:2px">Inclui:</span>
+        ${children.map(c => {
+          const cs = (raw || {})[c.id] || 0;
+          return `<span class="budget-child-tag" style="background:${c.color||'var(--accent)'}22;color:${c.color||'var(--accent)'}">
+            ${c.icon || ''} ${esc(c.name)}${cs > 0 ? ' · ' + fmt(cs) : ''}
+          </span>`;
+        }).join('')}
+      </div>` : '';
 
-  const badges = [
-    b.auto_reset && _budgetView === 'monthly' ? `<span class="budget-badge" style="background:#e0f2fe;color:#0369a1" title="Reseta todo mês">🔄 mensal</span>` : '',
-    _budgetView === 'annual' ? `<span class="budget-badge" style="background:#f0fdf4;color:#15803d">📆 anual</span>` : '',
-    b.notes ? `<span class="budget-badge" style="background:var(--bg2);color:var(--muted)" title="${esc(b.notes)}">📝</span>` : '',
+  const badgesHtml = [
+    (b.auto_reset ?? true) && _budgetView === 'monthly'
+      ? `<span class="budget-badge" style="background:#e0f2fe;color:#0369a1" title="Reseta todo mês">🔄</span>` : '',
+    _budgetView === 'annual'
+      ? `<span class="budget-badge" style="background:#f0fdf4;color:#15803d">📆</span>` : '',
+    b.notes
+      ? `<span class="budget-badge" style="background:var(--bg2);color:var(--muted)" title="${esc(b.notes)}">📝</span>` : '',
   ].filter(Boolean).join('');
 
-  return `
-  <div class="budget-card${over ? ' budget-card--over' : near ? ' budget-card--near' : ''}">
+  return `<div class="budget-card${over ? ' budget-card--over' : near ? ' budget-card--near' : ''}">
     <div class="budget-card-stripe" style="background:${color}"></div>
+
     <div class="budget-card-header">
       <div class="budget-cat-info">
         <span class="budget-cat-icon">${cat.icon || '📦'}</span>
-        <div>
-          ${parentCat ? `<div style="font-size:.67rem;color:var(--muted);line-height:1.1;margin-bottom:1px">${parentCat.icon || ''} ${esc(parentCat.name)} ›</div>` : ''}
-          <div style="font-weight:700;font-size:.9rem">${esc(cat.name || '—')}</div>
+        <div style="min-width:0">
+          ${parentCat ? `<div style="font-size:.67rem;color:var(--muted);line-height:1.1">${parentCat.icon || ''} ${esc(parentCat.name)} ›</div>` : ''}
+          <div style="font-weight:700;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(cat.name || '—')}</div>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-        ${badges}
+        ${badgesHtml}
         <button class="btn-icon" onclick="openBudgetModal('${b.id}')" title="Editar">✏️</button>
         <button class="btn-icon" onclick="deleteBudget('${b.id}')" title="Excluir" style="color:var(--red)">🗑️</button>
       </div>
@@ -216,20 +251,22 @@ function _budgetCardHTML(b, spent) {
     </div>
 
     <div style="margin-top:10px">
-      <div class="progress" style="height:8px">
-        <div class="progress-bar" style="width:${pct}%;background:${color}"></div>
+      <div class="progress" style="height:8px;border-radius:6px">
+        <div class="progress-bar" style="width:${pct}%;background:${color};border-radius:6px"></div>
       </div>
       <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:.7rem;color:var(--muted)">
         <span>${pct.toFixed(0)}% utilizado</span>
-        ${over ? `<span style="color:var(--red);font-weight:600">⚠ Excedido</span>` : near ? `<span style="color:#f59e0b;font-weight:600">⚡ Atenção</span>` : ''}
+        ${over ? `<span style="color:var(--red);font-weight:600">⚠ Excedido</span>`
+               : near ? `<span style="color:var(--amber);font-weight:600">⚡ Atenção</span>` : ''}
       </div>
     </div>
 
-    ${childTags}
+    ${b.notes ? `<div style="margin-top:8px;padding:6px 8px;background:var(--bg2);border-radius:6px;font-size:.72rem;color:var(--muted)">💬 ${esc(b.notes)}</div>` : ''}
+    ${childTagsHtml}
   </div>`;
 }
 
-// ── History ───────────────────────────────────────────────────────────────
+// ── Histórico ─────────────────────────────────────────────────────────────
 
 async function loadBudgetHistory() {
   const catId     = document.getElementById('budgetHistCat')?.value;
@@ -237,100 +274,83 @@ async function loadBudgetHistory() {
   if (!container) return;
 
   if (!catId) {
-    container.innerHTML = '<div style="color:var(--muted);font-size:.83rem;padding:16px 12px">Selecione uma categoria para ver o histórico.</div>';
+    container.innerHTML = '<div style="color:var(--muted);font-size:.83rem;padding:16px 12px">Selecione uma categoria para ver o histórico dos últimos 12 meses.</div>';
     return;
   }
 
   container.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">⏳ Carregando...</div>';
 
-  // Last 12 months list
   const now    = new Date();
   const months = [];
   for (let i = 11; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const y = String(d.getFullYear());
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    months.push({
-      monthStart: `${y}-${m}-01`, y, m,
-      label: d.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }),
-    });
+    months.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`);
   }
 
-  // Fetch budgets for this category in those months
-  const { data: histBudgets } = await famQ(sb.from('budgets').select('month,amount,auto_reset'))
+  const firstMonth = months[0];
+  const lastDay    = _lastDayOf(now.getFullYear(), now.getMonth() + 1);
+  const lastDate   = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+
+  const { data: histBudgets } = await famQ(sb.from('budgets').select('month,amount'))
     .eq('category_id', catId)
-    .eq('budget_type', 'monthly')
-    .in('month', months.map(m => m.monthStart));
+    .in('month', months);
 
-  const budgetMap = {};
-  (histBudgets || []).forEach(b => { budgetMap[b.month] = b; });
-
-  // If an auto_reset budget exists, use its amount for months without explicit entries
-  const autoResetAmt = (histBudgets || []).find(b => b.auto_reset)?.amount ?? 0;
-
-  // Fetch all transactions in range
-  const last0 = months[months.length - 1];
+  const family = _categoryFamily(catId);
   const { data: txAll } = await famQ(sb.from('transactions').select('category_id,amount,date'))
     .lt('amount', 0)
-    .gte('date', months[0].monthStart)
-    .lte('date', `${last0.y}-${last0.m}-${String(_lastDayOf(last0.y, last0.m)).padStart(2, '0')}`);
+    .gte('date', firstMonth)
+    .lte('date', lastDate)
+    .in('category_id', [...family]);
 
-  const family   = _categoryFamily(catId);
-  let totBudget  = 0, totSpent = 0, countBudgeted = 0;
+  const budgetMap = {};
+  (histBudgets || []).forEach(b => { budgetMap[b.month] = b.amount; });
 
-  const rows = months.map(({ monthStart, y, m, label }) => {
-    const last    = String(_lastDayOf(y, m)).padStart(2, '0');
-    const monthEnd = `${y}-${m}-${last}`;
-    const spent   = (txAll || [])
-      .filter(t => family.has(t.category_id) && t.date >= monthStart && t.date <= monthEnd)
+  let totalSpent = 0, totalBudget = 0, overCount = 0;
+
+  const rows = months.map(ms => {
+    const [y, m] = ms.slice(0,7).split('-');
+    const last   = _lastDayOf(parseInt(y), parseInt(m));
+    const me     = `${y}-${m}-${String(last).padStart(2,'0')}`;
+    const spent  = (txAll || [])
+      .filter(t => t.date >= ms && t.date <= me)
       .reduce((s, t) => s + Math.abs(t.amount), 0);
 
-    const bEntry  = budgetMap[monthStart];
-    const bAmt    = bEntry?.amount ?? (autoResetAmt || 0);
-    const hasB    = bAmt > 0;
+    const budget = budgetMap[ms] || 0;
+    const pct    = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
+    const over   = budget > 0 && spent > budget;
+    const label  = new Date(ms + 'T12:00').toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' });
+    const isCur  = ms === `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
 
-    if (hasB) { totBudget += bAmt; countBudgeted++; }
-    totSpent += spent;
+    if (budget > 0) { totalBudget += budget; totalSpent += spent; }
+    if (over) overCount++;
 
-    const pct  = hasB ? Math.min(100, (spent / bAmt) * 100) : 0;
-    const over = hasB && spent > bAmt;
-
-    return `<tr>
-      <td style="font-weight:500;white-space:nowrap">${label}</td>
-      <td>${hasB ? fmt(bAmt) : '<span style="color:var(--muted)">—</span>'}</td>
-      <td class="${over ? 'amount-neg' : spent > 0 ? '' : 'text-muted'}" style="font-weight:${spent > 0 ? '600' : '400'}">${fmt(spent)}</td>
-      <td style="min-width:90px">${hasB ? `
-        <div class="progress" style="height:5px;margin-top:0">
-          <div class="progress-bar" style="width:${pct}%;background:${over ? 'var(--red)' : 'var(--accent)'}"></div>
-        </div>
-        <div style="font-size:.67rem;color:var(--muted);margin-top:2px">${pct.toFixed(0)}%</div>` : ''}</td>
-      <td class="${over ? 'amount-neg' : hasB ? 'amount-pos' : ''}" style="font-size:.8rem">
-        ${hasB ? `${over ? '-' : ''}${fmt(Math.abs(bAmt - spent))}` : ''}
+    return `<tr${isCur ? ' style="background:var(--accent-lt)"' : ''}>
+      <td style="font-size:.82rem;white-space:nowrap;font-weight:${isCur?'700':'400'}">${label}${isCur?' ←':''}</td>
+      <td style="font-size:.82rem">${budget > 0 ? fmt(budget) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td class="${over ? 'amount-neg' : ''}" style="font-size:.82rem;font-weight:600">${spent > 0 ? fmt(spent) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td style="min-width:90px">
+        ${budget > 0 ? `<div class="progress" style="height:5px;margin-top:0"><div class="progress-bar" style="width:${pct}%;background:${over?'var(--red)':'var(--accent)'}"></div></div><div style="font-size:.65rem;color:var(--muted);margin-top:2px">${pct.toFixed(0)}%</div>` : ''}
+      </td>
+      <td class="${budget > 0 ? (over ? 'amount-neg' : 'amount-pos') : ''}" style="font-size:.78rem">
+        ${budget > 0 ? (over ? '-' : '') + fmt(Math.abs(budget - spent)) : ''}
       </td>
     </tr>`;
   }).join('');
 
-  const avgSpent  = totSpent / 12;
-  const avgBudget = countBudgeted > 0 ? totBudget / countBudgeted : 0;
-  const netDelta  = totBudget - totSpent;
+  const withBudget = months.filter(ms => budgetMap[ms]).length;
+  const avgPct     = totalBudget > 0 ? ((totalSpent / totalBudget) * 100).toFixed(0) : null;
 
-  container.innerHTML = `<div class="table-wrap">
-    <table style="font-size:.82rem">
-      <thead><tr><th>Mês</th><th>Orçamento</th><th>Gasto</th><th style="min-width:90px">Progresso</th><th>Saldo</th></tr></thead>
-      <tbody>${rows}</tbody>
-      <tfoot>
-        <tr style="border-top:2px solid var(--border);font-weight:700">
-          <td style="font-size:.78rem;color:var(--muted)">Média / mês</td>
-          <td style="font-size:.82rem">${avgBudget > 0 ? fmt(avgBudget) : '—'}</td>
-          <td style="font-size:.82rem;color:var(--text)">${fmt(avgSpent)}</td>
-          <td></td>
-          <td class="${totBudget > 0 ? (netDelta >= 0 ? 'amount-pos' : 'amount-neg') : ''}" style="font-size:.8rem">
-            ${totBudget > 0 ? `${netDelta < 0 ? '-' : ''}${fmt(Math.abs(netDelta / 12))}` : ''}
-          </td>
-        </tr>
-      </tfoot>
-    </table>
-  </div>`;
+  const summaryHtml = withBudget ? `
+    <div style="padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:.78rem;color:var(--muted);display:flex;gap:20px;flex-wrap:wrap">
+      <span>📅 <strong>${withBudget}</strong> meses com orçamento</span>
+      ${avgPct !== null ? `<span>📊 Média: <strong>${avgPct}%</strong> utilizado</span>` : ''}
+      ${overCount > 0 ? `<span class="text-red">⚠️ <strong>${overCount}</strong> meses estourados</span>` : '<span class="text-green">✅ Nunca estourou</span>'}
+    </div>` : '';
+
+  container.innerHTML = `${summaryHtml}<div class="table-wrap"><table>
+    <thead><tr><th>Mês</th><th>Orçamento</th><th>Gasto</th><th>Progresso</th><th>Saldo</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
 }
 
 // ── Modal ─────────────────────────────────────────────────────────────────
@@ -341,22 +361,26 @@ function openBudgetModal(id = '') {
   document.getElementById('budgetId').value = id;
   document.getElementById('budgetModalTitle').textContent = id ? 'Editar Orçamento' : 'Novo Orçamento';
 
-  const btype  = existing?.budget_type || _budgetView;
+  const btype = existing?.budget_type || _budgetView;
   _setBudgetModalType(btype);
 
   const period = _getSelectedPeriod();
   const now    = new Date();
 
-  // Month
+  // Mês
   const monthEl = document.getElementById('budgetModalMonth');
-  if (monthEl) monthEl.value = existing?.month?.slice(0, 7) || period.monthStr || now.toISOString().slice(0, 7);
+  if (monthEl) {
+    monthEl.value = existing?.month
+      ? existing.month.slice(0, 7)
+      : (period.monthStr || now.toISOString().slice(0, 7));
+  }
 
-  // Year
+  // Ano — o select já foi populado em initBudgetsPage
   const yearEl = document.getElementById('budgetModalYear');
   if (yearEl) yearEl.value = existing?.year || period.year || now.getFullYear();
 
-  // Categories grouped
-  const catSel = document.getElementById('budgetCategory');
+  // Categorias: pai + filhos indentados
+  const catSel  = document.getElementById('budgetCategory');
   const parents = state.categories.filter(c => c.type === 'despesa' && !c.parent_id)
     .sort((a, b) => a.name.localeCompare(b.name));
   let opts = '';
@@ -364,7 +388,7 @@ function openBudgetModal(id = '') {
     opts += `<option value="${p.id}">${p.icon || '📦'} ${esc(p.name)}</option>`;
     state.categories.filter(c => c.type === 'despesa' && c.parent_id === p.id)
       .sort((a, b) => a.name.localeCompare(b.name))
-      .forEach(c => { opts += `<option value="${c.id}">　${c.icon || '•'} ${esc(c.name)}</option>`; });
+      .forEach(c => { opts += `<option value="${c.id}">　↳ ${c.icon || '•'} ${esc(c.name)}</option>`; });
   });
   catSel.innerHTML = opts;
   if (existing?.category_id) catSel.value = existing.category_id;
@@ -372,11 +396,14 @@ function openBudgetModal(id = '') {
   _updateBudgetCatHint();
   catSel.onchange = _updateBudgetCatHint;
 
+  // Valor
   setAmtField('budgetAmount', existing?.amount || 0);
 
+  // Auto-reset (padrão: true)
   const arEl = document.getElementById('budgetAutoReset');
-  if (arEl) arEl.checked = existing ? !!existing.auto_reset : true;
+  if (arEl) arEl.checked = existing ? !!(existing.auto_reset ?? true) : true;
 
+  // Notas
   const notesEl = document.getElementById('budgetNotes');
   if (notesEl) notesEl.value = existing?.notes || '';
 
@@ -410,15 +437,14 @@ function _setBudgetModalType(type) {
 
 async function saveBudget() {
   const id        = document.getElementById('budgetId').value;
-  const tt        = document.getElementById('budgetModalTypeCurrent');
-  const btype     = tt?.getAttribute('data-type') || _budgetView;
+  const btype     = document.getElementById('budgetModalTypeCurrent')?.getAttribute('data-type') || _budgetView;
   const catId     = document.getElementById('budgetCategory').value;
   const amount    = Math.abs(getAmtField('budgetAmount'));
   const autoReset = document.getElementById('budgetAutoReset')?.checked ?? true;
   const notes     = document.getElementById('budgetNotes')?.value.trim() || null;
 
   if (!catId)  { toast('Selecione uma categoria', 'error'); return; }
-  if (!amount) { toast('Informe o valor limite',  'error'); return; }
+  if (!amount) { toast('Informe o valor limite', 'error');  return; }
 
   let month = null, year = null;
   if (btype === 'monthly') {
@@ -432,42 +458,55 @@ async function saveBudget() {
     if (!year) { toast('Selecione o ano', 'error'); return; }
   }
 
+  const hasNewSchema = await _checkBudgetSchema();
+
+  // Dados base (compatível com schema antigo)
   const data = {
     category_id: catId,
-    budget_type: btype,
-    amount,
-    auto_reset:  btype === 'monthly' ? autoReset : false,
-    month,
-    year,
-    notes,
+    amount:      amount,
+    month:       month,
     family_id:   famId(),
   };
 
+  // Campos extras (só quando banco tem o schema novo)
+  if (hasNewSchema) {
+    data.budget_type = btype;
+    data.auto_reset  = btype === 'monthly' ? autoReset : false;
+    data.year        = year;
+    data.notes       = notes;
+    data.updated_at  = new Date().toISOString();
+  }
+
   let err;
   if (id) {
+    // Edição: update direto
     ({ error: err } = await sb.from('budgets').update(data).eq('id', id));
-  } else {
+  } else if (hasNewSchema) {
+    // Insert com upsert usando nova constraint
     const conflict = btype === 'monthly'
       ? 'family_id,category_id,month,budget_type'
       : 'family_id,category_id,year,budget_type';
     ({ error: err } = await sb.from('budgets').upsert(data, { onConflict: conflict }));
+  } else {
+    // Schema antigo: upsert com constraint original
+    ({ error: err } = await sb.from('budgets').upsert(data, { onConflict: 'category_id,month' }));
   }
 
   if (err) { toast(err.message, 'error'); return; }
   toast(id ? 'Orçamento atualizado!' : 'Orçamento salvo!', 'success');
   closeModal('budgetModal');
-  await loadBudgets();
+  loadBudgets();
 }
 
 async function deleteBudget(id) {
   if (!confirm('Excluir este orçamento?')) return;
   const { error } = await sb.from('budgets').delete().eq('id', id);
   if (error) { toast(error.message, 'error'); return; }
-  toast('Orçamento removido', 'success');
+  toast('Orçamento excluído', 'success');
   loadBudgets();
 }
 
-// ── Page init ─────────────────────────────────────────────────────────────
+// ── Init ──────────────────────────────────────────────────────────────────
 
 function initBudgetsPage() {
   const now     = new Date();
@@ -477,5 +516,8 @@ function initBudgetsPage() {
   _populateYearSelectors();
   _populateHistCat();
 
-  setBudgetView(_budgetView); // applies tab state + calls loadBudgets
+  // Resetar cache de schema para re-testar a cada visita (banco pode ter sido migrado)
+  _dbHasBudgetType = null;
+
+  setBudgetView(_budgetView);
 }
