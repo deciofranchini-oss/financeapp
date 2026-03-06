@@ -274,11 +274,8 @@ function updateUserUI() {
   }
 
 
-  // Admin-only nav items (topbar icon buttons need display:'flex', not '' — they have no CSS rule)
-  const auditNav = document.getElementById('auditNav');
-  const settingsNav = document.getElementById('settingsNav');
-  if (auditNav) auditNav.style.display = currentUser.can_admin ? 'flex' : 'none';
-  if (settingsNav) settingsNav.style.display = currentUser.can_admin ? 'flex' : 'none';
+  // auditNav and settingsNav are always visible (display:flex set in HTML).
+  // Access is guarded by navigate() which checks can_admin before loading the page.
 
   // Apply permission restrictions
   applyPermissions();
@@ -302,20 +299,8 @@ function applyPermissions() {
     if (importNav) importNav.style.display='none';
   }
 
-// Hide admin-only screens for non-admin
-if (!(p.role==='admin' || p.role==='owner' || p.can_admin)) {
-  // settingsNav is the topbar icon button (id="settingsNav"), not a .nav-item in the sidebar
-  const settingsNav = document.getElementById('settingsNav');
-  if (settingsNav) settingsNav.style.display='none';
-  const auditNav = document.getElementById('auditNav');
-  if (auditNav) auditNav.style.display='none';
-} else {
-  // Restore both admin-only topbar buttons — must be 'flex' (no CSS display rule on these elements)
-  const settingsNav = document.getElementById('settingsNav');
-  if (settingsNav) settingsNav.style.display='flex';
-  const auditNav = document.getElementById('auditNav');
-  if (auditNav) auditNav.style.display='flex';
-}
+// auditNav and settingsNav visibility is not managed here.
+// They are always visible; navigate() guards access to the page itself.
 
 }
 
