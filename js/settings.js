@@ -231,21 +231,21 @@ function ensureSupabaseClient() {
 
 
 function initPinScreen() {
-  // PIN/lock screen removed: always proceed.
-  try { const ps = document.getElementById('pinScreen'); if(ps) ps.style.display = 'none'; } catch(e){}
+  // Lock screen removed: always proceed without PIN
+  try { const ps = document.getElementById('pinScreen'); if(ps) ps.style.display='none'; } catch(e){}
   _pinUnlocked = true;
   clearAutoLockTimer();
-
-  // Use config.js first, then localStorage (handled by ensureSupabaseClient)
-  const client = ensureSupabaseClient();
-  if (client) {
+  // If Supabase credentials exist, boot app; otherwise show setup screen
+  const url = localStorage.getItem('sb_url');
+  const key = localStorage.getItem('sb_key');
+  if(url && key){
+    ensureSupabaseClient();
     bootApp();
   } else {
     const setup = document.getElementById('setupScreen');
-    if (setup) setup.style.display = 'flex';
+    if(setup) setup.style.display='flex';
   }
 }
-
 
 function onPinKeyboard(e) {
   if(_pinUnlocked) {
@@ -622,7 +622,7 @@ function applyMenuVisibility(vis) {
     const el = document.getElementById(map[key]);
     if (!el) return;
     // Do not show admin-only items to non-admin even if enabled
-    if ((key === 'audit' || key === 'settings') && currentUser?.role !== 'admin') {
+    if ((key === 'audit' || key === 'settings') && !(currentUser?.can_admin || currentUser?.role === 'admin' || currentUser?.role === 'owner')) {
       el.style.display = 'none';
       return;
     }
