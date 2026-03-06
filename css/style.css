@@ -2199,3 +2199,15 @@ html, body{
   color: var(--text);
   white-space: nowrap;
 }
+
+/* ── Category tx-count badge ─────────────────────────────────────── */
+.cat-tx-count {
+  font-size: .68rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: var(--blue-lt, #e8f0fb);
+  color: var(--blue, #1e5ba8);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
