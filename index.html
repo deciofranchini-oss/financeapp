@@ -675,54 +675,48 @@
 
     <!-- SCHEDULED TRANSACTIONS -->
     <div class="page" id="page-scheduled">
+      <!-- Mobile header -->
       <div class="section-header mb-6">
-        <span class="section-title">Transações Programadas</span>
+        <span class="section-title">Programados</span>
         <button class="btn btn-primary" onclick="openScheduledModal()">+ Programar</button>
       </div>
 
-      <!-- Status summary bar -->
-      <div id="scheduledSummaryBar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px"></div>
+      <!-- Status summary chips (scrollable on mobile) -->
+      <div id="scheduledSummaryBar" class="sc-summary-bar"></div>
 
-      <!-- Filter bar -->
-      <div class="filters mb-6" style="flex-wrap:wrap">
-        <div class="search-wrap">
+      <!-- Compact filter bar -->
+      <div class="sc-filter-bar mb-6">
+        <div class="search-wrap" style="flex:1;min-width:120px">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted);flex-shrink:0"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           <input type="text" id="scSearch" placeholder="Buscar..." oninput="filterScheduled()">
         </div>
-        <select id="scStatusFilter" onchange="filterScheduled()" style="max-width:160px">
-          <option value="">Todos os status</option>
-          <option value="active">Ativos</option>
-          <option value="paused">Pausados</option>
-          <option value="finished">Concluídos</option>
-        </select>
-        <select id="scTypeFilter" onchange="filterScheduled()" style="max-width:140px">
+        <div class="sc-filter-chips">
+          <button class="sc-chip active" id="scChipAll"    onclick="scChipFilter(event,'all')">Todos</button>
+          <button class="sc-chip"        id="scChipActive" onclick="scChipFilter(event,'active')">Ativos</button>
+          <button class="sc-chip"        id="scChipPaused" onclick="scChipFilter(event,'paused')">Pausados</button>
+          <button class="sc-chip"        id="scChipDone"   onclick="scChipFilter(event,'finished')">Concluídos</button>
+        </div>
+        <select id="scTypeFilter" onchange="filterScheduled()" class="sc-type-select">
           <option value="">Todos os tipos</option>
-          <option value="expense">Despesas</option>
-          <option value="income">Receitas</option>
-          <option value="transfer">Transferências</option>
+          <option value="expense">💸 Despesas</option>
+          <option value="income">💰 Receitas</option>
+          <option value="transfer">🔄 Transferências</option>
           <option value="card_payment">💳 Pgto. Cartão</option>
         </select>
       </div>
 
-      <!-- Upcoming next 30 days alert -->
+      <!-- Upcoming next 30 days -->
       <div id="scheduledUpcomingCard" style="display:none" class="card mb-6">
         <div class="card-header">
           <span class="card-title">⏰ Próximos 30 dias</span>
           <span id="scheduledUpcomingTotal" class="badge badge-amber"></span>
         </div>
-        <div class="table-wrap" style="margin:0 -20px -20px">
-          <table>
-            <thead><tr><th>Data</th><th>Descrição</th><th>Conta</th><th>Valor</th><th>Ação</th></tr></thead>
-            <tbody id="scheduledUpcomingBody"></tbody>
-          </table>
-        </div>
+        <div id="scheduledUpcomingList" class="sc-upcoming-list"></div>
       </div>
 
       <!-- Main list -->
       <div id="scheduledList"></div>
-    </div>
-
-    <!-- IMPORT / BACKUP PAGE -->
+    </div>    <!-- IMPORT / BACKUP PAGE -->
     <div class="page" id="page-import">
 
       <!-- ══ WIZARD STEPS ══ -->
@@ -1240,11 +1234,46 @@
           <div class="settings-row">
             <div class="settings-row-icon" style="background:var(--accent-lt)">📥</div>
             <div class="settings-row-info">
-              <div class="settings-row-label">Importar / Backup</div>
+              <div class="settings-row-label">Importar / Backup Local</div>
               <div class="settings-row-sub">MoneyWiz, backup JSON, limpar dados</div>
             </div>
             <div class="settings-row-action">
               <button class="btn btn-ghost btn-sm" onclick="navigate('import')">Abrir</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ BACKUP NO BANCO (admin only) ══ -->
+      <div class="settings-section" id="dbBackupSection" style="display:none">
+        <div style="font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:8px;padding-left:4px">🗄️ Backup no Banco de Dados</div>
+        <div class="settings-card">
+          <!-- Header / create -->
+          <div class="settings-row">
+            <div class="settings-row-icon" style="background:var(--blue-lt,#e8f0fb)">📸</div>
+            <div class="settings-row-info">
+              <div class="settings-row-label">Snapshots no Supabase</div>
+              <div class="settings-row-sub">Salva uma cópia completa dos dados dentro do próprio banco. Até 20 snapshots armazenados.</div>
+            </div>
+            <div class="settings-row-action">
+              <button class="btn btn-primary btn-sm" id="dbBackupCreateBtn" onclick="openDbBackupCreate()">📸 Criar Snapshot</button>
+            </div>
+          </div>
+
+          <!-- Migration hint (shown when table doesn't exist) -->
+          <div id="dbBackupMigrationHint" style="display:none;margin:4px 16px 12px;padding:12px 14px;background:var(--amber-lt,#fef3e2);border:1px solid var(--amber);border-radius:var(--r-sm);font-size:.8rem;line-height:1.6">
+            ⚠️ A tabela <code>app_backups</code> ainda não existe no banco.<br>
+            Execute o arquivo <code>migration_db_backup.sql</code> no SQL Editor do Supabase para habilitar esta funcionalidade.
+            <div style="margin-top:8px">
+              <button class="btn btn-ghost btn-sm" onclick="window.open('https://supabase.com/dashboard','_blank')">🔗 Abrir Supabase</button>
+            </div>
+          </div>
+
+          <!-- Backup list -->
+          <div style="padding:0 16px 12px">
+            <div style="font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px">Snapshots salvos</div>
+            <div id="dbBackupList">
+              <div style="color:var(--muted);font-size:.83rem;padding:8px 0">Acesse Configurações para ver os backups.</div>
             </div>
           </div>
         </div>
