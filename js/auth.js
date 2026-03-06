@@ -1016,26 +1016,32 @@ async function doRecoveryPwd() {
   btn.textContent = '⏳ Salvando...';
 
   try {
-    // Update password in Supabase Auth (user is already authenticated via recovery token)
+    // Verify there is an active session (recovery token must have been exchanged)
+    const { data: sessionData } = await sb.auth.getSession();
+    if (!sessionData?.session) {
+      throw new Error('Sessão expirada. Solicite um novo link de recuperação.');
+    }
+
+    // Update password in Supabase Auth
     const { error } = await sb.auth.updateUser({ password: p1 });
     if (error) throw error;
 
-    // Clear must_change_pwd flag in app_users table
-    const { data: uRes } = await sb.auth.getUser();
-    if (uRes?.user?.email) {
+    // Clear must_change_pwd flag in app_users
+    const userEmail = sessionData.session.user?.email;
+    if (userEmail) {
       await sb.from('app_users')
         .update({ must_change_pwd: false })
-        .eq('email', uRes.user.email)
+        .eq('email', userEmail)
         .catch(() => {});
     }
 
-    // Load user context and enter the app
+    // Load context and enter the app
     await _loadCurrentUserContext();
     document.getElementById('loginScreen').style.display = 'none';
     toast('✓ Senha redefinida com sucesso! Bem-vindo(a).', 'success');
     await bootApp();
   } catch(e) {
-    errEl.textContent = 'Erro ao salvar senha: ' + (e?.message || e);
+    errEl.textContent = 'Erro: ' + (e?.message || e);
     errEl.style.display = '';
     btn.disabled = false;
     btn.textContent = 'Salvar Nova Senha';
