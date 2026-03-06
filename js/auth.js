@@ -50,35 +50,55 @@ async function _loadCurrentUserContext() {
     .maybeSingle();
   if (pErr) throw pErr;
 
-  // Family membership (pick the first family for now)
+  // Load ALL family memberships for this user
   const { data: fm, error: fmErr } = await sb
     .from('family_members')
-    .select('family_id,role')
+    .select('family_id,role,families(id,name)')
     .eq('user_id', user.id)
-    .order('created_at', { ascending: true })
-    .limit(1);
+    .order('created_at', { ascending: true });
   if (fmErr) throw fmErr;
-  const famRow = (fm && fm.length) ? fm[0] : null;
 
+  // Also fall back to app_users.family_id for legacy users
+  const { data: appUserRow } = await sb
+    .from('app_users').select('family_id').eq('email', user.email).maybeSingle();
+
+  const famRow  = (fm && fm.length) ? fm[0] : null;
   const appRole = (profile?.role || famRow?.role || 'viewer');
+
+  // Build the list of families available to the user
+  let userFamilies = (fm || [])
+    .filter(r => r.family_id)
+    .map(r => ({ id: r.family_id, name: r.families?.name || r.family_id, role: r.role }));
+
+  // If only app_users.family_id exists (legacy), add it
+  if (!userFamilies.length && appUserRow?.family_id) {
+    userFamilies = [{ id: appUserRow.family_id, name: appUserRow.family_id, role: appRole }];
+  }
+
+  // Determine active family — respect user's last selection stored in localStorage
+  const savedFamilyId = localStorage.getItem('ft_active_family_' + user.id);
+  const activeFamId   = (savedFamilyId && userFamilies.find(f => f.id === savedFamilyId))
+    ? savedFamilyId
+    : (userFamilies[0]?.id || appUserRow?.family_id || null);
 
   // Map roles to capabilities (keep UI compatible with existing checks)
   const caps = {
-    can_view: true,
+    can_view:   true,
     can_create: appRole !== 'viewer',
-    can_edit: appRole !== 'viewer',
+    can_edit:   appRole !== 'viewer',
     can_delete: appRole === 'admin' || appRole === 'owner',
     can_export: true,
     can_import: appRole === 'admin' || appRole === 'owner',
-    can_admin: appRole === 'admin' || appRole === 'owner'
+    can_admin:  appRole === 'admin' || appRole === 'owner'
   };
 
   currentUser = {
-    id: user.id,
-    email: user.email || profile?.email || '',
-    name: profile?.display_name || user.email || 'Usuário',
-    role: appRole,
-    family_id: famRow?.family_id || null,
+    id:       user.id,
+    email:    user.email || profile?.email || '',
+    name:     profile?.display_name || user.email || 'Usuário',
+    role:     appRole,
+    family_id: activeFamId,
+    families: userFamilies,   // ALL families the user belongs to
     ...caps
   };
 
@@ -284,6 +304,9 @@ function updateUserUI() {
   // Show pending approvals badge on admin user management button
   if (_isAdmin) _checkPendingApprovals();
 
+  // Render family switcher if user belongs to multiple families
+  _renderFamilySwitcher();
+
   // Apply permission restrictions
   applyPermissions();
 }
@@ -312,6 +335,47 @@ function applyPermissions() {
 }
 
 // ── Logout ──
+
+// ── Family switcher ─────────────────────────────────────────────────────────
+function _renderFamilySwitcher() {
+  const container = document.getElementById('familySwitcherWrap');
+  if (!container) return;
+  const families = currentUser?.families || [];
+  if (families.length <= 1) {
+    container.style.display = 'none';
+    return;
+  }
+  container.style.display = 'flex';
+  const sel = document.getElementById('familySwitcherSelect');
+  if (!sel) return;
+  // Rebuild options only if families changed
+  const prev = Array.from(sel.options).map(o => o.value).join(',');
+  const next = families.map(f => f.id).join(',');
+  if (prev !== next) {
+    sel.innerHTML = families.map(f =>
+      `<option value="${f.id}">${esc(f.name)}</option>`
+    ).join('');
+  }
+  sel.value = currentUser.family_id || '';
+}
+
+async function switchFamily(familyId) {
+  if (!familyId || familyId === currentUser?.family_id) return;
+  currentUser.family_id = familyId;
+  localStorage.setItem('ft_active_family_' + currentUser.id, familyId);
+  // Update label
+  const fam = (currentUser.families || []).find(f => f.id === familyId);
+  toast(`Família: ${fam?.name || familyId}`, 'info');
+  // Reload all data for new family
+  await Promise.all([
+    loadAccounts().catch(()=>{}),
+    loadCategories().catch(()=>{}),
+    loadPayees().catch(()=>{}),
+    loadAppSettings().catch(()=>{})
+  ]);
+  populateSelects();
+  navigate(state.currentPage || 'dashboard');
+}
 
 // ── Pending approvals badge ───────────────────────────────────────────────
 async function _checkPendingApprovals() {
@@ -426,9 +490,104 @@ function showLoginFormArea() {
   document.getElementById('registerFormArea').style.display = 'none';
   document.getElementById('pendingApprovalArea').style.display = 'none';
   document.getElementById('changePwdArea').style.display = 'none';
+  document.getElementById('forgotPwdArea').style.display = 'none';
   document.getElementById('loginError').style.display = 'none';
   document.getElementById('regError').style.display = 'none';
   setTimeout(() => document.getElementById('loginEmail')?.focus(), 100);
+}
+
+function showForgotPwdForm() {
+  document.getElementById('loginFormArea').style.display = 'none';
+  document.getElementById('registerFormArea').style.display = 'none';
+  document.getElementById('pendingApprovalArea').style.display = 'none';
+  document.getElementById('changePwdArea').style.display = 'none';
+  document.getElementById('forgotPwdArea').style.display = '';
+  document.getElementById('forgotPwdError').style.display = 'none';
+  document.getElementById('forgotPwdError').textContent = '';
+  setTimeout(() => document.getElementById('forgotPwdEmail')?.focus(), 100);
+}
+
+async function doForgotPwd() {
+  const email  = (document.getElementById('forgotPwdEmail').value || '').trim().toLowerCase();
+  const errEl  = document.getElementById('forgotPwdError');
+  const btn    = document.getElementById('forgotPwdBtn');
+  errEl.style.display = 'none';
+  errEl.style.color   = '#dc2626';
+
+  if (!email) {
+    errEl.textContent = 'Informe seu e-mail.';
+    errEl.style.display = '';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Enviando...';
+
+  try {
+    // Look up user in app_users to verify email exists
+    const { data: users } = await sb.from('app_users').select('name, email').eq('email', email);
+    const user = users?.[0];
+
+    if (!user) {
+      // Mensagem neutra — não confirmar se e-mail existe por segurança
+      errEl.textContent = 'Se este e-mail estiver cadastrado, você receberá as instruções em breve.';
+      errEl.style.color = '#2a6049';
+      errEl.style.display = '';
+      btn.disabled = false;
+      btn.textContent = 'Enviar Link de Recuperação';
+      return;
+    }
+
+    // Generate a temporary reset token (6-digit code stored in app_users)
+    const resetCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const resetHash = await sha256(resetCode);
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
+
+    // Store the reset token temporarily in app_users
+    await sb.from('app_users').update({
+      password_hash: resetHash,
+      must_change_pwd: true
+    }).eq('email', email);
+
+    // Send email via EmailJS with the reset code
+    if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.publicKey) {
+      throw new Error('EmailJS não configurado. Contate o administrador.');
+    }
+    emailjs.init(EMAILJS_CONFIG.publicKey);
+    const tplId = EMAILJS_CONFIG.scheduledTemplateId || EMAILJS_CONFIG.templateId;
+    await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
+      to_email:       email,
+      Subject:        'FinTrack — Recuperação de senha',
+      month_year:     new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
+      report_content: `Olá, ${user.name || email}!
+
+Você solicitou a recuperação de acesso ao JF Family FinTrack.
+
+Sua senha temporária é:
+
+  ${resetCode}
+
+Acesse o aplicativo e faça login com esta senha. Você será solicitado a definir uma nova senha imediatamente após o login.
+
+Esta senha temporária expira em 30 minutos.
+
+Se você não solicitou essa recuperação, ignore este e-mail.
+
+Equipe JF Family FinTrack`,
+    });
+
+    errEl.textContent = '✅ Instruções enviadas! Verifique sua caixa de entrada e use a senha temporária para acessar.';
+    errEl.style.color = '#2a6049';
+    errEl.style.display = '';
+    btn.textContent = 'Enviado!';
+    setTimeout(() => showLoginFormArea(), 4000);
+
+  } catch(e) {
+    errEl.textContent = 'Erro ao enviar: ' + (e.message || e);
+    errEl.style.display = '';
+    btn.disabled = false;
+    btn.textContent = 'Enviar Link de Recuperação';
+  }
 }
 
 // ── Register (self-register) ──
@@ -777,16 +936,79 @@ async function saveUser() {
 }
 
 async function approveUser(userId, userName) {
-  if (!confirm(`Aprovar acesso de ${userName}?\n\nO usuário poderá fazer login imediatamente.`)) return;
-  const { error } = await sb.from('app_users').update({
-    active: true, approved: true
-  }).eq('id', userId);
-  if (error) { toast('Erro: '+error.message,'error'); return; }
-  // Also sync approval into user_profiles if the row exists (RLS auth path)
-  await sb.from('user_profiles').update({ active: true }).eq('email', (await sb.from('app_users').select('email').eq('id',userId).single()).data?.email || '').catch(()=>{});
-  toast(`✓ ${userName} aprovado! Já pode fazer login.`, 'success');
+  // Open the approval modal so admin can assign a family before approving
+  document.getElementById('approvalUserId').value   = userId;
+  document.getElementById('approvalUserName').textContent = userName;
+  document.getElementById('approvalFamilyId').innerHTML =
+    '<option value="">— Nenhuma (admin global) —</option>' +
+    _families.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('');
+  document.getElementById('approvalNewFamilyName').value = '';
+  document.getElementById('approvalError').style.display = 'none';
+  openModal('approvalModal');
+}
+
+async function doApproveUser() {
+  const userId   = document.getElementById('approvalUserId').value;
+  const userName = document.getElementById('approvalUserName').textContent;
+  const famSel   = document.getElementById('approvalFamilyId').value;
+  const newFamNm = document.getElementById('approvalNewFamilyName').value.trim();
+  const errEl    = document.getElementById('approvalError');
+  errEl.style.display = 'none';
+
+  let familyId   = famSel || null;
+  let familyName = _families.find(f => f.id === famSel)?.name || null;
+
+  // Create new family if requested
+  if (newFamNm) {
+    const { data: nf, error: nfErr } = await sb
+      .from('families').insert({ name: newFamNm }).select('id,name').single();
+    if (nfErr) { errEl.textContent = 'Erro ao criar família: ' + nfErr.message; errEl.style.display = ''; return; }
+    familyId   = nf.id;
+    familyName = nf.name;
+    await loadFamiliesList();
+  }
+
+  // Approve user and assign family
+  const { data: userRow, error: uErr } = await sb
+    .from('app_users').update({ active: true, approved: true, family_id: familyId })
+    .eq('id', userId).select('name,email').single();
+  if (uErr) { errEl.textContent = 'Erro: ' + uErr.message; errEl.style.display = ''; return; }
+
+  // Sync into user_profiles
+  await sb.from('user_profiles').update({ active: true })
+    .eq('email', userRow.email).catch(()=>{});
+
+  // Sync into family_members if familyId provided
+  if (familyId) {
+    await sb.from('family_members').upsert({
+      user_id: userId, family_id: familyId, role: 'editor'
+    }, { onConflict: 'user_id,family_id' }).catch(()=>{});
+  }
+
+  // Send approval email via EmailJS
+  await _sendApprovalEmail(userRow.email, userRow.name || userName, familyName);
+
+  toast(`✓ ${userName} aprovado!${familyName ? ' Família: ' + familyName : ''}`, 'success');
+  closeModal('approvalModal');
   await loadUsersList();
   _checkPendingApprovals();
+}
+
+async function _sendApprovalEmail(email, name, familyName) {
+  if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.publicKey) return;
+  try {
+    emailjs.init(EMAILJS_CONFIG.publicKey);
+    const tplId = EMAILJS_CONFIG.scheduledTemplateId || EMAILJS_CONFIG.templateId;
+    const famLine = familyName
+      ? `\n\nVocê foi vinculado à família: ${familyName}`
+      : '\n\nSeu acesso foi liberado como administrador global.';
+    await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
+      to_email:       email,
+      Subject:        'FinTrack — Acesso liberado!',
+      month_year:     new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
+      report_content: `Olá, ${name}!\n\nSua solicitação de acesso ao JF Family FinTrack foi aprovada.${famLine}\n\nAcesse o aplicativo e faça login com o e-mail e senha que você cadastrou.\n\nBem-vindo(a)!\n\nEquipe JF Family FinTrack`,
+    });
+  } catch(e) { console.warn('Approval email error:', e.message); }
 }
 
 async function rejectUser(userId, userName) {
