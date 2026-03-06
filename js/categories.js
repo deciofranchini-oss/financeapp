@@ -144,7 +144,7 @@ function openCategoryModal(id='', preParentId='', preType=''){
   document.getElementById('categoryId').value=form.id;
   document.getElementById('categoryName').value=form.name;
   document.getElementById('categoryType').value=form.type;
-  document.getElementById('categoryIcon').value=form.icon||'';
+  document.getElementById('categoryIcon').value=form.icon||'📦';
   document.getElementById('categoryColor').value=form.color||'#2a6049';
   document.getElementById('categoryModalTitle').textContent=id?'Editar Categoria':(preParentId?'Nova Subcategoria':'Nova Categoria');
   const sel=document.getElementById('categoryParent');
@@ -157,7 +157,37 @@ function openCategoryModal(id='', preParentId='', preType=''){
   } else {
     if(hint)hint.style.display='none';
   }
+  // Sync icon picker preview
+  _syncCatIconPicker(form.icon||'📦');
   openModal('categoryModal');
+}
+
+function _syncCatIconPicker(iconVal){
+  const preview=document.getElementById('categoryIconPreview');
+  if(preview) preview.textContent = iconVal||'📦';
+  // Highlight the matching option in the picker if it's an emoji icon
+  document.querySelectorAll('#categoryIconPicker .icon-option').forEach(el=>{
+    el.classList.toggle('selected', el.dataset.icon === 'emoji-'+iconVal);
+  });
+}
+
+function showCatIconGroup(e, group){
+  const picker=document.getElementById('categoryIconPicker');
+  if(!picker) return;
+  picker.querySelectorAll('.icon-grid').forEach(g=>g.style.display='none');
+  const target=document.getElementById('catIconGroup-'+group);
+  if(target) target.style.display='';
+  picker.querySelectorAll('.icon-tab').forEach(t=>t.classList.remove('active'));
+  if(e && e.currentTarget) e.currentTarget.classList.add('active');
+  else if(e && e.target) e.target.classList.add('active');
+}
+
+function selectCatIcon(el){
+  const raw=el.dataset.icon||'';
+  const emoji=raw.startsWith('emoji-')?raw.slice(6):raw;
+  const iconInput=document.getElementById('categoryIcon');
+  if(iconInput) iconInput.value=emoji;
+  _syncCatIconPicker(emoji);
 }
 async function saveCategory(){
   const id=document.getElementById('categoryId').value;
