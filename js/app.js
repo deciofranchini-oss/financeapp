@@ -23,6 +23,12 @@ let sb=null;
 
 
 function getSupabaseCreds(){
+  // ── TD-4 NOTE: Credential storage ────────────────────────────────
+  // The Supabase anon key is a PUBLIC key — its secrecy is NOT the security boundary.
+  // All data access is enforced by Row Level Security (RLS) on the server.
+  // Storing it in localStorage is therefore acceptable (identical to shipping it in a
+  // public config.js file, which is the preferred production approach).
+  // User passwords are NEVER stored here — authentication uses Supabase JWT (managed by SDK).
   try{
     const cfgUrl = (window.SUPABASE_URL || '').toString().trim();
     const cfgKey = (window.SUPABASE_ANON_KEY || '').toString().trim();
@@ -159,6 +165,33 @@ function setAppLogo(url){
 // NOTE: txFilter is part of the app's internal contract (used across modules).
 // Keep keys stable to avoid breaking filtering and saved preferences.
 let state={accounts:[],groups:[],categories:[],payees:[],transactions:[],budgets:[],txPage:0,txPageSize:50,txTotal:0,txSortField:'date',txSortAsc:false,txFilter:{search:'',month:'',account:'',type:'',status:''},txView:'flat',currentPage:'dashboard',chartInstances:{},privacyMode:false};
+
+// ── TD-2 FIX: Centralized Chart.js instance manager ──────────────────
+// Always use destroyChart(key) before creating a new Chart.js instance.
+// Previously, modules inconsistently destroyed instances (or forgot entirely),
+// causing "Canvas is already in use" console errors and memory leaks.
+//
+// Usage:
+//   destroyChart('dashExpense');                     // destroy if exists
+//   const ctx = document.getElementById('myCanvas');
+//   state.chartInstances['dashExpense'] = new Chart(ctx, { ... });
+function destroyChart(key) {
+  try {
+    const existing = state.chartInstances[key];
+    if (existing && typeof existing.destroy === 'function') {
+      existing.destroy();
+    }
+  } catch (e) {
+    console.warn('[destroyChart] error destroying chart "' + key + '":', e.message);
+  } finally {
+    delete state.chartInstances[key];
+  }
+}
+
+// Destroy ALL active charts (used on logout / page unload)
+function destroyAllCharts() {
+  Object.keys(state.chartInstances || {}).forEach(key => destroyChart(key));
+}
 
 async function bootApp(){
   registerServiceWorkerSafe();

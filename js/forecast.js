@@ -60,7 +60,8 @@ async function loadForecast() {
 function renderForecastChart(allItems, accounts, fromStr, toStr) {
   const canvas = document.getElementById('forecastChart');
   if(!canvas) return;
-  if(forecastChartInstance) { forecastChartInstance.destroy(); forecastChartInstance = null; }
+  // TD-2: use centralized helper instead of module-level forecastChartInstance variable
+  destroyChart('forecastChart');
 
   // Build date range
   const dates = [];
@@ -94,7 +95,7 @@ function renderForecastChart(allItems, accounts, fromStr, toStr) {
     };
   });
 
-  forecastChartInstance = new Chart(canvas, {
+  state.chartInstances['forecastChart'] = new Chart(canvas, {
     type: 'line',
     data: { datasets },
     options: {

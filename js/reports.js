@@ -713,7 +713,7 @@ async function sendReportByEmail() {
 }
 
 function renderChart(id, type, labels, datasets, extraOptions={}) {
-  if(state.chartInstances[id]) state.chartInstances[id].destroy();
+  destroyChart(id); // TD-2: use centralized helper (handles errors + cleans up state.chartInstances)
   const ctx = document.getElementById(id)?.getContext('2d');
   if(!ctx) return;
 

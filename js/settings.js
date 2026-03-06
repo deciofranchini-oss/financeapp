@@ -621,9 +621,12 @@ function applyMenuVisibility(vis) {
   Object.keys(map).forEach(key => {
     const el = document.getElementById(map[key]);
     if (!el) return;
-    // Do not show admin-only items to non-admin even if enabled
-    if ((key === 'audit' || key === 'settings') && !(currentUser?.can_admin || currentUser?.role === 'admin' || currentUser?.role === 'owner')) {
-      el.style.display = 'none';
+    // audit and settings are admin-only: always show for admin/owner, always hide for others,
+    // regardless of the menu_visibility config (admins must always be able to reach these pages)
+    if (key === 'audit' || key === 'settings') {
+      const isAdmin = currentUser?.can_admin || currentUser?.role === 'admin' || currentUser?.role === 'owner';
+      // topbar icon buttons have no CSS display rule — must use 'flex', not ''
+      el.style.display = isAdmin ? 'flex' : 'none';
       return;
     }
     el.style.display = vis[key] ? '' : 'none';

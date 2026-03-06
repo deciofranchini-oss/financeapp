@@ -27,6 +27,21 @@ async function _loadCurrentUserContext() {
   const user = uRes?.user;
   if (!user) return null;
 
+  // ── TD-6 NOTE: Dual-table role resolution ─────────────────────────
+  // The app has two partially overlapping tables:
+  //   • user_profiles  — created by the handle_new_user DB trigger; holds display_name + role
+  //   • app_users      — legacy table used by admin.js for manual user management
+  //   • family_members — holds the per-family role assignment
+  //
+  // Role resolution priority (first truthy value wins):
+  //   1. user_profiles.role  (set by admin via Supabase Dashboard or DB trigger)
+  //   2. family_members.role (set when user was added to the family)
+  //   3. 'viewer'            (safe fallback)
+  //
+  // Long-term: consolidate app_users into user_profiles (one-time SQL migration).
+  // Until then, both tables coexist without conflict because admin.js reads app_users
+  // only for the legacy user management panel, while auth context uses user_profiles.
+
   // Profile (created by public.handle_new_user trigger)
   const { data: profile, error: pErr } = await sb
     .from('user_profiles')
@@ -115,20 +130,28 @@ function showLoginScreen() {
   }
 }
 function _saveRememberedCredentials(email, password) {
+  // ── TD-5 FIX: Do NOT store raw passwords ─────────────────────────
+  // The Supabase JS SDK already persists the JWT session in localStorage
+  // (key: sb-<project>-auth-token) and restores it automatically via
+  // tryRestoreSession() → sb.auth.getSession(). That is the correct
+  // "remember me" mechanism for a Supabase app.
+  //
+  // We only store the email so the login form can be pre-filled —
+  // the password field is intentionally left blank for security.
   try {
-    // Encode credentials with btoa for basic obfuscation (not encryption)
-    const data = btoa(JSON.stringify({ email, password }));
-    localStorage.setItem('ft_remember_me', data);
+    localStorage.setItem('ft_remember_email', email);
   } catch(e) {}
 }
 function _loadRememberedCredentials() {
   try {
-    const data = localStorage.getItem('ft_remember_me');
-    if (!data) return null;
-    return JSON.parse(atob(data));
+    const email = localStorage.getItem('ft_remember_email');
+    if (!email) return null;
+    return { email, password: '' }; // password intentionally not stored
   } catch(e) { return null; }
 }
 function _clearRememberedCredentials() {
+  localStorage.removeItem('ft_remember_email');
+  // Legacy key removal (safe no-op if absent)
   localStorage.removeItem('ft_remember_me');
 }
 function hideLoginScreen() {
@@ -251,11 +274,11 @@ function updateUserUI() {
   }
 
 
-  // Admin-only nav items
+  // Admin-only nav items (topbar icon buttons need display:'flex', not '' — they have no CSS rule)
   const auditNav = document.getElementById('auditNav');
   const settingsNav = document.getElementById('settingsNav');
-  if (auditNav) auditNav.style.display = currentUser.can_admin ? '' : 'none';
-  if (settingsNav) settingsNav.style.display = currentUser.can_admin ? '' : 'none';
+  if (auditNav) auditNav.style.display = currentUser.can_admin ? 'flex' : 'none';
+  if (settingsNav) settingsNav.style.display = currentUser.can_admin ? 'flex' : 'none';
 
   // Apply permission restrictions
   applyPermissions();
@@ -281,13 +304,17 @@ function applyPermissions() {
 
 // Hide admin-only screens for non-admin
 if (!(p.role==='admin' || p.role==='owner' || p.can_admin)) {
-  const settingsNav = document.querySelector('.nav-item[onclick="navigate(\'settings\')"]');
+  // settingsNav is the topbar icon button (id="settingsNav"), not a .nav-item in the sidebar
+  const settingsNav = document.getElementById('settingsNav');
   if (settingsNav) settingsNav.style.display='none';
   const auditNav = document.getElementById('auditNav');
   if (auditNav) auditNav.style.display='none';
 } else {
+  // Restore both admin-only topbar buttons — must be 'flex' (no CSS display rule on these elements)
+  const settingsNav = document.getElementById('settingsNav');
+  if (settingsNav) settingsNav.style.display='flex';
   const auditNav = document.getElementById('auditNav');
-  if (auditNav) auditNav.style.display='';
+  if (auditNav) auditNav.style.display='flex';
 }
 
 }
@@ -298,9 +325,8 @@ async function doLogout() {
   localStorage.removeItem('ft_session_token');
   localStorage.removeItem('ft_user_id');
   currentUser = null;
-  // Reset charts
-  Object.values(state.chartInstances||{}).forEach(c => c?.destroy?.());
-  state.chartInstances = {};
+  // Reset charts using centralized helper (TD-2 fix)
+  destroyAllCharts();
   // Close any open modals/overlays before showing login
   document.querySelectorAll('.modal-overlay, .modal-backdrop, [id$="Modal"]').forEach(el => {
     el.style.display = 'none';
@@ -323,15 +349,16 @@ async function clearAppCache() {
     const sbKey  = localStorage.getItem('sb_key');
     const sessionToken = localStorage.getItem('ft_session_token'); // legacy
     const userId  = localStorage.getItem('ft_user_id'); // legacy
-    const rememberMe = localStorage.getItem('ft_remember_me');
+    const rememberEmail = localStorage.getItem('ft_remember_email'); // TD-5: new safe key (email only)
+    // Note: ft_remember_me (old key with btoa-encoded password) is intentionally NOT preserved
     localStorage.clear();
     // Restore essential keys
-    if (sbUrl)        localStorage.setItem('sb_url', sbUrl);
-    if (sbKey)        localStorage.setItem('sb_key', sbKey);
+    if (sbUrl)          localStorage.setItem('sb_url', sbUrl);
+    if (sbKey)          localStorage.setItem('sb_key', sbKey);
     // Keep legacy tokens only if they still exist (older deployments)
-    if (sessionToken) localStorage.setItem('ft_session_token', sessionToken);
-    if (userId)       localStorage.setItem('ft_user_id', userId);
-    if (rememberMe)   localStorage.setItem('ft_remember_me', rememberMe);
+    if (sessionToken)   localStorage.setItem('ft_session_token', sessionToken);
+    if (userId)         localStorage.setItem('ft_user_id', userId);
+    if (rememberEmail)  localStorage.setItem('ft_remember_email', rememberEmail);
     // Clear in-memory settings cache so next load re-fetches from DB
     _appSettingsCache = null;
     // Clear Service Worker caches (PWA cache)

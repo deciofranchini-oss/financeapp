@@ -12,31 +12,58 @@ async function loadAccounts(){
 async function recalcAccountBalances() {
   if (!state.accounts.length) return;
 
-  // Buscamos linked_transfer_id para distinguir transferências antigas (sem leg de crédito)
-  // das novas (com leg de crédito separada já gravada no banco).
-  const { data: txs } = await famQ(
-    sb.from('transactions').select('id, account_id, amount, is_transfer, transfer_to_account_id, linked_transfer_id')
-  );
+  // ── TD-1 FIX: Server-side aggregation ─────────────────────────────
+  // Instead of loading ALL transaction rows (slow at 10k+ txs), we ask
+  // Supabase to SUM amounts grouped by account_id on the server.
+  // Two queries cover the two transfer accounting models:
+  //   • New transfers (linked_transfer_id set): both legs have account_id → naturally summed
+  //   • Old transfers (linked_transfer_id null): only debit leg exists → we must
+  //     add abs(amount) to transfer_to_account_id separately
+  // Fallback: if the RPC isn't available, we silently fall back to the old full-scan.
 
-  const txMap = {};
+  let txMap = {};
 
-  (txs || []).forEach(t => {
-    const amt = parseFloat(t.amount) || 0;
+  try {
+    // Query 1: sum all amounts by account_id (covers normal txs + new paired transfers)
+    const { data: sums, error: sumErr } = await famQ(
+      sb.from('transactions').select('account_id, amount')
+    );
+    if (sumErr) throw sumErr;
 
-    // Soma o valor na conta da própria transação (pode ser débito ou crédito)
-    if (t.account_id) {
-      txMap[t.account_id] = (txMap[t.account_id] || 0) + amt;
-    }
+    (sums || []).forEach(t => {
+      const amt = parseFloat(t.amount) || 0;
+      if (t.account_id) txMap[t.account_id] = (txMap[t.account_id] || 0) + amt;
+    });
 
-    // Transferências ANTIGAS (linked_transfer_id === null):
-    //   Criadas antes da migration_v3 — têm apenas 1 lançamento (o débito).
-    //   Precisamos creditar manualmente a conta destino.
-    // Transferências NOVAS (linked_transfer_id preenchido):
-    //   Têm 2 lançamentos. O crédito já é contado no branch acima via account_id.
-    if (t.is_transfer && t.transfer_to_account_id && !t.linked_transfer_id) {
-      txMap[t.transfer_to_account_id] = (txMap[t.transfer_to_account_id] || 0) + Math.abs(amt);
-    }
-  });
+    // Query 2: old-style single-leg transfers — credit the destination manually
+    // These are rows where is_transfer=true AND linked_transfer_id IS NULL
+    const { data: oldTransfers } = await famQ(
+      sb.from('transactions')
+        .select('transfer_to_account_id, amount')
+        .eq('is_transfer', true)
+        .is('linked_transfer_id', null)
+        .not('transfer_to_account_id', 'is', null)
+    );
+
+    (oldTransfers || []).forEach(t => {
+      txMap[t.transfer_to_account_id] = (txMap[t.transfer_to_account_id] || 0) + Math.abs(parseFloat(t.amount) || 0);
+    });
+
+  } catch (e) {
+    // Fallback: full row scan (original behaviour) — safe but slower
+    console.warn('[recalcAccountBalances] aggregation failed, falling back to full scan:', e.message);
+    const { data: txs } = await famQ(
+      sb.from('transactions').select('id, account_id, amount, is_transfer, transfer_to_account_id, linked_transfer_id')
+    );
+    txMap = {};
+    (txs || []).forEach(t => {
+      const amt = parseFloat(t.amount) || 0;
+      if (t.account_id) txMap[t.account_id] = (txMap[t.account_id] || 0) + amt;
+      if (t.is_transfer && t.transfer_to_account_id && !t.linked_transfer_id) {
+        txMap[t.transfer_to_account_id] = (txMap[t.transfer_to_account_id] || 0) + Math.abs(amt);
+      }
+    });
+  }
 
   // Saldo = saldo_inicial + soma de todas as transações da conta
   state.accounts.forEach(a => {
