@@ -27,21 +27,6 @@ async function _loadCurrentUserContext() {
   const user = uRes?.user;
   if (!user) return null;
 
-  // ── TD-6 NOTE: Dual-table role resolution ─────────────────────────
-  // The app has two partially overlapping tables:
-  //   • user_profiles  — created by the handle_new_user DB trigger; holds display_name + role
-  //   • app_users      — legacy table used by admin.js for manual user management
-  //   • family_members — holds the per-family role assignment
-  //
-  // Role resolution priority (first truthy value wins):
-  //   1. user_profiles.role  (set by admin via Supabase Dashboard or DB trigger)
-  //   2. family_members.role (set when user was added to the family)
-  //   3. 'viewer'            (safe fallback)
-  //
-  // Long-term: consolidate app_users into user_profiles (one-time SQL migration).
-  // Until then, both tables coexist without conflict because admin.js reads app_users
-  // only for the legacy user management panel, while auth context uses user_profiles.
-
   // Profile (created by public.handle_new_user trigger)
   const { data: profile, error: pErr } = await sb
     .from('user_profiles')
@@ -69,19 +54,15 @@ async function _loadCurrentUserContext() {
   let userFamilies = (fm || [])
     .filter(r => r.family_id)
     .map(r => ({ id: r.family_id, name: r.families?.name || r.family_id, role: r.role }));
-
-  // If only app_users.family_id exists (legacy), add it
   if (!userFamilies.length && appUserRow?.family_id) {
     userFamilies = [{ id: appUserRow.family_id, name: appUserRow.family_id, role: appRole }];
   }
 
-  // Determine active family — respect user's last selection stored in localStorage
+  // Respect user's last active family selection
   const savedFamilyId = localStorage.getItem('ft_active_family_' + user.id);
   const activeFamId   = (savedFamilyId && userFamilies.find(f => f.id === savedFamilyId))
-    ? savedFamilyId
-    : (userFamilies[0]?.id || appUserRow?.family_id || null);
+    ? savedFamilyId : (userFamilies[0]?.id || appUserRow?.family_id || null);
 
-  // Map roles to capabilities (keep UI compatible with existing checks)
   const caps = {
     can_view:   true,
     can_create: appRole !== 'viewer',
@@ -93,12 +74,12 @@ async function _loadCurrentUserContext() {
   };
 
   currentUser = {
-    id:       user.id,
-    email:    user.email || profile?.email || '',
-    name:     profile?.display_name || user.email || 'Usuário',
-    role:     appRole,
+    id:        user.id,
+    email:     user.email || profile?.email || '',
+    name:      profile?.display_name || user.email || 'Usuário',
+    role:      appRole,
     family_id: activeFamId,
-    families: userFamilies,   // ALL families the user belongs to
+    families:  userFamilies,
     ...caps
   };
 
@@ -150,28 +131,20 @@ function showLoginScreen() {
   }
 }
 function _saveRememberedCredentials(email, password) {
-  // ── TD-5 FIX: Do NOT store raw passwords ─────────────────────────
-  // The Supabase JS SDK already persists the JWT session in localStorage
-  // (key: sb-<project>-auth-token) and restores it automatically via
-  // tryRestoreSession() → sb.auth.getSession(). That is the correct
-  // "remember me" mechanism for a Supabase app.
-  //
-  // We only store the email so the login form can be pre-filled —
-  // the password field is intentionally left blank for security.
   try {
-    localStorage.setItem('ft_remember_email', email);
+    // Encode credentials with btoa for basic obfuscation (not encryption)
+    const data = btoa(JSON.stringify({ email, password }));
+    localStorage.setItem('ft_remember_me', data);
   } catch(e) {}
 }
 function _loadRememberedCredentials() {
   try {
-    const email = localStorage.getItem('ft_remember_email');
-    if (!email) return null;
-    return { email, password: '' }; // password intentionally not stored
+    const data = localStorage.getItem('ft_remember_me');
+    if (!data) return null;
+    return JSON.parse(atob(data));
   } catch(e) { return null; }
 }
 function _clearRememberedCredentials() {
-  localStorage.removeItem('ft_remember_email');
-  // Legacy key removal (safe no-op if absent)
   localStorage.removeItem('ft_remember_me');
 }
 function hideLoginScreen() {
@@ -248,16 +221,28 @@ async function doChangePwd() {
 }
 
 // ── Change my own password (from settings) ──
-async function showChangeMyPwd() {
-  const p1 = prompt('Nova senha (mínimo 8 caracteres):');
-  if (!p1 || p1.length < 8) { if(p1 !== null) toast('Senha muito curta (mín. 8 chars)','error'); return; }
-  const p2 = prompt('Confirme a nova senha:');
-  if (p1 !== p2) { toast('Senhas não coincidem','error'); return; }
+function showChangeMyPwd() {
+  document.getElementById('changeMyPwd1').value = '';
+  document.getElementById('changeMyPwd2').value = '';
+  document.getElementById('changeMyPwdError').style.display = 'none';
+  openModal('changeMyPwdModal');
+  setTimeout(() => document.getElementById('changeMyPwd1')?.focus(), 150);
+}
+
+async function doChangeMyPwd() {
+  const p1    = document.getElementById('changeMyPwd1').value;
+  const p2    = document.getElementById('changeMyPwd2').value;
+  const errEl = document.getElementById('changeMyPwdError');
+  errEl.style.display = 'none';
+  if (p1.length < 8) { errEl.textContent = 'A senha deve ter pelo menos 8 caracteres.'; errEl.style.display = ''; return; }
+  if (p1 !== p2)     { errEl.textContent = 'As senhas não coincidem.';                  errEl.style.display = ''; return; }
   try {
     const { error } = await sb.auth.updateUser({ password: p1 });
     if (error) throw error;
-    toast('✓ Senha alterada com sucesso!','success');
-  } catch(e) { toast('Erro: '+(e?.message||e),'error'); }
+    await sb.from('app_users').update({ must_change_pwd: false }).eq('email', currentUser?.email).catch(()=>{});
+    toast('✓ Senha alterada com sucesso!', 'success');
+    closeModal('changeMyPwdModal');
+  } catch(e) { errEl.textContent = 'Erro: ' + (e?.message || e); errEl.style.display = ''; }
 }
 
 // ── On login success ──
@@ -294,17 +279,21 @@ function updateUserUI() {
   }
 
 
-  // Show/hide admin-only topbar buttons based on role
-  const _auditNav = document.getElementById('auditNav');
+  // Admin-only nav items
+  const auditNav = document.getElementById('auditNav');
+  const settingsNav = document.getElementById('settingsNav');
+  if (auditNav) auditNav.style.display = currentUser.can_admin ? '' : 'none';
+  if (settingsNav) settingsNav.style.display = currentUser.can_admin ? '' : 'none';
+
+  // Show/hide admin-only topbar buttons
+  const _auditNav    = document.getElementById('auditNav');
   const _settingsNav = document.getElementById('settingsNav');
-  const _isAdmin = currentUser.can_admin;
+  const _isAdmin     = currentUser.can_admin;
   if (_auditNav)    _auditNav.style.display    = _isAdmin ? 'flex' : 'none';
   if (_settingsNav) _settingsNav.style.display = _isAdmin ? 'flex' : 'none';
-
-  // Show pending approvals badge on admin user management button
   if (_isAdmin) _checkPendingApprovals();
 
-  // Render family switcher if user belongs to multiple families
+  // Family switcher (only when user has 2+ families)
   _renderFamilySwitcher();
 
   // Apply permission restrictions
@@ -329,73 +318,20 @@ function applyPermissions() {
     if (importNav) importNav.style.display='none';
   }
 
-// auditNav and settingsNav visibility is not managed here.
-// They are always visible; navigate() guards access to the page itself.
+// Hide admin-only screens for non-admin
+if (!(p.role==='admin' || p.role==='owner' || p.can_admin)) {
+  const settingsNav = document.querySelector('.nav-item[onclick="navigate(\'settings\')"]');
+  if (settingsNav) settingsNav.style.display='none';
+  const auditNav = document.getElementById('auditNav');
+  if (auditNav) auditNav.style.display='none';
+} else {
+  const auditNav = document.getElementById('auditNav');
+  if (auditNav) auditNav.style.display='';
+}
 
 }
 
 // ── Logout ──
-
-// ── Family switcher ─────────────────────────────────────────────────────────
-function _renderFamilySwitcher() {
-  const container = document.getElementById('familySwitcherWrap');
-  if (!container) return;
-  const families = currentUser?.families || [];
-  if (families.length <= 1) {
-    container.style.display = 'none';
-    return;
-  }
-  container.style.display = 'flex';
-  const sel = document.getElementById('familySwitcherSelect');
-  if (!sel) return;
-  // Rebuild options only if families changed
-  const prev = Array.from(sel.options).map(o => o.value).join(',');
-  const next = families.map(f => f.id).join(',');
-  if (prev !== next) {
-    sel.innerHTML = families.map(f =>
-      `<option value="${f.id}">${esc(f.name)}</option>`
-    ).join('');
-  }
-  sel.value = currentUser.family_id || '';
-}
-
-async function switchFamily(familyId) {
-  if (!familyId || familyId === currentUser?.family_id) return;
-  currentUser.family_id = familyId;
-  localStorage.setItem('ft_active_family_' + currentUser.id, familyId);
-  // Update label
-  const fam = (currentUser.families || []).find(f => f.id === familyId);
-  toast(`Família: ${fam?.name || familyId}`, 'info');
-  // Reload all data for new family
-  await Promise.all([
-    loadAccounts().catch(()=>{}),
-    loadCategories().catch(()=>{}),
-    loadPayees().catch(()=>{}),
-    loadAppSettings().catch(()=>{})
-  ]);
-  populateSelects();
-  navigate(state.currentPage || 'dashboard');
-}
-
-// ── Pending approvals badge ───────────────────────────────────────────────
-async function _checkPendingApprovals() {
-  try {
-    const { data, error } = await sb.from('app_users').select('id', { count: 'exact', head: true }).eq('approved', false);
-    const count = data?.length || 0;
-    const btn = document.getElementById('userMgmtBadgeBtn');
-    if (!btn) return;
-    const existing = btn.querySelector('.pending-badge');
-    if (existing) existing.remove();
-    if (count > 0) {
-      const badge = document.createElement('span');
-      badge.className = 'pending-badge';
-      badge.textContent = count;
-      badge.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;border-radius:999px;background:var(--red);color:#fff;font-size:.65rem;font-weight:700;padding:0 4px;margin-left:4px;vertical-align:middle';
-      btn.appendChild(badge);
-    }
-  } catch(e) {}
-}
-
 async function doLogout() {
   try { await sb?.auth?.signOut(); } catch(e) {}
   localStorage.removeItem('ft_session_token');
@@ -426,16 +362,15 @@ async function clearAppCache() {
     const sbKey  = localStorage.getItem('sb_key');
     const sessionToken = localStorage.getItem('ft_session_token'); // legacy
     const userId  = localStorage.getItem('ft_user_id'); // legacy
-    const rememberEmail = localStorage.getItem('ft_remember_email'); // TD-5: new safe key (email only)
-    // Note: ft_remember_me (old key with btoa-encoded password) is intentionally NOT preserved
+    const rememberMe = localStorage.getItem('ft_remember_me');
     localStorage.clear();
     // Restore essential keys
-    if (sbUrl)          localStorage.setItem('sb_url', sbUrl);
-    if (sbKey)          localStorage.setItem('sb_key', sbKey);
+    if (sbUrl)        localStorage.setItem('sb_url', sbUrl);
+    if (sbKey)        localStorage.setItem('sb_key', sbKey);
     // Keep legacy tokens only if they still exist (older deployments)
-    if (sessionToken)   localStorage.setItem('ft_session_token', sessionToken);
-    if (userId)         localStorage.setItem('ft_user_id', userId);
-    if (rememberEmail)  localStorage.setItem('ft_remember_email', rememberEmail);
+    if (sessionToken) localStorage.setItem('ft_session_token', sessionToken);
+    if (userId)       localStorage.setItem('ft_user_id', userId);
+    if (rememberMe)   localStorage.setItem('ft_remember_me', rememberMe);
     // Clear in-memory settings cache so next load re-fetches from DB
     _appSettingsCache = null;
     // Clear Service Worker caches (PWA cache)
@@ -486,21 +421,17 @@ function showRegisterForm() {
   setTimeout(() => document.getElementById('regName')?.focus(), 100);
 }
 function showLoginFormArea() {
+  ['registerFormArea','pendingApprovalArea','changePwdArea','forgotPwdArea','recoveryPwdArea']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   document.getElementById('loginFormArea').style.display = '';
-  document.getElementById('registerFormArea').style.display = 'none';
-  document.getElementById('pendingApprovalArea').style.display = 'none';
-  document.getElementById('changePwdArea').style.display = 'none';
-  document.getElementById('forgotPwdArea').style.display = 'none';
   document.getElementById('loginError').style.display = 'none';
   document.getElementById('regError').style.display = 'none';
   setTimeout(() => document.getElementById('loginEmail')?.focus(), 100);
 }
 
 function showForgotPwdForm() {
-  document.getElementById('loginFormArea').style.display = 'none';
-  document.getElementById('registerFormArea').style.display = 'none';
-  document.getElementById('pendingApprovalArea').style.display = 'none';
-  document.getElementById('changePwdArea').style.display = 'none';
+  ['loginFormArea','registerFormArea','pendingApprovalArea','changePwdArea','recoveryPwdArea']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   document.getElementById('forgotPwdArea').style.display = '';
   document.getElementById('forgotPwdError').style.display = 'none';
   document.getElementById('forgotPwdError').textContent = '';
@@ -508,85 +439,23 @@ function showForgotPwdForm() {
 }
 
 async function doForgotPwd() {
-  const email  = (document.getElementById('forgotPwdEmail').value || '').trim().toLowerCase();
-  const errEl  = document.getElementById('forgotPwdError');
-  const btn    = document.getElementById('forgotPwdBtn');
-  errEl.style.display = 'none';
-  errEl.style.color   = '#dc2626';
-
-  if (!email) {
-    errEl.textContent = 'Informe seu e-mail.';
-    errEl.style.display = '';
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = '⏳ Enviando...';
-
+  const email = (document.getElementById('forgotPwdEmail').value || '').trim().toLowerCase();
+  const errEl = document.getElementById('forgotPwdError');
+  const btn   = document.getElementById('forgotPwdBtn');
+  errEl.style.display = 'none'; errEl.style.color = '#dc2626';
+  if (!email) { errEl.textContent = 'Informe seu e-mail.'; errEl.style.display = ''; return; }
+  btn.disabled = true; btn.textContent = '⏳ Enviando...';
   try {
-    // Look up user in app_users to verify email exists
-    const { data: users } = await sb.from('app_users').select('name, email').eq('email', email);
-    const user = users?.[0];
-
-    if (!user) {
-      // Mensagem neutra — não confirmar se e-mail existe por segurança
-      errEl.textContent = 'Se este e-mail estiver cadastrado, você receberá as instruções em breve.';
-      errEl.style.color = '#2a6049';
-      errEl.style.display = '';
-      btn.disabled = false;
-      btn.textContent = 'Enviar Link de Recuperação';
-      return;
-    }
-
-    // Generate a temporary reset token (6-digit code stored in app_users)
-    const resetCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const resetHash = await sha256(resetCode);
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
-
-    // Store the reset token temporarily in app_users
-    await sb.from('app_users').update({
-      password_hash: resetHash,
-      must_change_pwd: true
-    }).eq('email', email);
-
-    // Send email via EmailJS with the reset code
-    if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.publicKey) {
-      throw new Error('EmailJS não configurado. Contate o administrador.');
-    }
-    emailjs.init(EMAILJS_CONFIG.publicKey);
-    const tplId = EMAILJS_CONFIG.scheduledTemplateId || EMAILJS_CONFIG.templateId;
-    await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
-      to_email:       email,
-      Subject:        'FinTrack — Recuperação de senha',
-      month_year:     new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
-      report_content: `Olá, ${user.name || email}!
-
-Você solicitou a recuperação de acesso ao JF Family FinTrack.
-
-Sua senha temporária é:
-
-  ${resetCode}
-
-Acesse o aplicativo e faça login com esta senha. Você será solicitado a definir uma nova senha imediatamente após o login.
-
-Esta senha temporária expira em 30 minutos.
-
-Se você não solicitou essa recuperação, ignore este e-mail.
-
-Equipe JF Family FinTrack`,
-    });
-
-    errEl.textContent = '✅ Instruções enviadas! Verifique sua caixa de entrada e use a senha temporária para acessar.';
-    errEl.style.color = '#2a6049';
-    errEl.style.display = '';
-    btn.textContent = 'Enviado!';
-    setTimeout(() => showLoginFormArea(), 4000);
-
+    const redirectTo = window.location.origin + window.location.pathname;
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
+    if (error) throw error;
+    errEl.textContent = '✅ Se este e-mail estiver cadastrado, você receberá o link de recuperação em breve. Verifique também a pasta de spam.';
+    errEl.style.color = '#2a6049'; errEl.style.display = '';
+    btn.textContent = '✓ Enviado';
+    setTimeout(() => showLoginFormArea(), 5000);
   } catch(e) {
-    errEl.textContent = 'Erro ao enviar: ' + (e.message || e);
-    errEl.style.display = '';
-    btn.disabled = false;
-    btn.textContent = 'Enviar Link de Recuperação';
+    errEl.textContent = 'Erro: ' + (e.message || e); errEl.style.display = '';
+    btn.disabled = false; btn.textContent = 'Enviar Link de Recuperação';
   }
 }
 
@@ -936,8 +805,7 @@ async function saveUser() {
 }
 
 async function approveUser(userId, userName) {
-  // Open the approval modal so admin can assign a family before approving
-  document.getElementById('approvalUserId').value   = userId;
+  document.getElementById('approvalUserId').value = userId;
   document.getElementById('approvalUserName').textContent = userName;
   document.getElementById('approvalFamilyId').innerHTML =
     '<option value="">— Nenhuma (admin global) —</option>' +
@@ -954,40 +822,26 @@ async function doApproveUser() {
   const newFamNm = document.getElementById('approvalNewFamilyName').value.trim();
   const errEl    = document.getElementById('approvalError');
   errEl.style.display = 'none';
-
   let familyId   = famSel || null;
   let familyName = _families.find(f => f.id === famSel)?.name || null;
-
-  // Create new family if requested
   if (newFamNm) {
-    const { data: nf, error: nfErr } = await sb
-      .from('families').insert({ name: newFamNm }).select('id,name').single();
+    const { data: nf, error: nfErr } = await sb.from('families').insert({ name: newFamNm }).select('id,name').single();
     if (nfErr) { errEl.textContent = 'Erro ao criar família: ' + nfErr.message; errEl.style.display = ''; return; }
-    familyId   = nf.id;
-    familyName = nf.name;
+    familyId = nf.id; familyName = nf.name;
     await loadFamiliesList();
   }
-
-  // Approve user and assign family
-  const { data: userRow, error: uErr } = await sb
-    .from('app_users').update({ active: true, approved: true, family_id: familyId })
+  const { data: userRow, error: uErr } = await sb.from('app_users')
+    .update({ active: true, approved: true, family_id: familyId })
     .eq('id', userId).select('name,email').single();
   if (uErr) { errEl.textContent = 'Erro: ' + uErr.message; errEl.style.display = ''; return; }
-
-  // Sync into user_profiles
-  await sb.from('user_profiles').update({ active: true })
-    .eq('email', userRow.email).catch(()=>{});
-
-  // Sync into family_members if familyId provided
+  await sb.from('user_profiles').update({ active: true }).eq('email', userRow.email).catch(()=>{});
   if (familyId) {
-    await sb.from('family_members').upsert({
-      user_id: userId, family_id: familyId, role: 'editor'
-    }, { onConflict: 'user_id,family_id' }).catch(()=>{});
+    await sb.from('family_members').upsert(
+      { user_id: userId, family_id: familyId, role: 'editor' },
+      { onConflict: 'user_id,family_id' }
+    ).catch(()=>{});
   }
-
-  // Send approval email via EmailJS
   await _sendApprovalEmail(userRow.email, userRow.name || userName, familyName);
-
   toast(`✓ ${userName} aprovado!${familyName ? ' Família: ' + familyName : ''}`, 'success');
   closeModal('approvalModal');
   await loadUsersList();
@@ -999,9 +853,7 @@ async function _sendApprovalEmail(email, name, familyName) {
   try {
     emailjs.init(EMAILJS_CONFIG.publicKey);
     const tplId = EMAILJS_CONFIG.scheduledTemplateId || EMAILJS_CONFIG.templateId;
-    const famLine = familyName
-      ? `\n\nVocê foi vinculado à família: ${familyName}`
-      : '\n\nSeu acesso foi liberado como administrador global.';
+    const famLine = familyName ? `\n\nVocê foi vinculado à família: ${familyName}` : '\n\nSeu acesso foi liberado como administrador global.';
     await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
       to_email:       email,
       Subject:        'FinTrack — Acesso liberado!',
@@ -1012,12 +864,11 @@ async function _sendApprovalEmail(email, name, familyName) {
 }
 
 async function rejectUser(userId, userName) {
-  if (!confirm(`Rejeitar solicitação de ${userName}?\n\nO registro será excluído permanentemente.`)) return;
+  if (!confirm(`Rejeitar e excluir solicitação de ${userName}?`)) return;
   const { error } = await sb.from('app_users').delete().eq('id', userId);
   if (error) { toast('Erro: '+error.message,'error'); return; }
-  toast(`Solicitação de ${userName} rejeitada e removida.`, 'info');
+  toast(`Solicitação de ${userName} removida.`,'success');
   await loadUsersList();
-  _checkPendingApprovals();
 }
 
 async function toggleUserActive(userId, currentActive) {
@@ -1028,11 +879,10 @@ async function toggleUserActive(userId, currentActive) {
 }
 
 async function resetUserPwd(userId, userName) {
-  // Open the dedicated reset password modal
-  document.getElementById('resetPwdUserId').value  = userId;
+  document.getElementById('resetPwdUserId').value = userId;
   document.getElementById('resetPwdUserName').textContent = userName;
-  document.getElementById('resetPwdNew1').value  = '';
-  document.getElementById('resetPwdNew2').value  = '';
+  document.getElementById('resetPwdNew1').value = '';
+  document.getElementById('resetPwdNew2').value = '';
   document.getElementById('resetPwdError').style.display = 'none';
   openModal('resetPwdModal');
 }
@@ -1089,3 +939,158 @@ tryAutoConnect();
 /* ══════════════════════════════════════════════════════════════════
    AUTO-REGISTER ENGINE — Transações Programadas Automáticas
 ══════════════════════════════════════════════════════════════════ */
+
+
+// ── Password recovery token handler (Supabase reset email callback) ──────────
+async function _handleRecoveryToken() {
+  // Supabase JS v2 PKCE flow: recovery token arrives as URL hash fragment
+  // #access_token=...&type=recovery  OR  via onAuthStateChange PASSWORD_RECOVERY event.
+  // We handle both paths here.
+  const hash = window.location.hash;
+  const isHashRecovery = hash.includes('type=recovery') && hash.includes('access_token');
+
+  if (!isHashRecovery) return false;
+
+  try {
+    // Parse fragment params
+    const params = Object.fromEntries(
+      hash.slice(1).split('&').map(p => {
+        const eq = p.indexOf('=');
+        return [decodeURIComponent(p.slice(0, eq)), decodeURIComponent(p.slice(eq + 1))];
+      })
+    );
+
+    // Set the session from recovery token — this authenticates the user
+    const { error } = await sb.auth.setSession({
+      access_token:  params.access_token,
+      refresh_token: params.refresh_token || '',
+    });
+    if (error) throw error;
+
+    // Clean URL so token isn't reused on refresh
+    history.replaceState(null, '', window.location.pathname);
+
+    // Show the new-password form inside the login card
+    _showRecoveryPwdForm();
+    return true;
+  } catch(e) {
+    console.warn('Recovery token error:', e.message);
+    return false;
+  }
+}
+
+function _showRecoveryPwdForm() {
+  const ls = document.getElementById('loginScreen');
+  if (ls) ls.style.display = 'flex';
+  ['loginFormArea','registerFormArea','pendingApprovalArea','forgotPwdArea','changePwdArea']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  const area = document.getElementById('recoveryPwdArea');
+  if (area) {
+    area.style.display = '';
+    document.getElementById('recoveryPwdError').style.display = 'none';
+    document.getElementById('recoveryPwd1').value = '';
+    document.getElementById('recoveryPwd2').value = '';
+  }
+  setTimeout(() => document.getElementById('recoveryPwd1')?.focus(), 150);
+}
+
+async function doRecoveryPwd() {
+  const p1    = document.getElementById('recoveryPwd1').value;
+  const p2    = document.getElementById('recoveryPwd2').value;
+  const errEl = document.getElementById('recoveryPwdError');
+  const btn   = document.getElementById('recoveryPwdBtn');
+  errEl.style.display = 'none';
+
+  if (p1.length < 8) {
+    errEl.textContent = 'A senha deve ter pelo menos 8 caracteres.';
+    errEl.style.display = '';
+    return;
+  }
+  if (p1 !== p2) {
+    errEl.textContent = 'As senhas não coincidem.';
+    errEl.style.display = '';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Salvando...';
+
+  try {
+    // Update password in Supabase Auth (user is already authenticated via recovery token)
+    const { error } = await sb.auth.updateUser({ password: p1 });
+    if (error) throw error;
+
+    // Clear must_change_pwd flag in app_users table
+    const { data: uRes } = await sb.auth.getUser();
+    if (uRes?.user?.email) {
+      await sb.from('app_users')
+        .update({ must_change_pwd: false })
+        .eq('email', uRes.user.email)
+        .catch(() => {});
+    }
+
+    // Load user context and enter the app
+    await _loadCurrentUserContext();
+    document.getElementById('loginScreen').style.display = 'none';
+    toast('✓ Senha redefinida com sucesso! Bem-vindo(a).', 'success');
+    await bootApp();
+  } catch(e) {
+    errEl.textContent = 'Erro ao salvar senha: ' + (e?.message || e);
+    errEl.style.display = '';
+    btn.disabled = false;
+    btn.textContent = 'Salvar Nova Senha';
+  }
+}
+
+
+// ── Family switcher ──────────────────────────────────────────────────────────
+function _renderFamilySwitcher() {
+  const container = document.getElementById('familySwitcherWrap');
+  if (!container) return;
+  const families = currentUser?.families || [];
+  if (families.length <= 1) { container.style.display = 'none'; return; }
+  container.style.display = 'flex';
+  const sel = document.getElementById('familySwitcherSelect');
+  if (!sel) return;
+  const prev = Array.from(sel.options).map(o => o.value).join(',');
+  const next = families.map(f => f.id).join(',');
+  if (prev !== next) {
+    sel.innerHTML = families.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('');
+  }
+  sel.value = currentUser.family_id || '';
+}
+
+async function switchFamily(familyId) {
+  if (!familyId || familyId === currentUser?.family_id) return;
+  currentUser.family_id = familyId;
+  localStorage.setItem('ft_active_family_' + currentUser.id, familyId);
+  const fam = (currentUser.families || []).find(f => f.id === familyId);
+  toast('Família: ' + (fam?.name || familyId), 'info');
+  await Promise.all([
+    loadAccounts().catch(()=>{}),
+    loadCategories().catch(()=>{}),
+    loadPayees().catch(()=>{}),
+    loadAppSettings().catch(()=>{})
+  ]);
+  populateSelects();
+  navigate(state.currentPage || 'dashboard');
+}
+
+// ── Pending approvals badge ───────────────────────────────────────────────────
+async function _checkPendingApprovals() {
+  try {
+    const { data } = await sb.from('app_users').select('id').eq('approved', false);
+    const count = data?.length || 0;
+    const btn = document.getElementById('userMgmtBadgeBtn');
+    if (!btn) return;
+    const existing = btn.querySelector('.pending-badge');
+    if (existing) existing.remove();
+    if (count > 0) {
+      const badge = document.createElement('span');
+      badge.className = 'pending-badge';
+      badge.textContent = count;
+      badge.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;border-radius:999px;background:var(--red);color:#fff;font-size:.65rem;font-weight:700;padding:0 4px;margin-left:4px;vertical-align:middle';
+      btn.appendChild(badge);
+    }
+  } catch(e) {}
+}

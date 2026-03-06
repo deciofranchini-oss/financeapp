@@ -23,12 +23,6 @@ let sb=null;
 
 
 function getSupabaseCreds(){
-  // ── TD-4 NOTE: Credential storage ────────────────────────────────
-  // The Supabase anon key is a PUBLIC key — its secrecy is NOT the security boundary.
-  // All data access is enforced by Row Level Security (RLS) on the server.
-  // Storing it in localStorage is therefore acceptable (identical to shipping it in a
-  // public config.js file, which is the preferred production approach).
-  // User passwords are NEVER stored here — authentication uses Supabase JWT (managed by SDK).
   try{
     const cfgUrl = (window.SUPABASE_URL || '').toString().trim();
     const cfgKey = (window.SUPABASE_ANON_KEY || '').toString().trim();
@@ -104,6 +98,15 @@ async function tryAutoConnect(){
     document.getElementById('supabaseKey').value=key;
     // Create client early so we can boot right after PIN unlock
     sb=supabase.createClient(url,key);
+    // Subscribe to auth state changes — catches PASSWORD_RECOVERY event from PKCE flow
+    sb.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        // Supabase fired the recovery event (PKCE code exchange happened automatically)
+        if (typeof _showRecoveryPwdForm === 'function') _showRecoveryPwdForm();
+      }
+    });
+    // Also handle legacy hash-based recovery token (#type=recovery)
+    if(typeof _handleRecoveryToken === 'function' && await _handleRecoveryToken()) return;
     // Restore Supabase Auth session (RLS-friendly)
     const restored = await tryRestoreSession().catch(()=>false);
     // Lock screen removed
