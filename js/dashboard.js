@@ -245,7 +245,7 @@ async function loadDashboardAutoRunSummary(){
     if(n>0){
       el.style.display='';
       el.textContent = `📌 Hoje: ${n} programada${n!==1?'s':''} auto-registrada${n!==1?'s':''}`;
-      const isAdmin = (typeof currentUser!=='undefined') && (currentUser?.role==='admin' || currentUser?.can_admin);
+      const isAdmin = (typeof currentUser!=='undefined') && (currentUser?.role==='admin' || currentUser?.role==='owner' || currentUser?.can_admin);
       if(!isAdmin){ el.style.cursor='default'; el.onclick=null; }
     } else {
       el.style.display='none';

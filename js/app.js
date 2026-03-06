@@ -214,8 +214,8 @@ function togglePrivacy(){
 
 function navigate(page){
   // Guard: settings is admin-only
-  if((page==='settings' || page==='audit') && !(currentUser?.role==='admin' || currentUser?.can_admin)) {
-    toast('Acesso restrito: apenas admin pode acessar Configurações.','warning');
+  if((page==='settings' || page==='audit') && !(currentUser?.role==='admin' || currentUser?.role==='owner' || currentUser?.can_admin)) {
+    toast('Acesso restrito: apenas admin/owner pode acessar Configurações.','warning');
     return;
   }
 
