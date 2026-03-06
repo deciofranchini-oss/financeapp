@@ -426,21 +426,26 @@ function advancePinStep() {
 
 // ── Settings page ─────────────────────────────────────────────
 function loadSettings() {
-  loadAutoCheckConfig(); // Load automation settings
-  // Update supabase status
+  loadAutoCheckConfig();
   const url = localStorage.getItem('sb_url') || '';
   const statusEl = document.getElementById('supabaseStatusLabel');
-  if(statusEl && url) {
+  if (statusEl && url) {
     const domain = url.replace('https://','').split('.')[0];
     statusEl.textContent = `Conectado · ${domain}.supabase.co`;
     statusEl.style.color = 'var(--green)';
   }
-  // Show topbar logo on mobile
   const tl = document.getElementById('topbarLogoImg');
   const pt = document.getElementById('pageTitle');
-  if(tl && pt) { tl.style.display='none'; pt.style.display=''; }
-  // Admin-only logo section
-  if(typeof initLogoSettings==='function') initLogoSettings();
+  if (tl && pt) { tl.style.display='none'; pt.style.display=''; }
+  if (typeof initLogoSettings === 'function') initLogoSettings();
+
+  // DB Backup section — admin only
+  const isAdmin = (currentUser?.role==='admin' || currentUser?.role==='owner' || currentUser?.can_admin);
+  const dbBackupSec = document.getElementById('dbBackupSection');
+  if (dbBackupSec) {
+    dbBackupSec.style.display = isAdmin ? '' : 'none';
+    if (isAdmin) loadDbBackups();
+  }
 }
 
 

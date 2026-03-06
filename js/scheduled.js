@@ -156,15 +156,28 @@ state.scheduled.sort((a,b) => {
   filterScheduled();
 }
 
+// Active chip state (replaces old scStatusFilter select)
+let _scStatusChip = 'all';
+
+function scChipFilter(event, status) {
+  _scStatusChip = status;
+  // Update active chip
+  ['all','active','paused','finished'].forEach(s => {
+    const el = document.getElementById('scChip' + s.charAt(0).toUpperCase() + s.slice(1));
+    if (el) el.classList.toggle('active', s === status);
+  });
+  filterScheduled();
+}
+
 function filterScheduled() {
   const search = (document.getElementById('scSearch')?.value||'').toLowerCase();
-  const statusF = document.getElementById('scStatusFilter')?.value||'';
+  const statusF = _scStatusChip || '';
   const typeF = document.getElementById('scTypeFilter')?.value||'';
 
   let list = state.scheduled;
   if(search) list = list.filter(s => s.description?.toLowerCase().includes(search) || s.payees?.name?.toLowerCase().includes(search));
   if(typeF) list = list.filter(s => s.type === typeF);
-  if(statusF) {
+  if(statusF && statusF !== 'all') {
     list = list.filter(s => {
       const st = scStatusLabel(s);
       if(statusF === 'active') return st.label.includes('Ativo') || st.label.includes('Atrasado');
@@ -234,14 +247,19 @@ function renderScheduled(list) {
             ${next ? `<span class="sc-next-badge">próx: ${fmtDate(next)}</span>` : ''}
           </div>
         </div>
-        <div class="sc-card-amount ${isExpense?'amount-neg':'amount-pos'}">
-          ${isCardPayment?'💳 ':''}${isTransferSc?'🔄 ':''}${isExpense?'-':'+'} ${fmt(Math.abs(sc.amount))}
-          ${isTransferSc&&destAcct?`<span style="font-size:.7rem;color:var(--muted)"> → ${esc(destAcct.name)}</span>`:''}
+        <div class="sc-card-right">
+          <div class="sc-card-amount ${isExpense?'amount-neg':'amount-pos'}">
+            ${isExpense?'−':'+'}${fmt(Math.abs(sc.amount))}
+          </div>
+          ${isTransferSc&&destAcct?`<div class="sc-card-transfer-tag">→ ${esc(destAcct.name)}</div>`:''}
         </div>
-        <div class="sc-card-actions" onclick="event.stopPropagation()">
-          ${next ? `<button class="btn btn-primary btn-sm" onclick="openRegisterOcc('${sc.id}','${next}')" title="Registrar próxima ocorrência">✓ Registrar</button>` : ''}
-          <button class="btn-icon" onclick="openScheduledModal('${sc.id}')" title="Editar">✏️</button>
-          <button class="btn-icon" onclick="deleteScheduled('${sc.id}')" title="Excluir">🗑️</button>
+      </div>
+      <div class="sc-card-footer" onclick="event.stopPropagation()">
+        ${next ? `<button class="sc-action-btn sc-action-register" onclick="openRegisterOcc('${sc.id}','${next}')">✓ Registrar</button>` : `<span></span>`}
+        <div class="sc-footer-actions">
+          <button class="sc-action-icon" onclick="toggleScStatus('${sc.id}')" title="${sc.status==='active'?'Pausar':'Reativar'}">${sc.status==='active'?'⏸':'▶'}</button>
+          <button class="sc-action-icon" onclick="openScheduledModal('${sc.id}')" title="Editar">✏️</button>
+          <button class="sc-action-icon sc-action-delete" onclick="deleteScheduled('${sc.id}')" title="Excluir">🗑️</button>
         </div>
       </div>
       <div class="sc-card-body" id="scBody-${sc.id}">
@@ -270,13 +288,10 @@ function renderScheduled(list) {
           }).join('')}
           ${sc.frequency !== 'once' && occList.length >= 8 ? `<div style="font-size:.75rem;color:var(--muted);text-align:center;padding:6px">... e mais ocorrências futuras</div>` : ''}
         </div>
-        <div style="padding:8px 16px 12px;display:flex;gap:8px;border-top:1px solid var(--border);flex-wrap:wrap">
-          <span style="font-size:.75rem;color:var(--muted)">Conta: <strong>${esc(acct?.name||'—')}</strong></span>
-          ${isTransferSc&&destAcct?`<span style="font-size:.75rem;color:var(--muted)">→ Destino: <strong>${esc(destAcct.name)}</strong></span>`:''}
-          ${sc.memo ? `<span style="font-size:.75rem;color:var(--muted)">· ${esc(sc.memo)}</span>` : ''}
-          <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="toggleScStatus('${sc.id}')">
-            ${sc.status==='active'?'⏸ Pausar':'▶ Reativar'}
-          </button>
+        <div class="sc-body-info">
+          <span>Conta: <strong>${esc(acct?.name||'—')}</strong></span>
+          ${isTransferSc&&destAcct?`<span>→ Destino: <strong>${esc(destAcct.name)}</strong></span>`:''}
+          ${sc.memo ? `<span>· ${esc(sc.memo)}</span>` : ''}
         </div>
       </div>
     </div>`;
@@ -301,8 +316,8 @@ function renderUpcoming() {
   });
   upcoming.sort((a, b) => a.date.localeCompare(b.date));
 
-  const card = document.getElementById('scheduledUpcomingCard');
-  const body = document.getElementById('scheduledUpcomingBody');
+  const card    = document.getElementById('scheduledUpcomingCard');
+  const listEl  = document.getElementById('scheduledUpcomingList');
   const totalEl = document.getElementById('scheduledUpcomingTotal');
   if(!upcoming.length) { if(card) card.style.display='none'; return; }
 
@@ -312,16 +327,25 @@ function renderUpcoming() {
     totalEl.textContent = (total>=0?'+':'') + fmt(total);
     totalEl.className = 'badge ' + (total>=0?'badge-green':'badge-red');
   }
-  if(body) body.innerHTML = upcoming.slice(0, 20).map(({sc, date}) => {
+
+  // Mobile-first card list (no table)
+  if(listEl) listEl.innerHTML = upcoming.slice(0, 20).map(({sc, date}) => {
     const isOverdue = date < today;
-    const isExpense = sc.type === 'expense';
-    return `<tr class="${isOverdue?'sc-upcoming-row-overdue':''}">
-      <td class="${isOverdue?'amount-neg':'text-muted'}" style="white-space:nowrap">${fmtDate(date)}${isOverdue?' ⚠':''}</td>
-      <td>${esc(sc.description)}${sc.payees?`<span style="color:var(--muted);font-size:.78rem"> · ${esc(sc.payees.name)}</span>`:''}</td>
-      <td><span class="badge badge-muted">${esc(sc.accounts?.name||'—')}</span></td>
-      <td class="${isExpense?'amount-neg':'amount-pos'}" style="white-space:nowrap">${isExpense?'-':'+'} ${fmt(Math.abs(sc.amount))}</td>
-      <td><button class="btn btn-primary btn-sm" onclick="openRegisterOcc('${sc.id}','${date}')">✓ Registrar</button></td>
-    </tr>`;
+    const isToday   = date === today;
+    const isExpense = sc.type === 'expense' || sc.type === 'card_payment' || sc.type === 'transfer';
+    const typeIcon  = sc.type === 'card_payment' ? '💳' : sc.type === 'transfer' ? '🔄' : isExpense ? '💸' : '💰';
+    const dateLabel = isToday ? '🔔 Hoje' : isOverdue ? `⚠️ ${fmtDate(date)}` : fmtDate(date);
+    return `<div class="sc-upcoming-item${isOverdue?' sc-upcoming-overdue':''}${isToday?' sc-upcoming-today':''}">
+      <div class="sc-upcoming-left">
+        <span class="sc-upcoming-date">${dateLabel}</span>
+        <span class="sc-upcoming-desc">${typeIcon} ${esc(sc.description)}</span>
+        <span class="sc-upcoming-acct">${esc(sc.accounts?.name||'—')}</span>
+      </div>
+      <div class="sc-upcoming-right">
+        <span class="${isExpense?'amount-neg':'amount-pos'} sc-upcoming-amt">${isExpense?'−':'+'}${fmt(Math.abs(sc.amount))}</span>
+        <button class="btn btn-primary btn-sm sc-upcoming-btn" onclick="openRegisterOcc('${sc.id}','${date}')">✓ Registrar</button>
+      </div>
+    </div>`;
   }).join('');
 }
 
