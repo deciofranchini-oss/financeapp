@@ -78,22 +78,9 @@ function renderAccounts(ft=''){
   const grid=document.getElementById('accountGrid');
   let accs=state.accounts;
   if(ft==='__group__'){
-    const bar=document.getElementById('accountsGroupBar');
-    if(!state.groups.length){
-      if(bar)bar.style.display='none';
-      renderAccountsFlat(accs,grid);return;
-    }
-    if(bar){
-      bar.style.display='flex';
-      bar.innerHTML=state.groups.map(g=>{
-        const cnt=accs.filter(a=>a.group_id===g.id).length;
-        return `<button class="group-bar-btn" onclick="scrollToGroup('${g.id}')">${g.emoji||'🗂️'} ${esc(g.name)} <span class="group-bar-count">${cnt}</span></button>`;
-      }).join('')+'<button class="group-bar-btn" onclick="scrollToGroup(\'__none__\')">Sem grupo</button>';
-    }
+    if(!state.groups.length){ renderAccountsFlat(accs,grid); return; }
     renderAccountsGrouped(accs,grid);
   } else {
-    const bar=document.getElementById('accountsGroupBar');
-    if(bar)bar.style.display='none';
     renderAccountsFlat(ft?accs.filter(a=>a.type===ft):accs,grid);
   }
   renderAccountsSummary();
@@ -111,16 +98,6 @@ function renderAccountsGrouped(accs,grid){
     if(ga.length)sections.push({g,accs:ga});
   });
   const ungrouped=accs.filter(a=>!a.group_id);
-
-  // Quick-nav group bar
-  const bar=document.getElementById('accountsGroupBar');
-  if(bar){
-    bar.style.display='flex';
-    bar.innerHTML=sections.map(({g,accs:ga})=>{
-      return `<button class="group-bar-btn" onclick="scrollToGroup('${g.id}')"
-        style="--grp-color:${g.color||'var(--accent)'}">${g.emoji||'🗂️'} ${esc(g.name)} <span class="group-bar-count">${ga.length}</span></button>`;
-    }).join('')+(ungrouped.length?`<button class="group-bar-btn" onclick="scrollToGroup('__none__')">📂 Sem grupo <span class="group-bar-count">${ungrouped.length}</span></button>`:'');
-  }
 
   if(!sections.length&&!ungrouped.length){
     grid.innerHTML='<div class="empty-state"><div class="es-icon">🗂️</div><p>Nenhum grupo criado ainda.</p></div>';
@@ -189,8 +166,6 @@ function toggleGroupCollapse(id){
   if(isNowCollapsed) saved[id]=1; else delete saved[id];
   sessionStorage.setItem('ft_grp_collapsed', JSON.stringify(saved));
 }
-
-function scrollToGroup(id){const el=document.getElementById('grp-'+id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});}
 
 function renderAccountsSummary(){
   const el=document.getElementById('accountsSummary');if(!el)return;

@@ -346,8 +346,7 @@ async function doChangePwd() {
       const newHash = await sha256(p1);
       await sb.from('app_users')
         .update({ password_hash: newHash, must_change_pwd: false })
-        .eq('email', uRes.user.email)
-        .catch(() => {});
+        .eq('email', uRes.user.email);
     }
     await _loadCurrentUserContext();
     onLoginSuccess();
@@ -377,8 +376,7 @@ async function doChangeMyPwd() {
     const newHash = await sha256(p1);
     await sb.from('app_users')
       .update({ password_hash: newHash, must_change_pwd: false })
-      .eq('email', currentUser?.email)
-      .catch(() => {});
+      .eq('email', currentUser?.email);
     toast('✓ Senha alterada com sucesso!', 'success');
     closeModal('changeMyPwdModal');
   } catch(e) { errEl.textContent = 'Erro: ' + (e?.message || e); errEl.style.display = ''; }
@@ -1100,7 +1098,7 @@ async function doApproveUser() {
 
     // Sync user_profiles if the DB trigger created it
     await sb.from('user_profiles').update({ active: true })
-      .eq('email', userRow.email).catch(() => {});
+      .eq('email', userRow.email);
 
     // Add to family_members
     if (familyId) {
@@ -1346,8 +1344,7 @@ async function doRecoveryPwd() {
       const newHash = await sha256(p1);
       await sb.from('app_users')
         .update({ password_hash: newHash, must_change_pwd: false })
-        .eq('email', userEmail)
-        .catch(() => {});
+        .eq('email', userEmail);
     }
 
     // Load context and enter the app
