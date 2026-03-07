@@ -547,7 +547,9 @@ function parseGenericRows(rows, headerIdx, colMap, preset) {
 
     const cat       = get(row, 'category');
     const desc      = get(row, 'description') || get(row, 'memo') || '';
-    const payeeName = get(row, 'payee') || (desc ? null : null);
+    // Use explicit payee column if mapped; otherwise fall back to description
+    // (bank exports like Nubank/Inter/Itaú put the counterpart name in description)
+    const payeeName = get(row, 'payee') || desc || null;
     const currency  = get(row, 'currency') || 'BRL';
     const xfer      = get(row, 'transfer_account');
     const memo      = get(row, 'memo');
@@ -610,7 +612,7 @@ function parseMoneyWizRows(rows) {
       if (xfer) transferAccounts.add(xfer);
       const tx = {
         account_name:accName, transfer_account:xfer||null, description:desc,
-        payee_name:pay||null, category_path:cat||null, date:dt, time:tm,
+        payee_name:pay||desc||null, category_path:cat||null, date:dt, time:tm,
         memo:clean(r[9])||null, amount:amt, currency:curr, is_transfer:!!xfer,
         import_key:`${accName}|${dt}|${amt.toFixed(2)}|${desc}`,
       };
@@ -1030,6 +1032,32 @@ async function commitImport() {
       }
       importLogMsg('ok', `✓ ${toC.length} beneficiários criados`);
       await loadPayees();
+    }
+
+    // 3b. Auto-create payees referenced in transactions but not yet in DB
+    //     (covers sec==='transactions' only, and description-based payees from bank exports)
+    if (sec === 'all' || sec === 'transactions') {
+      setImportProgress(50, 'Verificando beneficiários...');
+      await loadPayees(); // refresh before check
+      const exPay = new Set((state.payees||[]).map(p => p.name.toLowerCase()));
+      const txPayees = new Map(); // name.lower → original name
+      for (const tx of s.transactions) {
+        if (!tx.payee_name) continue;
+        const lower = tx.payee_name.toLowerCase();
+        if (!exPay.has(lower) && !txPayees.has(lower))
+          txPayees.set(lower, tx.payee_name.replace(/\xa0/g,' ').trim());
+      }
+      if (txPayees.size > 0) {
+        const newPayees = [...txPayees.values()].filter(n => n.length > 0);
+        importLogMsg('info', `Auto-criando ${newPayees.length} beneficiário(s) das transações...`);
+        for (let i = 0; i < newPayees.length; i += 100) {
+          const batch = newPayees.slice(i, i+100).map(name => ({ name, family_id: famId() }));
+          const { error } = await sb.from('payees').insert(batch);
+          if (error) importLogMsg('warn', `Payees auto-create: ${error.message}`);
+        }
+        await loadPayees();
+        importLogMsg('ok', `✓ ${newPayees.length} beneficiário(s) criado(s) automaticamente`);
+      }
     }
 
     // 4. Import transactions
