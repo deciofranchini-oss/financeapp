@@ -13,6 +13,10 @@ async function loadAppSettings() {
 
     // Apply menu visibility (if configured)
     try { applyMenuVisibility(_getMenuVisibilityFromCache()); } catch {}
+    // Apply school link config
+    try { applySchoolLink(); } catch {}
+    // Apply settings visibility for non-admin users (runs after currentUser is set)
+    // Will be re-applied in loadSettings() once page is open
 
 
     // Hydrate EmailJS config
@@ -439,16 +443,36 @@ function loadSettings() {
   if (tl && pt) { tl.style.display='none'; pt.style.display=''; }
   if (typeof initLogoSettings === 'function') initLogoSettings();
 
-  // DB Backup section — admin only
   const isAdmin = (currentUser?.role==='admin' || currentUser?.role==='owner' || currentUser?.can_admin);
+
+  // DB Backup section — admin only
   const dbBackupSec = document.getElementById('dbBackupSection');
   if (dbBackupSec) {
     dbBackupSec.style.display = isAdmin ? '' : 'none';
     if (isAdmin) loadDbBackups();
   }
 
-  // IA settings — status badge (todos os usuários podem ver/configurar)
+  // IA settings
   if (typeof initAiSettings === 'function') initAiSettings();
+
+  // Seções admin-only
+  const adminSections = ['settingsVisibilitySection', 'schoolLinkSection', 'settingsUserMgmt', 'userMgmtSection'];
+  adminSections.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = isAdmin ? '' : 'none';
+  });
+
+  if (isAdmin) {
+    // Admin: inicializar formulários das novas seções
+    initSettingsVisibilityForm();
+    initSchoolLinkForm();
+    // Mostrar menuVisibilitySection para admin sempre
+    const mvSec = document.getElementById('menuVisibilitySection');
+    if (mvSec) { mvSec.style.display = ''; _renderMenuVisibilityForm(); }
+  } else {
+    // Usuário comum: aplicar restrições de visibilidade definidas pelo admin
+    applySettingsVisibility();
+  }
 }
 
 
@@ -688,4 +712,200 @@ async function resetMenuVisibility() {
   _renderMenuVisibilityForm();
   applyMenuVisibility(DEFAULT_MENU_VISIBILITY);
   toast('Menu restaurado ✓', 'success');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CONTROLE DE VISIBILIDADE DAS CONFIGURAÇÕES (admin → usuários comuns)
+// ═══════════════════════════════════════════════════════════════════
+
+const DEFAULT_SETTINGS_VISIBILITY = {
+  currentUser:   true,   // Dados do usuário (sempre visível — bloqueado)
+  supabase:      false,  // Conexão Supabase
+  emailjs:       false,  // Configuração de e-mail
+  masterPin:     false,  // PIN master
+  aiSettings:    true,   // IA / Receitas
+  menuItems:     false,  // Itens do menu
+  autoCheck:     false,  // Automação programados
+  appLogo:       false,  // Logo do app
+  dbBackup:      false,  // Backup do banco
+  schoolLink:    false,  // Link da escola
+};
+
+// IDs das sections no HTML indexadas pela chave
+const SETTINGS_SECTION_IDS = {
+  currentUser:  'currentUserSection',
+  supabase:     null,   // inline — tratado à parte
+  emailjs:      null,   // inline — tratado à parte
+  masterPin:    null,   // inline — tratado à parte
+  aiSettings:   null,   // inline — tratado à parte
+  menuItems:    'menuVisibilitySection',
+  autoCheck:    null,   // seção de automação — identificada pelo grupo
+  appLogo:      'logoSettingsSection',
+  dbBackup:     'dbBackupSection',
+  schoolLink:   'schoolLinkSection',
+};
+
+const SETTINGS_VIS_LABELS = {
+  currentUser:  { label: 'Perfil do usuário',         locked: true  },
+  supabase:     { label: 'Conexão Supabase'                          },
+  emailjs:      { label: 'Configuração de e-mail (EmailJS)'         },
+  masterPin:    { label: 'PIN master de segurança'                   },
+  aiSettings:   { label: 'Inteligência Artificial (receitas)'        },
+  menuItems:    { label: 'Visibilidade dos itens de menu'            },
+  autoCheck:    { label: 'Automação de transações programadas'       },
+  appLogo:      { label: 'Logo do aplicativo'                        },
+  dbBackup:     { label: 'Backup do banco de dados'                  },
+  schoolLink:   { label: 'Link da escola (topbar)'                   },
+};
+
+function _getSettingsVisibility() {
+  const stored = _appSettingsCache?.['settings_visibility'];
+  if (stored && typeof stored === 'object') return { ...DEFAULT_SETTINGS_VISIBILITY, ...stored };
+  try {
+    const ls = localStorage.getItem('settings_visibility');
+    if (ls) return { ...DEFAULT_SETTINGS_VISIBILITY, ...JSON.parse(ls) };
+  } catch {}
+  return { ...DEFAULT_SETTINGS_VISIBILITY };
+}
+
+function initSettingsVisibilityForm() {
+  const wrap = document.getElementById('settingsVisibilityForm');
+  if (!wrap) return;
+  const vis = _getSettingsVisibility();
+
+  wrap.innerHTML = Object.entries(SETTINGS_VIS_LABELS).map(([key, cfg]) => {
+    const checked = vis[key] ? 'checked' : '';
+    const locked  = cfg.locked ? 'disabled title="Sempre visível"' : '';
+    return `<label style="display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg2);cursor:${cfg.locked ? 'default' : 'pointer'}">
+      <input type="checkbox" id="sv_${key}" ${checked} ${locked} style="transform:scale(1.1)">
+      <span style="font-size:.85rem;flex:1">${cfg.label}</span>
+      ${cfg.locked ? '<span style="font-size:.72rem;color:var(--muted)">sempre</span>' : ''}
+    </label>`;
+  }).join('');
+
+  const hint = document.getElementById('settingsVisibilityHint');
+  if (hint) hint.textContent = 'Admins e owners sempre veem todas as configurações.';
+}
+
+async function saveSettingsVisibility() {
+  const vis = {};
+  Object.keys(DEFAULT_SETTINGS_VISIBILITY).forEach(k => {
+    const cb = document.getElementById('sv_' + k);
+    vis[k] = cb ? !!cb.checked : DEFAULT_SETTINGS_VISIBILITY[k];
+  });
+  vis.currentUser = true; // always locked
+  await saveAppSetting('settings_visibility', vis);
+  if (!_appSettingsCache) _appSettingsCache = {};
+  _appSettingsCache['settings_visibility'] = vis;
+  applySettingsVisibility(vis);
+  toast('Configuração de acesso salva ✓', 'success');
+}
+
+async function resetSettingsVisibility() {
+  await saveAppSetting('settings_visibility', DEFAULT_SETTINGS_VISIBILITY);
+  if (!_appSettingsCache) _appSettingsCache = {};
+  _appSettingsCache['settings_visibility'] = DEFAULT_SETTINGS_VISIBILITY;
+  initSettingsVisibilityForm();
+  applySettingsVisibility(DEFAULT_SETTINGS_VISIBILITY);
+  toast('Visibilidade restaurada ao padrão ✓', 'success');
+}
+
+// Aplica a visibilidade das seções para usuário não-admin
+function applySettingsVisibility(vis) {
+  const isAdmin = (currentUser?.role === 'admin' || currentUser?.role === 'owner' || currentUser?.can_admin);
+  if (isAdmin) return; // admins veem tudo — não aplica restrição
+
+  vis = vis || _getSettingsVisibility();
+
+  // Sections com ID direto
+  const direct = {
+    menuItems: 'menuVisibilitySection',
+    appLogo:   'logoSettingsSection',
+    dbBackup:  'dbBackupSection',
+    schoolLink: 'schoolLinkSection',
+  };
+  Object.entries(direct).forEach(([key, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = vis[key] ? '' : 'none';
+  });
+
+  // Seções inline: controlar por grupo-label ou settings-section pai
+  // Mapear cada settings-section pela presença de elementos-chave
+  document.querySelectorAll('.settings-section').forEach(sec => {
+    // Conexão Supabase
+    if (sec.querySelector('#supabaseStatusLabel') && !vis.supabase)
+      sec.style.display = 'none';
+    // EmailJS
+    if (sec.querySelector('#ejServiceId') && !vis.emailjs)
+      sec.style.display = 'none';
+    // PIN master
+    if (sec.querySelector('#masterPin') && !vis.masterPin)
+      sec.style.display = 'none';
+    // IA
+    if (sec.querySelector('#aiApiKeyInput, #geminiKeyInput, [id*="aiKey"], [id*="gemini"]') && !vis.aiSettings)
+      sec.style.display = 'none';
+    // Automação
+    if (sec.querySelector('#autoCheckEnabled') && !vis.autoCheck)
+      sec.style.display = 'none';
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LINK DA ESCOLA — configuração e aplicação
+// ═══════════════════════════════════════════════════════════════════
+
+function _getSchoolLinkConfig() {
+  const stored = _appSettingsCache?.['school_link'];
+  if (stored && typeof stored === 'object') return stored;
+  try {
+    const ls = localStorage.getItem('school_link');
+    if (ls) return JSON.parse(ls);
+  } catch {}
+  return { enabled: true, url: 'https://deciofranchini-oss.github.io/objetivo', title: 'Gerenciamento Escola', icon: '🎓' };
+}
+
+function initSchoolLinkForm() {
+  const cfg = _getSchoolLinkConfig();
+  const chk = document.getElementById('schoolLinkEnabled');
+  const urlEl = document.getElementById('schoolLinkUrl');
+  const titleEl = document.getElementById('schoolLinkTitle');
+  const iconEl = document.getElementById('schoolLinkIcon');
+  const toggle = document.getElementById('schoolLinkToggle');
+
+  if (chk) chk.checked = cfg.enabled !== false;
+  if (urlEl) urlEl.value = cfg.url || '';
+  if (titleEl) titleEl.value = cfg.title || 'Gerenciamento Escola';
+  if (iconEl) iconEl.value = cfg.icon || '🎓';
+  if (toggle) toggle.style.background = (cfg.enabled !== false) ? 'var(--accent)' : '#ccc';
+  applySchoolLink(cfg);
+}
+
+async function saveSchoolLinkConfig() {
+  const cfg = {
+    enabled: document.getElementById('schoolLinkEnabled')?.checked ?? true,
+    url:     document.getElementById('schoolLinkUrl')?.value?.trim() || '',
+    title:   document.getElementById('schoolLinkTitle')?.value?.trim() || 'Gerenciamento Escola',
+    icon:    document.getElementById('schoolLinkIcon')?.value?.trim() || '🎓',
+  };
+  const toggle = document.getElementById('schoolLinkToggle');
+  if (toggle) toggle.style.background = cfg.enabled ? 'var(--accent)' : '#ccc';
+  await saveAppSetting('school_link', cfg);
+  if (!_appSettingsCache) _appSettingsCache = {};
+  _appSettingsCache['school_link'] = cfg;
+  applySchoolLink(cfg);
+}
+
+function applySchoolLink(cfg) {
+  cfg = cfg || _getSchoolLinkConfig();
+  const btn = document.getElementById('schoolPaymentsBtn');
+  if (!btn) return;
+  if (!cfg.enabled || !cfg.url) {
+    btn.style.display = 'none';
+    return;
+  }
+  btn.style.display = 'flex';
+  btn.href = cfg.url;
+  btn.title = cfg.title || 'Gerenciamento Escola';
+  const iconEl = btn.querySelector('span[aria-hidden]');
+  if (iconEl) iconEl.textContent = cfg.icon || '🎓';
 }

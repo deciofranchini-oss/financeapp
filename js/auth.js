@@ -741,11 +741,10 @@ async function openUserAdmin() {
 
   if (hasPending) {
     switchUATab('pending');
+    // Carregar lista de usuários em background para quando o admin trocar de aba
+    loadUsersList().catch(e => console.warn('loadUsersList bg:', e));
   } else {
     switchUATab('users');
-    try { await loadUsersList(); } catch(e) {
-      console.warn('loadUsersList:', e?.message || e);
-    }
   }
 
   // Atualizar badge na aba pendentes
@@ -764,6 +763,8 @@ function switchUATab(tab) {
     if (pane)  pane.style.display = t === tab ? '' : 'none';
   });
   if (tab === 'pending') _renderPendingTab();
+  if (tab === 'users')   loadUsersList().catch(e => console.warn('loadUsersList:', e));
+  if (tab === 'families') loadFamiliesList().catch(e => console.warn('loadFamiliesList:', e));
 }
 
 async function _renderPendingTab() {
@@ -1054,14 +1055,26 @@ async function loadUsersList() {
   let users, error;
   const { data: rpcData, error: rpcErr } = await sb.rpc('get_all_users');
   if (rpcErr) {
-    console.warn('[loadUsersList] RPC get_all_users falhou, tentando select direto:', rpcErr.message);
+    console.warn('[loadUsersList] RPC get_all_users indisponível:', rpcErr.message);
+    // Fallback: select direto — funciona se RLS permitir ou não estiver ativa
     ({ data: users, error } = await sb.from('app_users').select('*').order('created_at'));
     if (error) {
       const el = document.getElementById('usersList');
-      if (el) el.innerHTML = '<div style="padding:16px;color:var(--red);font-size:.82rem">' +
-        '&#9888; Não foi possível carregar usuários. Execute <code>migration_approval_rls.sql</code> no Supabase.<br><br>' +
-        'Erro: ' + error.message + '</div>';
+      if (el) el.innerHTML = '<div style="padding:16px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;font-size:.82rem;color:#991b1b">'
+        + '<strong>⚠️ Não foi possível carregar a lista de usuários.</strong><br><br>'
+        + 'Execute <code>migration_approval_rls.sql</code> no Supabase para habilitar o gerenciamento completo.<br><br>'
+        + '<span style="color:#6b7280">Erro técnico: ' + error.message + '</span></div>';
       return;
+    }
+    // Se o fallback retornou só 1 usuário (próprio admin por RLS), avisar
+    if (users && users.length <= 1) {
+      const el = document.getElementById('usersList');
+      if (el && users.length <= 1) {
+        const hint = document.createElement('div');
+        hint.style.cssText = 'padding:10px 14px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;font-size:.78rem;color:#c2410c;margin-bottom:12px';
+        hint.innerHTML = '⚠️ Execute <code>migration_approval_rls.sql</code> no Supabase para exibir todos os usuários (RLS limitando visualização).';
+        el.prepend(hint);
+      }
     }
   } else {
     users = rpcData;
