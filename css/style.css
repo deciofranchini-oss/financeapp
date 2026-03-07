@@ -3098,3 +3098,58 @@ html, body{
   .fam-switcher-name { max-width:70px; }
   .fam-picker-dropdown { min-width:220px; left:auto; right:0; }
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   USER MENU — family switcher items
+══════════════════════════════════════════════════════════════════ */
+.um-family-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background .12s;
+  margin-bottom: 2px;
+}
+.um-family-item:hover { background: var(--bg2); }
+.um-family-item--active { background: var(--accent-lt); }
+.um-family-item--active:hover { background: var(--accent-lt); }
+
+.um-family-icon {
+  width: 26px; height: 26px;
+  border-radius: 7px;
+  background: var(--bg2);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+.um-family-item--active .um-family-icon {
+  background: var(--accent-lt);
+  border-color: var(--accent);
+}
+.um-family-body { flex: 1; min-width: 0; }
+.um-family-name {
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.um-family-item--active .um-family-name { color: var(--accent); }
+.um-family-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: .66rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-top: 2px;
+  line-height: 1.5;
+}
