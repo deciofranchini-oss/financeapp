@@ -1738,47 +1738,28 @@ async function doResetUserPwd() {
     if (fetchErr || !userRow) throw new Error(fetchErr?.message || 'Usuário não encontrado.');
     const targetEmail = userRow.email;
 
-    // 2. Tentar via Admin API usando fetch direto ao endpoint REST do Supabase
-    // O SDK JS v2 não tem getUserByEmail — usamos a Admin REST API diretamente.
+    // 2. Atualizar senha via RPC set_user_password (SECURITY DEFINER, roda como postgres)
+    // Esta é a única abordagem confiável no browser — não depende de service_role key
+    // nem de endpoints Admin API que o Supabase bloqueia via anon/client.
     let authUpdated = false;
-    const serviceKey = localStorage.getItem('sb_service_key') || '';
-    const supabaseUrl = localStorage.getItem('sb_url') || window.SUPABASE_URL || '';
 
-    if (serviceKey && supabaseUrl) {
-      // 2a. Buscar o auth.users.id pelo email via REST API
-      const searchResp = await fetch(
-        `${supabaseUrl}/auth/v1/admin/users?email=${encodeURIComponent(targetEmail)}`,
-        { headers: { 'apikey': serviceKey, 'Authorization': 'Bearer ' + serviceKey } }
-      );
-      if (!searchResp.ok) {
-        const errBody = await searchResp.text();
-        throw new Error('Busca de usuário falhou: ' + errBody);
-      }
-      const searchData = await searchResp.json();
-      // Resposta pode ser { users: [...] } ou um array direto
-      const usersList = Array.isArray(searchData) ? searchData : (searchData.users || []);
-      const authUser  = usersList.find(u => u.email?.toLowerCase() === targetEmail.toLowerCase());
-      if (!authUser?.id) throw new Error('Usuário não encontrado no Supabase Auth: ' + targetEmail);
+    const { data: rpcData, error: rpcErr } = await sb.rpc('set_user_password', {
+      p_email:    targetEmail,
+      p_password: pwd1
+    });
 
-      // 2b. Atualizar a senha via REST API
-      const updateResp = await fetch(
-        `${supabaseUrl}/auth/v1/admin/users/${authUser.id}`,
-        {
-          method: 'PUT',
-          headers: {
-            'apikey': serviceKey,
-            'Authorization': 'Bearer ' + serviceKey,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ password: pwd1 })
-        }
-      );
-      if (!updateResp.ok) {
-        const errBody = await updateResp.text();
-        throw new Error('Atualização de senha falhou: ' + errBody);
+    if (rpcErr) {
+      // RPC não existe ainda — orientar o admin a executar a migration
+      if (rpcErr.message?.includes('function') || rpcErr.code === '42883') {
+        throw new Error(
+          'Execute a migration migration_set_password.sql no Supabase SQL Editor e tente novamente.'
+        );
       }
-      authUpdated = true;
+      throw new Error('RPC set_user_password: ' + rpcErr.message);
     }
+
+    if (rpcData?.error) throw new Error('Erro interno: ' + rpcData.error);
+    authUpdated = true;
 
     if (!authUpdated) {
       // Fallback: enviar link de redefinição por email
