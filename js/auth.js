@@ -1738,28 +1738,52 @@ async function doResetUserPwd() {
     if (fetchErr || !userRow) throw new Error(fetchErr?.message || 'Usuário não encontrado.');
     const targetEmail = userRow.email;
 
-    // 2. Atualizar senha via RPC set_user_password (SECURITY DEFINER, roda como postgres)
-    // Esta é a única abordagem confiável no browser — não depende de service_role key
-    // nem de endpoints Admin API que o Supabase bloqueia via anon/client.
+    // 2. Atualizar senha via Admin API do Supabase
+    // Estratégia em cascata:
+    //   2a. SDK sbAdmin (service_role key) → updateUserById  [mais confiável]
+    //   2b. RPC set_user_password (SECURITY DEFINER)         [fallback sem service key]
     let authUpdated = false;
+    const admin = sbAdmin || initSbAdmin();
 
-    const { data: rpcData, error: rpcErr } = await sb.rpc('set_user_password', {
-      p_email:    targetEmail,
-      p_password: pwd1
-    });
-
-    if (rpcErr) {
-      // RPC não existe ainda — orientar o admin a executar a migration
-      if (rpcErr.message?.includes('function') || rpcErr.code === '42883') {
-        throw new Error(
-          'Execute a migration migration_set_password.sql no Supabase SQL Editor e tente novamente.'
+    if (admin) {
+      // 2a. Buscar uid no auth via listUsers paginado (page 1, perPage 1000)
+      // e filtrar localmente — evita o endpoint ?email= que o Supabase bloqueia
+      try {
+        const { data: listData, error: listErr } = await admin.auth.admin.listUsers({
+          page: 1, perPage: 1000
+        });
+        if (listErr) throw listErr;
+        const authUser = (listData?.users || []).find(
+          u => u.email?.toLowerCase() === targetEmail.toLowerCase()
         );
+        if (!authUser?.id) throw new Error('Usuário não encontrado no Auth: ' + targetEmail);
+        const { error: updErr } = await admin.auth.admin.updateUserById(
+          authUser.id, { password: pwd1 }
+        );
+        if (updErr) throw updErr;
+        authUpdated = true;
+      } catch(sdkErr) {
+        console.warn('[resetPwd] SDK Admin falhou, tentando RPC:', sdkErr.message);
       }
-      throw new Error('RPC set_user_password: ' + rpcErr.message);
     }
 
-    if (rpcData?.error) throw new Error('Erro interno: ' + rpcData.error);
-    authUpdated = true;
+    if (!authUpdated) {
+      // 2b. Fallback: RPC SECURITY DEFINER (requer migration_set_password.sql)
+      const { data: rpcData, error: rpcErr } = await sb.rpc('set_user_password', {
+        p_email:    targetEmail,
+        p_password: pwd1
+      });
+      if (rpcErr) {
+        if (rpcErr.code === '42883' || rpcErr.message?.includes('function')) {
+          throw new Error(
+            'Configure a Service Role Key em Configurações, ou execute migration_set_password.sql no Supabase.'
+          );
+        }
+        throw new Error('RPC: ' + rpcErr.message);
+      }
+      if (rpcData?.error) throw new Error(rpcData.error);
+      authUpdated = true;
+    }
 
     if (!authUpdated) {
       // Fallback: enviar link de redefinição por email
