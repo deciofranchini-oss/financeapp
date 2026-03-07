@@ -263,6 +263,14 @@
               <div id="userMenuRole" style="font-size:.68rem;margin-top:3px"></div>
             </div>
           </div>
+          <!-- Family switcher section (só aparece se tiver > 1 família) -->
+          <div id="userMenuFamilySection" style="display:none;border-bottom:1.5px solid var(--border)">
+            <div style="padding:8px 12px 4px;font-size:.67rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">
+              Família ativa
+            </div>
+            <div id="userMenuFamilyList" style="padding:0 6px 6px"></div>
+          </div>
+
           <!-- Menu items -->
           <div style="padding:6px">
             <button class="user-menu-item" onclick="openMyProfile()">
@@ -279,20 +287,7 @@
         </div>
       </div>
       
-      <!-- Family Switcher Picker -->
-      <div id="familySwitcherWrap" style="display:none;position:relative;margin-right:2px">
-        <button id="familySwitcherBtn" class="fam-switcher-btn" onclick="toggleFamilyPicker(event)" title="Trocar família">
-          <span class="fam-switcher-icon">🏠</span>
-          <span class="fam-switcher-name" id="famSwitcherLabel">Família</span>
-          <span class="fam-switcher-role" id="famSwitcherRole"></span>
-          <svg class="fam-switcher-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
-        <!-- Dropdown -->
-        <div id="familyPickerDropdown" class="fam-picker-dropdown" style="display:none">
-          <div class="fam-picker-header">Suas famílias</div>
-          <div id="familyPickerList"></div>
-        </div>
-      </div>
+
       <div class="topbar-quick-actions" style="display:flex;align-items:center;gap:6px;margin-right:6px">
         <a class="topbar-icon-btn" id="schoolPaymentsBtn" href="https://deciofranchini-oss.github.io/objetivo" target="_blank" rel="noopener noreferrer" title="Gerenciamento Escola"
            style="display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:10px;border:1px solid var(--border);background:var(--card);cursor:pointer;text-decoration:none;color:var(--text);">
