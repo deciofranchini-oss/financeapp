@@ -733,20 +733,99 @@ let _families = []; // cached families list
 async function openUserAdmin() {
   if (!(currentUser?.can_admin || currentUser?.role === 'owner' || currentUser?.role === 'admin')) { toast('Acesso restrito a administradores','error'); return; }
   await loadFamiliesList();
-  // When using Supabase Auth + RLS, user management should happen in Supabase Dashboard.
-  // Keep the Families tab usable, and make Users tab best-effort.
-  try { await loadUsersList(); } catch(e) {
-    console.warn('User admin (legacy) not available:', e?.message || e);
-    toast('Gestão de usuários (criar/invitar) deve ser feita no Supabase Dashboard.','info');
-  }
   openModal('userAdminModal');
+
+  // Verificar se há pendentes para abrir direto na aba certa
+  const { data: pending } = await sb.rpc('get_pending_users').catch(() => ({ data: [] }));
+  const hasPending = (pending?.length || 0) > 0;
+
+  if (hasPending) {
+    switchUATab('pending');
+  } else {
+    switchUATab('users');
+    try { await loadUsersList(); } catch(e) {
+      console.warn('loadUsersList:', e?.message || e);
+    }
+  }
+
+  // Atualizar badge na aba pendentes
+  const badge = document.getElementById('uaPendingBadge');
+  if (badge) {
+    badge.textContent = pending?.length || 0;
+    badge.style.display = (pending?.length || 0) > 0 ? 'inline-block' : 'none';
+  }
 }
 
 function switchUATab(tab) {
-  document.getElementById('uaUsers').style.display    = tab === 'users'    ? '' : 'none';
-  document.getElementById('uaFamilies').style.display = tab === 'families' ? '' : 'none';
-  document.getElementById('uaTabUsers').classList.toggle('active',    tab === 'users');
-  document.getElementById('uaTabFamilies').classList.toggle('active', tab === 'families');
+  ['pending','users','families'].forEach(t => {
+    const panel = document.getElementById('uaTab' + t[0].toUpperCase() + t.slice(1));
+    const pane  = document.getElementById('ua' + t[0].toUpperCase() + t.slice(1));
+    if (panel) panel.classList.toggle('active', t === tab);
+    if (pane)  pane.style.display = t === tab ? '' : 'none';
+  });
+  if (tab === 'pending') _renderPendingTab();
+}
+
+async function _renderPendingTab() {
+  const el = document.getElementById('uaPendingContent');
+  if (!el) return;
+  el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)">⏳ Carregando...</div>';
+
+  let pendingUsers = [];
+  const { data: rpcData, error: rpcErr } = await sb.rpc('get_pending_users');
+  if (!rpcErr && rpcData) {
+    pendingUsers = rpcData;
+  } else {
+    const { data } = await sb.from('app_users')
+      .select('*').eq('approved', false).order('created_at');
+    pendingUsers = data || [];
+  }
+
+  // Atualizar badge na aba
+  const badge = document.getElementById('uaPendingBadge');
+  if (badge) {
+    badge.textContent = pendingUsers.length;
+    badge.style.display = pendingUsers.length > 0 ? 'inline-block' : 'none';
+  }
+
+  if (!pendingUsers.length) {
+    el.innerHTML = '<div style="text-align:center;padding:40px 20px">'
+      + '<div style="font-size:2.5rem;margin-bottom:12px">✅</div>'
+      + '<div style="font-size:.9rem;font-weight:600;color:var(--text)">Nenhuma solicitação pendente</div>'
+      + '<div style="font-size:.78rem;color:var(--muted);margin-top:4px">Novos usuários aparecerão aqui</div>'
+      + '</div>';
+    return;
+  }
+
+  const famById = {};
+  (_families || []).forEach(f => { famById[f.id] = f.name; });
+
+  let html = '<div style="margin-bottom:12px;font-size:.82rem;color:var(--muted)">'
+    + pendingUsers.length + ' solicitação(ões) aguardando aprovação</div>';
+
+  html += '<div style="display:flex;flex-direction:column;gap:10px">';
+  pendingUsers.forEach(u => {
+    const daysAgo  = Math.floor((Date.now() - new Date(u.created_at)) / 86400000);
+    const ageLabel = daysAgo === 0 ? 'Hoje' : daysAgo === 1 ? '1 dia' : daysAgo + ' dias';
+    const ageColor = daysAgo >= 3 ? '#dc2626' : '#b45309';
+    const parts    = (u.name || u.email || '?').trim().split(' ');
+    const initials = (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
+    const uid      = esc(u.id);
+    const uname    = esc(u.name || u.email || '');
+    html += '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">'
+      + '<div style="width:38px;height:38px;border-radius:50%;background:#fef3c7;border:2px solid #f59e0b;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.8rem;color:#92400e;flex-shrink:0">' + initials + '</div>'
+      + '<div style="flex:1;min-width:0">'
+      + '<div style="font-size:.88rem;font-weight:600;color:var(--text)">' + esc(u.name || '—') + '</div>'
+      + '<div style="font-size:.75rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(u.email) + '</div>'
+      + '</div>'
+      + '<span style="font-size:.74rem;color:' + ageColor + ';font-weight:600;white-space:nowrap;flex-shrink:0">' + ageLabel + '</span>'
+      + '<div style="display:flex;gap:6px;flex-shrink:0">'
+      + '<button class="btn btn-primary btn-sm" data-uid="' + uid + '" data-uname="' + uname + '" onclick="approveUser(this.dataset.uid,this.dataset.uname)" style="background:#16a34a">✅ Aprovar</button>'
+      + '<button class="btn btn-ghost btn-sm" data-uid="' + uid + '" data-uname="' + uname + '" onclick="rejectUser(this.dataset.uid,this.dataset.uname)" style="color:#dc2626">✕ Rejeitar</button>'
+      + '</div></div>';
+  });
+  html += '</div>';
+  el.innerHTML = html;
 }
 
 // ── FAMILIES ──────────────────────────────────────────────────────
@@ -898,8 +977,23 @@ async function removeUserFromFamily(userId, userName, familyName) {
 // ── USERS ─────────────────────────────────────────────────────────
 
 async function loadUsersList() {
-  const { data: users, error } = await sb.from('app_users').select('*').order('created_at');
-  if (error) { toast('Erro: '+error.message,'error'); return; }
+  // Usar RPC get_all_users() (SECURITY DEFINER) para evitar problemas de RLS.
+  // Fallback para select direto se a função ainda não foi criada.
+  let users, error;
+  const { data: rpcData, error: rpcErr } = await sb.rpc('get_all_users');
+  if (rpcErr) {
+    console.warn('[loadUsersList] RPC get_all_users falhou, tentando select direto:', rpcErr.message);
+    ({ data: users, error } = await sb.from('app_users').select('*').order('created_at'));
+    if (error) {
+      const el = document.getElementById('usersList');
+      if (el) el.innerHTML = '<div style="padding:16px;color:var(--red);font-size:.82rem">' +
+        '&#9888; Não foi possível carregar usuários. Execute <code>migration_approval_rls.sql</code> no Supabase.<br><br>' +
+        'Erro: ' + error.message + '</div>';
+      return;
+    }
+  } else {
+    users = rpcData;
+  }
   const el = document.getElementById('usersList');
   const countEl = document.getElementById('userAdminCount');
   if (countEl) countEl.textContent = `${users?.length||0} usuários cadastrados`;
@@ -1076,15 +1170,13 @@ async function doApproveUser() {
     const { data: userRow, error: fetchErr } = await sb
       .from('app_users').select('name,email,password_hash,approved').eq('id', userId).single();
     if (fetchErr) throw new Error('Erro ao buscar usuário: ' + fetchErr.message);
-    if (!userRow)  throw new Error('Usuário não encontrado (id: ' + userId + ')');
+    if (!userRow)  throw new Error('Usuário não encontrado.');
     if (userRow.approved) throw new Error('Usuário já está aprovado.');
 
-    const userEmail = userRow.email;
+    const userEmail   = userRow.email;
     const displayName = userRow.name || userName;
 
     // ── 3. Aprovar no app_users PRIMEIRO ────────────────────────────────
-    // Fazemos isso ANTES de criar o Auth user para garantir que mesmo
-    // que o signUp falhe, o admin possa tentar de novo sem inconsistência.
     const { error: updErr } = await sb.from('app_users').update({
       active:          true,
       approved:        true,
@@ -1101,24 +1193,16 @@ async function doApproveUser() {
       ).catch(e => console.warn('[approve] family_members upsert:', e.message));
     }
 
-    // ── 5. Criar/confirmar conta no Supabase Auth ───────────────────────
-    // Estratégia em 2 etapas:
-    //   a) Chamar RPC approve_user() que confirma o email server-side (SECURITY DEFINER)
-    //   b) Se o auth user ainda não existe, criar via signUp
-    //      O resetPasswordForEmail() subsequente confirma o email ao ser clicado.
-
-    // 5a. RPC server-side (confirma email se já existe no auth.users)
+    // ── 5. Criar/confirmar conta no Supabase Auth ────────────────────────
+    // 5a. RPC server-side — confirma email_confirmed_at no auth.users (SECURITY DEFINER)
     const { data: rpcResult, error: rpcErr } = await sb.rpc('approve_user', {
       p_user_id:   userId,
       p_family_id: familyId || null,
     });
-    if (rpcErr) {
-      console.warn('[approve] RPC approve_user falhou (não fatal):', rpcErr.message);
-    } else if (rpcResult?.error) {
-      console.warn('[approve] RPC retornou erro:', rpcResult.error);
-    }
+    if (rpcErr)           console.warn('[approve] RPC approve_user:', rpcErr.message);
+    if (rpcResult?.error) console.warn('[approve] RPC result error:', rpcResult.error);
 
-    // 5b. Se o auth user ainda não existe, criar via signUp
+    // 5b. Se o auth user não existe ainda, criar via signUp
     const authExists = rpcResult?.auth_exists === true;
     if (!authExists) {
       const tempPwd = _randomPassword();
@@ -1127,21 +1211,21 @@ async function doApproveUser() {
         password: tempPwd,
         options:  { data: { display_name: displayName } }
       });
-      const signUpMsg = (signUpErr?.message || '').toLowerCase();
-      const alreadyExists = signUpMsg.includes('already') || signUpMsg.includes('registered')
-        || signUpMsg.includes('exists') || signUpMsg.includes('duplicate');
-      if (signUpErr && !alreadyExists) {
-        console.warn('[approve] signUp warning (não fatal):', signUpErr.message);
+      const msg = (signUpErr?.message || '').toLowerCase();
+      if (signUpErr && !msg.includes('already') && !msg.includes('registered') && !msg.includes('exists')) {
+        console.warn('[approve] signUp (não fatal):', signUpErr.message);
       }
     }
 
-    // ── 6. Enviar email de aprovação + link de redefinição de senha ───────
+    // ── 6. Enviar email de aprovação ─────────────────────────────────────
     await _sendApprovalEmail(userEmail, displayName, familyName);
 
-    toast(`✓ ${displayName} aprovado!${familyName ? ' Família: ' + familyName : ''}`, 'success');
+    toast('✓ ' + displayName + ' aprovado!' + (familyName ? ' Família: ' + familyName : ''), 'success');
     closeModal('approvalModal');
     await loadUsersList();
-    _checkPendingApprovals();
+    await _checkPendingApprovals();
+    // Atualizar aba pendentes no modal se estiver aberto
+    if (document.getElementById('uaPending')?.style.display !== 'none') _renderPendingTab();
 
   } catch(e) {
     console.error('[doApproveUser]', e);
@@ -1151,7 +1235,6 @@ async function doApproveUser() {
     if (approveBtn) { approveBtn.disabled = false; approveBtn.textContent = '✅ Aprovar e Notificar'; }
   }
 }
-
 // Generates a cryptographically random 16-char password
 function _randomPassword() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$';
@@ -1332,6 +1415,8 @@ async function rejectUser(userId, userName) {
   if (error) { toast('Erro: '+error.message,'error'); return; }
   toast(`Solicitação de ${userName} removida.`,'success');
   await loadUsersList();
+  await _checkPendingApprovals();
+  if (document.getElementById('uaPending')?.style.display !== 'none') _renderPendingTab();
 }
 
 async function toggleUserActive(userId, currentActive) {
@@ -1562,10 +1647,18 @@ async function switchFamily(familyId) {
 // ── Pending approvals badge ───────────────────────────────────────────────────
 async function _checkPendingApprovals() {
   try {
-    const { data } = await sb.from('app_users').select('id').eq('approved', false);
-    const count = data?.length || 0;
+    // Usar RPC para evitar problemas de RLS (SECURITY DEFINER)
+    let pendingUsers = [];
+    const { data: rpcData, error: rpcErr } = await sb.rpc('get_pending_users');
+    if (!rpcErr && rpcData) {
+      pendingUsers = rpcData;
+    } else {
+      const { data } = await sb.from('app_users').select('*').eq('approved', false).order('created_at');
+      pendingUsers = data || [];
+    }
+    const count = pendingUsers.length;
 
-    // ── Topbar badge on the "Gerenciar" button ──
+    // ── Badge no botão "Gerenciar" ──
     const btn = document.getElementById('userMgmtBadgeBtn');
     if (btn) {
       btn.querySelector('.pending-badge')?.remove();
@@ -1578,18 +1671,44 @@ async function _checkPendingApprovals() {
       }
     }
 
-    // ── Settings page alert banner ──
-    const alert = document.getElementById('pendingApprovalsAlert');
-    if (alert) {
+    // ── Painel inline na settings page ──
+    const alertEl = document.getElementById('pendingApprovalsAlert');
+    const listEl  = document.getElementById('inlinePendingList');
+    const txtEl   = document.getElementById('pendingApprovalsAlertText');
+
+    if (alertEl) {
       if (count > 0) {
-        const txt = document.getElementById('pendingApprovalsAlertText');
-        if (txt) txt.textContent = count === 1
+        if (txtEl) txtEl.textContent = count === 1
           ? '1 solicitação aguardando aprovação'
-          : `${count} solicitações aguardando aprovação`;
-        alert.style.display = 'flex';
+          : count + ' solicitações aguardando aprovação';
+
+        if (listEl) {
+          listEl.innerHTML = pendingUsers.map(function(u) {
+            const daysAgo  = Math.floor((Date.now() - new Date(u.created_at)) / 86400000);
+            const ageLabel = daysAgo === 0 ? 'Hoje' : daysAgo === 1 ? '1 dia' : daysAgo + ' dias';
+            const ageColor = daysAgo >= 3 ? '#dc2626' : '#b45309';
+            const parts    = (u.name || u.email || '?').trim().split(' ');
+            const initials = (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
+            // Use data-id/data-name to avoid quoting issues in onclick
+            const uid  = esc(u.id);
+            const uname = esc(u.name || u.email || '');
+            return '<div style="display:flex;align-items:center;gap:10px;padding:9px 6px;border-bottom:1px solid #fde68a">'
+              + '<div style="width:34px;height:34px;border-radius:50%;background:#fde68a;border:2px solid #f59e0b;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.75rem;color:#92400e;flex-shrink:0">' + initials + '</div>'
+              + '<div style="flex:1;min-width:0">'
+              + '<div style="font-size:.84rem;font-weight:600;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(u.name || '—') + '</div>'
+              + '<div style="font-size:.73rem;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(u.email) + '</div>'
+              + '</div>'
+              + '<span style="font-size:.72rem;color:' + ageColor + ';font-weight:600;white-space:nowrap;flex-shrink:0;margin-right:4px">' + ageLabel + '</span>'
+              + '<div style="display:flex;gap:5px;flex-shrink:0">'
+              + '<button class="btn btn-primary btn-sm" data-uid="' + uid + '" data-uname="' + uname + '" onclick="approveUser(this.dataset.uid,this.dataset.uname)" style="background:#16a34a;font-size:.75rem;padding:4px 10px">&#9989; Aprovar</button>'
+              + '<button class="btn btn-ghost btn-sm" data-uid="' + uid + '" data-uname="' + uname + '" onclick="rejectUser(this.dataset.uid,this.dataset.uname)" style="color:#dc2626;font-size:.75rem;padding:4px 8px">&#10005;</button>'
+              + '</div></div>';
+          }).join('');
+        }
+        alertEl.style.display = '';
       } else {
-        alert.style.display = 'none';
+        alertEl.style.display = 'none';
       }
     }
-  } catch(e) {}
+  } catch(e) { console.warn('[_checkPendingApprovals]', e); }
 }
