@@ -131,24 +131,29 @@ async function createDbBackup(label = '') {
       return;
     }
 
-    // famId() retorna null para owner sem família atribuída.
-    // Nesse caso, busca a primeira família disponível no currentUser.families
-    // (preenchido em _loadCurrentUserContext) ou consulta o banco diretamente.
-    let fid = famId();
+    // Resolve family_id da família ativa, em ordem de confiabilidade:
+    // 1) currentUser.family_id (usuário normal — mais rápido)
+    // 2) state já carregado (owner que carregou dados de uma família)
+    // 3) query direta ao banco em accounts/categories/families
+    let fid = currentUser?.family_id
+      || state.accounts?.find(a => a.family_id)?.family_id
+      || state.categories?.find(c => c.family_id)?.family_id
+      || null;
+
     if (!fid) {
-      // Tenta currentUser.families (owner pode ter várias famílias)
-      fid = currentUser?.families?.[0]?.id || null;
+      // Busca via account (tem family_id garantido, RLS permite leitura)
+      const { data: acc } = await sb.from('accounts').select('family_id').limit(1).maybeSingle();
+      fid = acc?.family_id || null;
     }
     if (!fid) {
-      // Último recurso: busca a primeira família existente no banco
       const { data: famRow } = await sb.from('families').select('id').limit(1).maybeSingle();
       fid = famRow?.id || null;
     }
     if (!fid) {
-      toast('Não foi possível determinar a família para o backup. Verifique se há uma família cadastrada.', 'error');
+      toast('Não foi possível determinar a família ativa. Recarregue a página e tente novamente.', 'error');
       return;
     }
-    const q   = t => sb.from(t).select('*').eq('family_id', fid);
+    const q = t => sb.from(t).select('*').eq('family_id', fid);
     const [a, c, p, t2, b, s, grp] = await Promise.all([
       q('accounts'), q('categories'), q('payees'), q('transactions'),
       q('budgets'), q('scheduled_transactions'), q('account_groups'),
@@ -208,16 +213,20 @@ async function loadDbBackups() {
       return;
     }
 
-    // Resolve family_id igual ao createDbBackup (owner pode ter family_id null)
-    let listFid = famId();
-    if (!listFid) listFid = currentUser?.families?.[0]?.id || null;
+    // Família ativa = mesma lógica do createDbBackup
+    let listFid = currentUser?.family_id
+      || state.accounts?.find(a => a.family_id)?.family_id
+      || state.categories?.find(c => c.family_id)?.family_id
+      || null;
+    if (!listFid) {
+      const { data: acc } = await sb.from('accounts').select('family_id').limit(1).maybeSingle();
+      listFid = acc?.family_id || null;
+    }
     if (!listFid) {
       const { data: fr } = await sb.from('families').select('id').limit(1).maybeSingle();
       listFid = fr?.id || null;
     }
 
-    // Se owner (role owner/admin) e family_id null, busca todos os backups sem filtro
-    const isOwner = currentUser?.role === 'owner' || currentUser?.role === 'admin';
     let backupQuery = sb.from('app_backups')
       .select('id, label, created_at, created_by, counts, size_kb, backup_type')
       .order('created_at', { ascending: false })
