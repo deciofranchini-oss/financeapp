@@ -19,6 +19,86 @@ function initSbAdmin() {
   return sbAdmin;
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   USER AVATAR — renderiza círculo com foto ou ícone por perfil
+══════════════════════════════════════════════════════════════════ */
+
+// Ícone SVG e cor por perfil
+function _roleAvatarStyle(role) {
+  switch (role) {
+    case 'owner': return { bg: '#fef3c7', border: '#f59e0b', color: '#92400e', icon: '👑' };
+    case 'admin': return { bg: '#fef9c3', border: '#eab308', color: '#713f12', icon: '🔧' };
+    case 'viewer': return { bg: '#f0f9ff', border: '#38bdf8', color: '#0369a1', icon: '👁' };
+    default:       return { bg: 'var(--accent-lt)', border: 'var(--accent)', color: 'var(--accent)', icon: '👤' };
+  }
+}
+
+// Retorna HTML de um círculo avatar (com foto ou ícone)
+function _userAvatarHtml(user, size = 32) {
+  const s = size + 'px';
+  const fs = Math.round(size * 0.38) + 'px';
+  if (user.avatar_url) {
+    return `<img src="${esc(user.avatar_url)}" alt="${esc(user.name||'')}"
+      style="width:${s};height:${s};border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid var(--border)"
+      onerror="this.replaceWith(_userAvatarFallback('${esc(user.role||'user')}','${esc(user.name||'')}',${size}))">`;
+  }
+  const style = _roleAvatarStyle(user.role);
+  const initials = (user.name || user.email || '?').trim().split(/\s+/).map(w => w[0]||'').slice(0,2).join('').toUpperCase();
+  return `<div style="width:${s};height:${s};border-radius:50%;background:${style.bg};border:2px solid ${style.border};
+    color:${style.color};display:flex;align-items:center;justify-content:center;
+    font-size:${fs};font-weight:700;flex-shrink:0;line-height:1">${initials||style.icon}</div>`;
+}
+
+// Fallback element para onerror em <img>
+function _userAvatarFallback(role, name, size) {
+  const div = document.createElement('div');
+  const style = _roleAvatarStyle(role);
+  const s = size + 'px';
+  const fs = Math.round(size * 0.38) + 'px';
+  const initials = (name||'?').trim().split(/\s+/).map(w=>w[0]||'').slice(0,2).join('').toUpperCase();
+  div.style.cssText = `width:${s};height:${s};border-radius:50%;background:${style.bg};border:2px solid ${style.border};color:${style.color};display:flex;align-items:center;justify-content:center;font-size:${fs};font-weight:700;flex-shrink:0`;
+  div.textContent = initials || style.icon;
+  return div;
+}
+
+// Atualiza avatar no topbar e settings com o usuário atual
+function _applyCurrentUserAvatar() {
+  if (!currentUser) return;
+
+  // --- Topbar: substituir o div .topbar-user-avatar por avatar real ---
+  const topbarAvatar = document.getElementById('topbarUserAvatar');
+  if (topbarAvatar) {
+    const avatarEl = topbarAvatar.parentElement;
+    if (avatarEl) {
+      // Substituir o avatar interno
+      const newHtml = _userAvatarHtml(currentUser, 28);
+      const wrap = document.createElement('div');
+      wrap.innerHTML = newHtml;
+      topbarAvatar.replaceWith(wrap.firstChild);
+    }
+  }
+
+  // --- Topbar: avatar antes do logout (btn id=topbarAvatarCircle) ---
+  const logoutBtn = document.getElementById('logoutTopbarBtn');
+  if (logoutBtn && !document.getElementById('topbarAvatarCircle')) {
+    const avatarWrap = document.createElement('div');
+    avatarWrap.id = 'topbarAvatarCircle';
+    avatarWrap.style.cssText = 'display:flex;align-items:center;cursor:pointer';
+    avatarWrap.title = currentUser.name || currentUser.email;
+    avatarWrap.onclick = () => navigate('settings');
+    avatarWrap.innerHTML = _userAvatarHtml(currentUser, 30);
+    logoutBtn.before(avatarWrap);
+  } else if (document.getElementById('topbarAvatarCircle')) {
+    document.getElementById('topbarAvatarCircle').innerHTML = _userAvatarHtml(currentUser, 30);
+  }
+
+  // --- Settings: substituir ícone 👤 estático por avatar ---
+  const settingsIcon = document.getElementById('settingsUserAvatarWrap');
+  if (settingsIcon) {
+    settingsIcon.innerHTML = _userAvatarHtml(currentUser, 40);
+  }
+}
+
 // Returns a Supabase query with family_id filter applied.
 // With RLS enabled, the server will also enforce access.
 function famQ(query) {
@@ -61,7 +141,7 @@ async function _loadCurrentUserContext() {
 
   // Also fall back to app_users.family_id for legacy users
   const { data: appUserRow } = await sb
-    .from('app_users').select('family_id').eq('email', user.email).maybeSingle();
+    .from('app_users').select('family_id, avatar_url').eq('email', user.email).maybeSingle();
 
   const famRow  = (fm && fm.length) ? fm[0] : null;
   const appRole = (profile?.role || famRow?.role || 'viewer');
@@ -90,12 +170,13 @@ async function _loadCurrentUserContext() {
   };
 
   currentUser = {
-    id:        user.id,
-    email:     user.email || profile?.email || '',
-    name:      profile?.display_name || user.email || 'Usuário',
-    role:      appRole,
-    family_id: activeFamId,
-    families:  userFamilies,
+    id:         user.id,
+    email:      user.email || profile?.email || '',
+    name:       profile?.display_name || user.email || 'Usuário',
+    role:       appRole,
+    family_id:  activeFamId,
+    families:   userFamilies,
+    avatar_url: appUserRow?.avatar_url || null,
     ...caps
   };
 
@@ -501,6 +582,9 @@ function updateUserUI() {
 
   // Family switcher (only when user has 2+ families)
   _renderFamilySwitcher();
+
+  // Avatar in topbar and settings
+  setTimeout(_applyCurrentUserAvatar, 50);
 
   // Apply permission restrictions
   applyPermissions();
@@ -1142,19 +1226,35 @@ async function loadUsersList() {
   if (!activeUsers.length) {
     html += '<div style="text-align:center;padding:20px;color:var(--muted)">Nenhum usuário ativo.</div>';
   } else {
-    html += '<div class="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Família</th><th>Status</th><th>Ações</th></tr></thead><tbody>';
-    html += activeUsers.map(u => `<tr>
-      <td><strong>${esc(u.name||'—')}</strong></td>
-      <td style="font-size:.82rem">${esc(u.email)}</td>
-      <td><span class="badge badge-green" style="font-size:.7rem">${u.role==='owner'?'Owner':u.role==='admin'?'Admin':u.role==='viewer'?'Viewer':'Usuário'}</span></td>
-      <td style="font-size:.78rem;color:var(--text2)">${u.family_id ? (famById[u.family_id]||'—') : '<span style="color:var(--muted)">—</span>'}</td>
-      <td><span style="font-size:.75rem;color:${u.active?'var(--green)':'var(--red)'}">● ${u.active?'Ativo':'Inativo'}</span></td>
-      <td style="white-space:nowrap">
-        <button class="btn btn-ghost btn-sm" onclick="editUser('${u.id}')" style="padding:3px 8px;font-size:.73rem">✏️</button>
-        ${u.id !== currentUser?.id ? `<button class="btn btn-ghost btn-sm" onclick="toggleUserActive('${u.id}',${u.active})" style="padding:3px 8px;font-size:.73rem">${u.active?'🚫':'✅'}</button>` : ''}
-        ${u.id !== currentUser?.id ? `<button class="btn btn-ghost btn-sm" onclick="resetUserPwd('${u.id}','${esc(u.name||u.email)}')" style="padding:3px 8px;font-size:.73rem">🔑</button>` : ''}
-      </td>
-    </tr>`).join('');
+    html += '<div class="table-wrap"><table><thead><tr><th>Usuário</th><th>Perfil</th><th>Família</th><th>Status</th><th style="width:80px"></th></tr></thead><tbody>';
+    html += activeUsers.map(u => {
+      const avatarHtml = _userAvatarHtml(u, 34);
+      const roleBadge = u.role==='owner'
+        ? '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #f59e0b;font-size:.7rem">👑 Owner</span>'
+        : u.role==='admin'
+        ? '<span class="badge badge-amber" style="font-size:.7rem">🔧 Admin</span>'
+        : u.role==='viewer'
+        ? '<span class="badge badge-muted" style="font-size:.7rem">👁 Viewer</span>'
+        : '<span class="badge badge-blue" style="font-size:.7rem">👤 Usuário</span>';
+      return `<tr onclick="editUser('${u.id}')" style="cursor:pointer;transition:background .12s" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''">
+        <td>
+          <div style="display:flex;align-items:center;gap:10px">
+            ${avatarHtml}
+            <div>
+              <div style="font-weight:600;font-size:.875rem">${esc(u.name||'—')}</div>
+              <div style="font-size:.72rem;color:var(--muted)">${esc(u.email)}</div>
+            </div>
+          </div>
+        </td>
+        <td>${roleBadge}</td>
+        <td style="font-size:.78rem;color:var(--text2)">${u.family_id ? (famById[u.family_id]||'—') : '<span style="color:var(--muted)">—</span>'}</td>
+        <td><span style="font-size:.75rem;color:${u.active?'var(--green)':'var(--red)'}">● ${u.active?'Ativo':'Inativo'}</span></td>
+        <td style="white-space:nowrap" onclick="event.stopPropagation()">
+          ${u.id !== currentUser?.id ? `<button class="btn btn-ghost btn-sm" onclick="toggleUserActive('${u.id}',${u.active})" style="padding:3px 8px;font-size:.73rem" title="${u.active?'Desativar':'Ativar'}">${u.active?'🚫':'✅'}</button>` : ''}
+          ${u.id !== currentUser?.id ? `<button class="btn btn-ghost btn-sm" onclick="resetUserPwd('${u.id}','${esc(u.name||u.email)}')" style="padding:3px 8px;font-size:.73rem" title="Redefinir senha">🔑</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
     html += '</tbody></table></div>';
   }
   el.innerHTML = html;
@@ -1181,6 +1281,9 @@ function showNewUserForm() {
 async function editUser(userId) {
   const { data: u } = await sb.from('app_users').select('*').eq('id', userId).single();
   if (!u) return;
+
+  // Scroll form into view
+  const formArea = document.getElementById('userFormArea');
   document.getElementById('userFormTitle').textContent = 'Editar Usuário';
   document.getElementById('editUserId').value = u.id;
   document.getElementById('uName').value = u.name||'';
@@ -1188,14 +1291,74 @@ async function editUser(userId) {
   document.getElementById('uPassword').value = '';
   document.getElementById('uRole').value = u.role;
   document.getElementById('uFamilyId').value = u.family_id||'';
-  document.getElementById('pView').checked = u.can_view;
+  document.getElementById('pView').checked   = u.can_view;
   document.getElementById('pCreate').checked = u.can_create;
-  document.getElementById('pEdit').checked = u.can_edit;
+  document.getElementById('pEdit').checked   = u.can_edit;
   document.getElementById('pDelete').checked = u.can_delete;
   document.getElementById('pExport').checked = u.can_export;
   document.getElementById('pImport').checked = u.can_import;
   document.getElementById('pwdHint').textContent = '(deixe em branco para manter)';
-  document.getElementById('userFormArea').style.display = '';
+
+  // Show current avatar in form
+  const avatarPreview = document.getElementById('uAvatarPreview');
+  if (avatarPreview) {
+    avatarPreview.innerHTML = _userAvatarHtml(u, 56);
+    avatarPreview.dataset.currentUrl = u.avatar_url || '';
+  }
+  const removeBtn = document.getElementById('uAvatarRemoveBtn');
+  if (removeBtn) removeBtn.style.display = u.avatar_url ? '' : 'none';
+
+  formArea.style.display = '';
+  setTimeout(() => formArea.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+}
+
+// ── Avatar upload ─────────────────────────────────────────────────────────
+
+function previewUserAvatar(input) {
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { toast('Selecione uma imagem', 'error'); return; }
+  if (file.size > 2 * 1024 * 1024) { toast('Imagem muito grande (máx 2 MB)', 'error'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const prev = document.getElementById('uAvatarPreview');
+    if (prev) {
+      prev.innerHTML = `<img src="${e.target.result}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:2px solid var(--accent)">`;
+    }
+    const removeBtn = document.getElementById('uAvatarRemoveBtn');
+    if (removeBtn) removeBtn.style.display = '';
+  };
+  reader.readAsDataURL(file);
+}
+
+async function _uploadUserAvatar(userId, file) {
+  const ext = file.name.split('.').pop().toLowerCase() || 'jpg';
+  const path = `user-${userId}.${ext}`;
+  const client = sbAdmin || sb;
+  const { error } = await client.storage.from('avatars').upload(path, file, {
+    upsert: true, contentType: file.type
+  });
+  if (error) throw new Error('Upload falhou: ' + error.message);
+  const { data } = client.storage.from('avatars').getPublicUrl(path);
+  return data.publicUrl + '?t=' + Date.now(); // cache-bust
+}
+
+async function removeUserAvatar() {
+  const preview = document.getElementById('uAvatarPreview');
+  const userId  = document.getElementById('editUserId').value;
+  if (preview) {
+    // Show placeholder for current role
+    const role = document.getElementById('uRole')?.value || 'user';
+    const name = document.getElementById('uName')?.value || '';
+    preview.innerHTML = _userAvatarHtml({ role, name, avatar_url: '' }, 56);
+    preview.dataset.currentUrl = '';
+  }
+  const removeBtn = document.getElementById('uAvatarRemoveBtn');
+  if (removeBtn) removeBtn.style.display = 'none';
+  // Mark for removal
+  const fileInput = document.getElementById('uAvatarFile');
+  if (fileInput) fileInput.value = '';
+  document.getElementById('uAvatarRemoveFlag').value = '1';
 }
 
 async function saveUser() {
@@ -1209,6 +1372,17 @@ async function saveUser() {
   if (!userId && pwd.length < 8) { toast('Senha deve ter pelo menos 8 caracteres','error'); return; }
   if (userId && pwd && pwd.length < 8) { toast('Senha deve ter pelo menos 8 caracteres','error'); return; }
 
+  // Handle avatar upload/removal
+  let avatarUrl = undefined; // undefined = don't change
+  const avatarFile   = document.getElementById('uAvatarFile')?.files?.[0];
+  const avatarRemove = document.getElementById('uAvatarRemoveFlag')?.value === '1';
+  if (avatarFile && userId) {
+    try { avatarUrl = await _uploadUserAvatar(userId, avatarFile); }
+    catch(e) { toast('Aviso: ' + e.message, 'warning'); }
+  } else if (avatarRemove && userId) {
+    avatarUrl = null; // set null to remove
+  }
+
   const record = {
     name, email, role,
     family_id:  newFamId,
@@ -1220,7 +1394,10 @@ async function saveUser() {
     can_import: document.getElementById('pImport').checked,
     can_admin:  role === 'admin' || role === 'owner',
   };
+  if (avatarUrl !== undefined) record.avatar_url = avatarUrl;
   if (pwd) record.password_hash = await sha256(pwd);
+  // Reset avatar flag
+  const flagEl = document.getElementById('uAvatarRemoveFlag'); if (flagEl) flagEl.value = '';
   if (!userId) { record.must_change_pwd = false; record.active = true; record.approved = true; record.created_by = currentUser?.id; }
 
   try {
@@ -1230,6 +1407,8 @@ async function saveUser() {
     if (error) throw error;
     toast(userId ? '✓ Usuário atualizado!' : '✓ Usuário criado!', 'success');
     document.getElementById('userFormArea').style.display = 'none';
+    // If editing current user, refresh avatar
+    if (userId === currentUser?.id) { if (record.avatar_url !== undefined) currentUser.avatar_url = record.avatar_url; _applyCurrentUserAvatar(); }
     await loadUsersList();
     await loadFamiliesList();
   } catch(e) { toast('Erro: '+e.message,'error'); }
