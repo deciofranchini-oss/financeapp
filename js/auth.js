@@ -736,7 +736,8 @@ async function openUserAdmin() {
   openModal('userAdminModal');
 
   // Verificar se há pendentes para abrir direto na aba certa
-  const { data: pending } = await sb.rpc('get_pending_users').catch(() => ({ data: [] }));
+  let pending = null;
+  try { const { data: _p } = await sb.rpc('get_pending_users'); pending = _p; } catch {}
   const hasPending = (pending?.length || 0) > 0;
 
   if (hasPending) {
@@ -864,21 +865,22 @@ async function _inlineApprove(userId, userName) {
 
     // family_members
     if (familyId) {
-      await sb.from('family_members').upsert(
+      const { error: fmErr } = await sb.from('family_members').upsert(
         { user_id: userId, family_id: familyId, role: 'editor' },
         { onConflict: 'user_id,family_id' }
-      ).catch(e => console.warn('[approve] family_members:', e.message));
+      );
+      if (fmErr) console.warn('[approve] family_members:', fmErr.message);
     }
 
     // RPC confirma email no Supabase Auth
-    await sb.rpc('approve_user', { p_user_id: userId, p_family_id: familyId || null })
-      .catch(e => console.warn('[approve] RPC:', e.message));
+    const { error: rpcApproveErr } = await sb.rpc('approve_user', { p_user_id: userId, p_family_id: familyId || null });
+    if (rpcApproveErr) console.warn('[approve] RPC:', rpcApproveErr.message);
 
     // signUp se não existe no Auth
     const tempPwd = _randomPassword();
-    await sb.auth.signUp({ email: userEmail, password: tempPwd,
-      options: { data: { display_name: displayName } } })
-      .catch(() => {});
+    const { error: signUpErr2 } = await sb.auth.signUp({ email: userEmail, password: tempPwd,
+      options: { data: { display_name: displayName } } });
+    if (signUpErr2) console.warn('[approve] signUp:', signUpErr2.message);
 
     // Email de boas-vindas
     await _sendApprovalEmail(userEmail, displayName, familyName);
@@ -1272,10 +1274,11 @@ async function doApproveUser() {
 
     // ── 4. Adicionar à family_members ────────────────────────────────────
     if (familyId) {
-      await sb.from('family_members').upsert(
+      const { error: fmErr } = await sb.from('family_members').upsert(
         { user_id: userId, family_id: familyId, role: 'editor' },
         { onConflict: 'user_id,family_id' }
-      ).catch(e => console.warn('[approve] family_members upsert:', e.message));
+      );
+      if (fmErr) console.warn('[approve] family_members upsert:', fmErr.message);
     }
 
     // ── 5. Criar/confirmar conta no Supabase Auth ────────────────────────
