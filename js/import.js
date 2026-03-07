@@ -88,7 +88,7 @@ function goToStep(n) {
     if (document.getElementById('importStep1')) document.getElementById('importStep1').style.display = '';
     if (logEl) logEl.style.display = 'none';  // hide log on step 1
   } else if (n === 2) {
-    if (document.getElementById('colMapperScreen')) document.getElementById('colMapperScreen').style.display = '';
+    if (document.getElementById('colMapperScreen')) document.getElementById('colMapperScreen').style.display = 'block';
     if (logEl) logEl.style.display = 'none';  // hide log on mapper step
   } else if (n === 3) {
     if (document.getElementById('importProgress')) document.getElementById('importProgress').style.display = '';
@@ -467,7 +467,7 @@ async function proceedFromColMapper() {
     setImportProgress(50, 'Preparando revisão...');
     showFieldMapScreen(parsedData);
     document.getElementById('importProgress').style.display = 'none';
-    document.getElementById('fieldMapScreen').style.display = '';
+    document.getElementById('fieldMapScreen').style.display = 'block';
     document.getElementById('importStagingArea').style.display = 'none';
     document.querySelectorAll('.import-wizard-step').forEach((el,i) => {
       el.classList.remove('active','done');
