@@ -123,38 +123,38 @@ async function _loadCurrentUserContext() {
   const user = uRes?.user;
   if (!user) return null;
 
-  // Profile (created by public.handle_new_user trigger)
-  const { data: profile, error: pErr } = await sb
-    .from('user_profiles')
-    .select('id,email,display_name,role,active')
-    .eq('id', user.id)
-    .maybeSingle();
-  if (pErr) throw pErr;
-
-  // Load ALL family memberships for this user
-  const { data: fm, error: fmErr } = await sb
-    .from('family_members')
-    .select('family_id,role,families(id,name)')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: true });
-  if (fmErr) throw fmErr;
-
-  // Also fall back to app_users.family_id for legacy users
+  // app_users é a fonte de verdade: role, name, avatar_url, family_id
+  // (user_profiles não existe neste schema — nunca lançar erro por ela)
   const { data: appUserRow } = await sb
-    .from('app_users').select('family_id, avatar_url').eq('email', user.email).maybeSingle();
+    .from('app_users')
+    .select('id, family_id, avatar_url, role, name')
+    .eq('email', user.email)
+    .maybeSingle();
 
-  const famRow  = (fm && fm.length) ? fm[0] : null;
-  const appRole = (profile?.role || famRow?.role || 'viewer');
+  // family_members é opcional — ignorar erros se a tabela não existir ainda
+  let fm = [];
+  try {
+    const { data: fmData } = await sb
+      .from('family_members')
+      .select('family_id,role,families(id,name)')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true });
+    fm = fmData || [];
+  } catch (_) { /* tabela opcional */ }
 
-  // Build the list of families available to the user
-  let userFamilies = (fm || [])
+  // Role: app_users tem prioridade sobre family_members
+  const famRow  = fm.length ? fm[0] : null;
+  const appRole = appUserRow?.role || famRow?.role || 'viewer';
+
+  // Lista de famílias disponíveis ao usuário
+  let userFamilies = fm
     .filter(r => r.family_id)
     .map(r => ({ id: r.family_id, name: r.families?.name || r.family_id, role: r.role }));
   if (!userFamilies.length && appUserRow?.family_id) {
     userFamilies = [{ id: appUserRow.family_id, name: appUserRow.family_id, role: appRole }];
   }
 
-  // Respect user's last active family selection
+  // Respeitar última família ativa escolhida pelo usuário
   const savedFamilyId = localStorage.getItem('ft_active_family_' + user.id);
   const activeFamId   = (savedFamilyId && userFamilies.find(f => f.id === savedFamilyId))
     ? savedFamilyId : (userFamilies[0]?.id || appUserRow?.family_id || null);
@@ -171,8 +171,8 @@ async function _loadCurrentUserContext() {
 
   currentUser = {
     id:         user.id,
-    email:      user.email || profile?.email || '',
-    name:       profile?.display_name || user.email || 'Usuário',
+    email:      user.email || '',
+    name:       appUserRow?.name || user.email || 'Usuário',
     role:       appRole,
     family_id:  activeFamId,
     families:   userFamilies,
@@ -1739,7 +1739,7 @@ async function doResetUserPwd() {
     const targetEmail = userRow.email;
 
     // 2. Tentar via Admin API (sbAdmin com service_role key)
-    let authUpdated = false; // patched: without service role we will only send reset email
+    let authUpdated = false;
     const admin = sbAdmin || initSbAdmin();
 
     if (admin) {

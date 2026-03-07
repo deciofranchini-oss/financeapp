@@ -115,14 +115,14 @@ async function tryAutoConnect(){
     const hasLegacyHash   = window.location.hash.includes('type=recovery');
     const mightBeRecovery = hasCodeParam || hasLegacyHash;
 
-    // Create client first so Supabase can process ?code recovery parameter
+    // Create client FIRST — Supabase JS v2 PKCE needs ?code in
+    // window.location.search at this point to exchange it for a session.
     sb = supabase.createClient(url, key);
 
-    // After client is created, we can safely clean the URL
+    // Strip ?code from URL AFTER client creation so a page-refresh
+    // doesn't attempt to reuse the (now spent) code.
     if (hasCodeParam) {
-      setTimeout(()=>{
-        try{ history.replaceState(null, '', window.location.pathname + window.location.hash); }catch(e){}
-      }, 1500);
+      history.replaceState(null, '', window.location.pathname + window.location.hash);
     }
 
     if (mightBeRecovery) {
