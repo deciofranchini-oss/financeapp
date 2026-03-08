@@ -1806,6 +1806,13 @@
               <label style="display:flex;align-items:center;gap:5px;font-size:.8rem;cursor:pointer"><input type="checkbox" id="pExport" checked> Exportar</label>
               <label style="display:flex;align-items:center;gap:5px;font-size:.8rem;cursor:pointer"><input type="checkbox" id="pImport"> Importar</label>
             </div>
+            <!-- Visibilidade do ícone de escola -->
+            <div id="schoolLinkPermRow" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+              <label style="display:flex;align-items:center;gap:8px;font-size:.8rem;cursor:pointer">
+                <input type="checkbox" id="pSchoolLink" checked>
+                <span>🎓 Ver atalho da escola na barra superior</span>
+              </label>
+            </div>
             <div style="display:flex;gap:8px">
               <button class="btn btn-primary btn-sm" onclick="saveUser()">💾 Salvar</button>
               <button class="btn btn-ghost btn-sm" onclick="document.getElementById('userFormArea').style.display='none'">Cancelar</button>
