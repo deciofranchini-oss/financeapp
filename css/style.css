@@ -3246,3 +3246,74 @@ html, body{
   gap: 6px;
   margin-bottom: 14px;
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   NORMALIZAR NOMES — modal de preview Title Case
+══════════════════════════════════════════════════════════════════ */
+.norm-counter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent-lt);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: .83rem;
+  margin-bottom: 14px;
+}
+.norm-table-head {
+  display: grid;
+  grid-template-columns: 1fr 28px 1fr;
+  gap: 4px;
+  padding: 0 12px 5px;
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--muted);
+}
+.norm-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 4px;
+}
+.norm-empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: .84rem;
+  color: var(--muted);
+}
+.norm-row {
+  display: grid;
+  grid-template-columns: 1fr 28px 1fr;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: .81rem;
+}
+.norm-row:last-child { border-bottom: none; }
+.norm-row:nth-child(even) { background: var(--bg2); }
+.norm-row-old {
+  color: var(--red, #dc2626);
+  text-decoration: line-through;
+  opacity: .65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.norm-row-arrow {
+  color: var(--muted);
+  text-align: center;
+  font-size: .85rem;
+  flex-shrink: 0;
+}
+.norm-row-new {
+  color: var(--green, #16a34a);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
