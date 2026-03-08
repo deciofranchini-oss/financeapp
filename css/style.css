@@ -3368,3 +3368,57 @@ html, body{
     padding: 8px 14px 14px;
   }
 }
+
+/* ═══════════════════════════════════════════
+   PRICES MODULE
+═══════════════════════════════════════════ */
+.price-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.price-card:hover { background: var(--bg2); }
+.price-card-main  { flex: 1; min-width: 0; }
+.price-card-name  { font-weight: 600; font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.price-card-cat   { font-size: .72rem; color: var(--muted); margin-top: 2px; }
+.price-card-stats { display: flex; gap: 14px; flex-shrink: 0; }
+.price-stat       { text-align: right; }
+.price-stat-label { font-size: .65rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.price-stat-value { font-size: .88rem; font-weight: 700; color: var(--accent); }
+.price-card-arrow { font-size: .8rem; color: var(--muted); flex-shrink: 0; }
+.prices-empty     { text-align: center; padding: 48px 24px; color: var(--muted); font-size: .88rem; }
+
+/* Prices detail modal */
+.pid-stat-card   { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 10px 12px; text-align: center; }
+.pid-stat-label  { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 4px; }
+.pid-stat-val    { font-size: 1.05rem; font-weight: 700; color: var(--accent); }
+.pid-row         { display: grid; grid-template-columns: 72px 1fr 52px 80px 28px; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border2); font-size: .8rem; }
+.pid-row:last-child { border-bottom: none; }
+
+/* Register prices modal rows */
+.rpm-row         { padding: 10px 12px; border-bottom: 1px solid var(--border2); }
+.rpm-row:last-child { border-bottom: none; }
+.rpm-row-header  { display: grid; grid-template-columns: 24px 1fr 80px 80px 80px 100px 28px; gap: 6px; align-items: center; }
+.rpm-row-num     { font-size: .72rem; color: var(--muted); text-align: center; }
+
+@media (max-width: 480px) {
+  .price-card-stats { gap: 8px; }
+  .price-stat-value { font-size: .8rem; }
+  .pid-row          { grid-template-columns: 60px 1fr 44px 68px 24px; }
+  .rpm-row-header   { grid-template-columns: 1fr 70px 70px; gap: 4px; }
+  .rpm-row-header > *:nth-child(1),
+  .rpm-row-header > *:nth-child(6),
+  .rpm-row-header > *:nth-child(7) { display: none; }
+}
+
+/* ═══════════════════════════════════════════
+   PAYEE CATEGORY PICKER
+═══════════════════════════════════════════ */
+#payeeCatPickerDropdown > div:hover { background: var(--bg2) !important; }
