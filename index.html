@@ -737,7 +737,14 @@
 
     <!-- PAYEES -->
     <div class="page" id="page-payees">
-      <div class="section-header mb-6"><span class="section-title">Beneficiários & Fontes Pagadoras</span><div style="display:flex;gap:8px"><button class="btn btn-ghost" onclick="openPayeeClipboardImport()">📋 Importar da Área de Transferência</button><button class="btn btn-primary" onclick="openPayeeModal()">+ Novo</button></div></div>
+      <div class="section-header mb-6">
+        <span class="section-title">Beneficiários &amp; Fontes Pagadoras</span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost" onclick="openNormalizePayeesModal()" title="Padronizar Title Case em todos os nomes">🔤 Normalizar Nomes</button>
+          <button class="btn btn-ghost" onclick="openPayeeClipboardImport()">📋 Importar</button>
+          <button class="btn btn-primary" onclick="openPayeeModal()">+ Novo</button>
+        </div>
+      </div>
       <div class="filters">
         <div class="search-wrap">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted);flex-shrink:0"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
@@ -3399,6 +3406,52 @@
   </div>
 
   <script src="js/import_ai.js"></script>
+
+<!-- ══ Modal: Normalizar Nomes de Beneficiários ══════════════════════════ -->
+<div class="modal-overlay" id="normalizePayeesModal">
+  <div class="modal" style="max-width:580px">
+    <div class="modal-handle"></div>
+    <div class="modal-header">
+      <div class="modal-title">🔤 Normalizar Nomes de Beneficiários</div>
+      <button class="modal-close" onclick="closeModal('normalizePayeesModal')">✕</button>
+    </div>
+
+    <div style="padding:0 20px 4px">
+      <!-- Explicação -->
+      <p style="font-size:.83rem;color:var(--text2);margin:0 0 12px">
+        Converte todos os nomes para <strong>Title Case</strong>: primeira letra de cada palavra em maiúsculo, demais em minúsculo.
+        Preposições (<em>de, da, do, para, com…</em>), siglas (<em>BB, XP, PIX, CPF…</em>) e abreviações (<em>Ltda, S/A…</em>) são tratadas automaticamente.
+      </p>
+
+      <!-- Contador -->
+      <div class="norm-counter">
+        <span style="font-size:1.15rem">📊</span>
+        <span><strong id="normPayeeCount">0</strong> nome(s) serão alterados</span>
+      </div>
+
+      <!-- Label da lista -->
+      <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:6px">
+        Prévia das alterações
+      </div>
+
+      <!-- Cabeçalho da tabela -->
+      <div class="norm-table-head">
+        <span>Nome atual</span>
+        <span></span>
+        <span>Após normalização</span>
+      </div>
+
+      <!-- Lista scrollável -->
+      <div id="normPayeeList" class="norm-list"></div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('normalizePayeesModal')">Cancelar</button>
+      <button class="btn btn-primary" id="normPayeeApplyBtn" onclick="applyNormalizePayees()">✅ Aplicar</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
 
