@@ -1012,38 +1012,6 @@
         <div id="stagingContent"></div>
       </div>
 
-      <hr style="margin:28px 0;border:none;border-top:1.5px solid var(--border)">
-
-      <!-- Backup / Restore -->
-      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px">💾 Backup &amp; Restauração</div>
-
-      <div class="backup-card">
-        <h4>📤 Exportar Backup</h4>
-        <p>Exporta todas as contas, categorias, beneficiários e transações para um arquivo JSON.</p>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="btn btn-primary" onclick="exportBackup()">📥 Baixar JSON</button>
-          <span id="backupStatus" style="font-size:.78rem;color:var(--muted)"></span>
-        </div>
-      </div>
-
-      <div class="backup-card">
-        <h4>📥 Restaurar Backup</h4>
-        <p>Restaura dados de um backup .json do FinTrack (upsert — não apaga dados existentes).</p>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <label class="btn btn-ghost" style="cursor:pointer">
-            📂 Selecionar arquivo .json
-            <input type="file" id="restoreFileInput" accept=".json" onchange="restoreBackup(event)" style="display:none">
-          </label>
-          <span id="restoreStatus" style="font-size:.78rem;color:var(--muted)"></span>
-        </div>
-      </div>
-
-      <div class="backup-card danger-zone">
-        <h4>🗑️ Limpar Base de Dados</h4>
-        <p>Remove <strong>TODOS</strong> os dados permanentemente. Requer confirmação dupla + Masterpin.</p>
-        <button class="btn" style="background:var(--red);color:#fff;border:none;padding:8px 16px;border-radius:var(--r-sm);cursor:pointer;font-family:var(--font-sans);font-size:.85rem" onclick="confirmClearDatabase()">⚠️ Limpar Tudo</button>
-      </div>
-
     </div>
 
     <!-- SETTINGS PAGE -->
