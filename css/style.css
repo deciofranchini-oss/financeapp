@@ -3333,3 +3333,7 @@ html, body{
 .fm-invite-row input[type="email"] {
   min-width: 0;
 }
+
+/* ── myFamilyMgmtModal member list scrollbar ── */
+#mfmMembersList::-webkit-scrollbar { width: 4px; }
+#mfmMembersList::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
