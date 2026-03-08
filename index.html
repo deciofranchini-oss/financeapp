@@ -274,10 +274,15 @@
           <!-- Menu items -->
           <div style="padding:6px">
             <button class="user-menu-item" onclick="openMyProfile()">
-              <span>🖼️</span><span>Alterar foto</span>
+              <span>🖼️</span><span>Meu Perfil</span>
             </button>
             <button class="user-menu-item" onclick="showChangeMyPwd();closeUserMenu()">
               <span>🔑</span><span>Alterar senha</span>
+            </button>
+            <!-- Gerenciar Família: visível para owners de família que não são admin global -->
+            <button class="user-menu-item" id="umManageFamilyBtn" style="display:none"
+                    onclick="closeUserMenu();openUserAdmin()">
+              <span>🏠</span><span>Gerenciar minha família</span>
             </button>
             <div style="height:1px;background:var(--border);margin:4px 0"></div>
             <button class="user-menu-item" onclick="doLogout()" style="color:var(--red,#dc2626)">
