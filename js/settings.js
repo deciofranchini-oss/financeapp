@@ -15,7 +15,6 @@ async function loadAppSettings() {
     try { applyMenuVisibility(_getMenuVisibilityFromCache()); } catch {}
     // Apply school link config
     try { applySchoolLink(); } catch {}
-  try { if (typeof applyPricesFeature === 'function') applyPricesFeature().catch(()=>{}); } catch {}
     // Apply settings visibility for non-admin users (runs after currentUser is set)
     // Will be re-applied in loadSettings() once page is open
 
@@ -444,7 +443,7 @@ function loadSettings() {
   if (tl && pt) { tl.style.display='none'; pt.style.display=''; }
   if (typeof initLogoSettings === 'function') initLogoSettings();
 
-  const isAdmin = (currentUser?.role==='admin');
+  const isAdmin = (currentUser?.role==='admin' || currentUser?.role==='owner' || currentUser?.can_admin);
 
   // DB Backup section — admin only
   const dbBackupSec = document.getElementById('dbBackupSection');
@@ -487,7 +486,7 @@ function loadSettings() {
 
 function initLogoSettings() {
   // Admin-only section: show/hide
-  const isAdmin = (currentUser?.role==='admin');
+  const isAdmin = (currentUser?.role==='admin' || currentUser?.role==='owner' || currentUser?.can_admin);
   const sec = document.getElementById('logoSettingsSection');
   if(sec) sec.style.display = isAdmin ? '' : 'none';
   if(!isAdmin) return;
@@ -516,7 +515,7 @@ function initLogoSettings() {
 }
 
 async function saveAppLogo() {
-  const isAdmin = (currentUser?.role==='admin');
+  const isAdmin = (currentUser?.role==='admin' || currentUser?.role==='owner' || currentUser?.can_admin);
   if(!isAdmin) { toast('Apenas admin pode alterar o logotipo','warning'); return; }
 
   const urlEl = document.getElementById('appLogoUrl');
@@ -531,7 +530,7 @@ async function saveAppLogo() {
 }
 
 async function resetAppLogo() {
-  const isAdmin = (currentUser?.role==='admin');
+  const isAdmin = (currentUser?.role==='admin' || currentUser?.role==='owner' || currentUser?.can_admin);
   if(!isAdmin) { toast('Apenas admin pode alterar o logotipo','warning'); return; }
 
   await saveAppSetting('app_logo_url', '');
