@@ -456,7 +456,7 @@ function loadSettings() {
   if (typeof initAiSettings === 'function') initAiSettings();
 
   // Seções admin-only
-  const adminSections = ['settingsVisibilitySection', 'schoolLinkSection', 'settingsUserMgmt', 'userMgmtSection'];
+  const adminSections = ['settingsVisibilitySection', 'schoolLinkSection', 'userMgmtSection'];
   adminSections.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = isAdmin ? '' : 'none';
