@@ -371,7 +371,6 @@ function togglePayeeCatPicker() {
 
 function setPayeeCatValue(catId, closeDropdown) {
   document.getElementById('payeeCategory').value = catId || '';
-  const btn   = document.getElementById('payeeCatPickerBtn');
   const label = document.getElementById('payeeCatPickerLabel');
   const dot   = document.getElementById('payeeCatPickerDot');
   const dd    = document.getElementById('payeeCatPickerDropdown');
@@ -381,8 +380,9 @@ function setPayeeCatValue(catId, closeDropdown) {
   } else {
     const cat = (state.categories || []).find(c => c.id === catId);
     if (cat) {
-      if (label) label.textContent = cat.name;
-      if (dot)   dot.style.background = cat.color || 'var(--accent)';
+      const parent = cat.parent_id ? (state.categories || []).find(p => p.id === cat.parent_id) : null;
+      if (label) label.textContent = parent ? `${parent.name} › ${cat.name}` : cat.name;
+      if (dot)   dot.style.background = (cat.color || parent?.color || 'var(--accent)');
     }
   }
   if (closeDropdown && dd) dd.style.display = 'none';
