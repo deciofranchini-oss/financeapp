@@ -619,6 +619,8 @@ if (!p.can_admin) {
   if (auditNav) auditNav.style.display='';
 }
 
+  // Módulo de preços: visibilidade depende de feature flag por família
+  if (typeof applyPricesFeature === 'function') applyPricesFeature().catch(() => {});
 }
 
 /* ══════════════════════════════════════════════════════════════════

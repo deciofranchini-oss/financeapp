@@ -253,6 +253,8 @@ async function bootApp(){
   navigate('dashboard');
   initEmailJSStatus();
   updateUserUI();
+  // Aplica visibilidade do módulo de preços conforme feature flag da família
+  if (typeof applyPricesFeature === 'function') applyPricesFeature().catch(() => {});
 }
 
 const pageTitles={dashboard:'Dashboard',transactions:'Transações',accounts:'Contas',reports:'Relatórios',budgets:'Orçamentos',categories:'Categorias',payees:'Beneficiários',scheduled:'Programados',import:'Importar / Backup',settings:'Configurações',prices:'Gestão de Preços'};
