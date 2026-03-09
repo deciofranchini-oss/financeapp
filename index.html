@@ -239,6 +239,8 @@
       <img id="topbarLogoImg" src="" alt="JF Family FinTrack" style="height:36px;width:auto;object-fit:contain;display:none">
       <span class="topbar-title" id="pageTitle">Dashboard</span>
     </div>
+    <!-- FX rates badge — só aparece quando há moedas estrangeiras -->
+    <div id="fxRatesBadge" style="display:none;flex:1;text-align:center;font-size:.72rem;color:var(--muted);display:none;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;padding:0 8px;max-width:400px;overflow:hidden"></div>
     <div class="topbar-actions">
       <button id="privacyToggleBtn" onclick="togglePrivacy()" title="Ocultar valores" style="background:none;border:none;cursor:pointer;padding:6px;border-radius:6px;color:var(--muted);display:flex;align-items:center;transition:color 0.2s" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -3238,6 +3240,7 @@
   <script src="js/payees.js"></script>
   <script src="js/transactions.js"></script>
   <script src="js/budgets.js"></script>
+  <script src="js/fx_rates.js"></script>
   <script src="js/dashboard.js"></script>
   <script src="js/reports.js"></script>
   <script src="js/payee_autocomplete.js"></script>
