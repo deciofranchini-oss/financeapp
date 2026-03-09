@@ -57,7 +57,7 @@ async function initPricesPage() {
   }
   _px.search    = '';
   _px.catFilter = '';
-  const searchEl = document.getElementById('pricesSearch');
+  const searchEl = document.getElementById('pricesSearchInput');
   const catEl    = document.getElementById('pricesCatFilter');
   if (searchEl) searchEl.value = '';
   _populatePricesCatFilter();
@@ -133,26 +133,26 @@ function _renderPricesPage() {
       const cat  = item.categories?.name || '';
       return `
       <div class="price-card" onclick="openPriceItemDetail('${item.id}')">
-        <div class="price-card-main">
+        <div class="price-card-body">
           <div class="price-card-name">${esc(item.name)}</div>
-          ${cat  ? `<div class="price-card-cat">${esc(cat)}</div>` : ''}
-          ${item.description ? `<div class="price-card-cat">${esc(item.description)}</div>` : ''}
+          ${cat  ? `<div class="price-card-tag">${esc(cat)}</div>` : ''}
+          ${item.description ? `<div class="price-card-desc">${esc(item.description)}</div>` : ''}
         </div>
         <div class="price-card-stats">
-          <div class="price-stat">
-            <div class="price-stat-label">Média</div>
-            <div class="price-stat-value">${avg}</div>
+          <div class="price-stat-col">
+            <span class="price-stat-lbl">Média</span>
+            <span class="price-stat-val accent">${avg}</span>
           </div>
-          <div class="price-stat">
-            <div class="price-stat-label">Último</div>
-            <div class="price-stat-value">${last}</div>
+          <div class="price-stat-col">
+            <span class="price-stat-lbl">Último</span>
+            <span class="price-stat-val">${last}</span>
           </div>
-          <div class="price-stat">
-            <div class="price-stat-label">Registros</div>
-            <div class="price-stat-value">${item.record_count || 0}</div>
+          <div class="price-stat-col">
+            <span class="price-stat-lbl">Registros</span>
+            <span class="price-stat-val">${item.record_count || 0}</span>
           </div>
         </div>
-        <div class="price-card-arrow">›</div>
+        <div class="price-card-chevron">›</div>
       </div>`;
     }).join('') + `</div>`;
 }
@@ -176,16 +176,15 @@ async function openPriceItemDetail(itemId) {
   const item = _px.items.find(i => i.id === itemId);
   if (!item) return;
 
-  const titleEl = document.getElementById('pidModalTitle');
-  const avgEl   = document.getElementById('pidAvgPrice');
-  const lastEl  = document.getElementById('pidLastPrice');
-  const countEl = document.getElementById('pidCount');
-  if (titleEl) titleEl.textContent = `📦 ${item.name}${item.categories?.name ? ` · ${item.categories.name}` : ''}`;
-  if (avgEl)   avgEl.textContent   = item.avg_price  != null ? fmt(item.avg_price)  : '—';
-  if (lastEl)  lastEl.textContent  = item.last_price != null ? fmt(item.last_price) : '—';
-  if (countEl) countEl.textContent = item.record_count || '0';
+  document.getElementById('pidItemName').textContent  = item.name;
+  document.getElementById('pidItemCat').textContent   = item.categories?.name || '—';
+  document.getElementById('pidItemDesc').textContent  = item.description || '';
+  document.getElementById('pidItemUnit').textContent  = item.unit ? '/' + item.unit : '';
+  document.getElementById('pidAvg').textContent   = item.avg_price  != null ? fmt(item.avg_price)  : '—';
+  document.getElementById('pidLast').textContent  = item.last_price != null ? fmt(item.last_price) : '—';
+  document.getElementById('pidCount').textContent = item.record_count || '0';
 
-  const histEl = document.getElementById('pidHistoryList');
+  const histEl = document.getElementById('pidHistory');
   histEl.innerHTML = '<div class="pid-loading">⏳ Carregando histórico...</div>';
   openModal('priceItemDetailModal');
 
@@ -256,11 +255,11 @@ async function deletePriceItem() {
 function openNewPriceItem() { _openItemForm(null); }
 
 function _openItemForm(item) {
-  document.getElementById('pifItemId').value          = item?.id || '';
+  document.getElementById('pifId').value          = item?.id || '';
   document.getElementById('pifName').value        = item?.name || '';
-  document.getElementById('pifDesc').value = item?.description || '';
+  document.getElementById('pifDescription').value = item?.description || '';
   document.getElementById('pifUnit').value        = item?.unit || 'un';
-  document.getElementById('pifModalTitle').textContent = item ? '✏️ Editar Item' : '🏷️ Novo Item';
+  document.getElementById('pifFormTitle').textContent = item ? '✏️ Editar Item' : '🏷️ Novo Item';
 
   const catSel = document.getElementById('pifCategory');
   catSel.innerHTML = '<option value="">— Sem categoria —</option>' +
@@ -269,16 +268,15 @@ function _openItemForm(item) {
       .map(c => `<option value="${c.id}"${item?.category_id === c.id ? ' selected' : ''}>${esc(c.name)}</option>`)
       .join('');
 
-  const errEl = document.getElementById('pifError');
-  if (errEl) errEl.style.display = 'none';
+  document.getElementById('pifError').style.display = 'none';
   openModal('priceItemFormModal');
   setTimeout(() => document.getElementById('pifName')?.focus(), 150);
 }
 
 async function savePriceItem() {
-  const id    = document.getElementById('pifItemId').value;
+  const id    = document.getElementById('pifId').value;
   const name  = document.getElementById('pifName').value.trim();
-  const desc  = document.getElementById('pifDesc').value.trim();
+  const desc  = document.getElementById('pifDescription').value.trim();
   const unit  = document.getElementById('pifUnit').value.trim() || 'un';
   const catId = document.getElementById('pifCategory').value || null;
   const errEl = document.getElementById('pifError');
@@ -325,7 +323,7 @@ function _openRegisterModal(aiResult) {
   const errEl   = document.getElementById('rpmError');
 
   if (storeEl) storeEl.value = aiResult.payee || '';
-  if (addrEl)  addrEl.value  = aiResult.address || '';
+  if (addrEl)  addrEl.value  = '';
   if (dateEl)  dateEl.value  = aiResult.date || new Date().toISOString().slice(0, 10);
   if (errEl)   errEl.style.display = 'none';
 
@@ -360,14 +358,9 @@ function _renderRpmRows(items) {
 }
 
 function _rpmRowHtml(it) {
-  const idx = it.idx;
-  const expenseCats = (state.categories || []).filter(c => c.type !== 'income');
-  const catOpts = expenseCats.map(c => {
-    const parent = c.parent_id ? expenseCats.find(p => p.id === c.parent_id) : null;
-    const label = parent ? `${parent.name} › ${c.name}` : c.name;
-    const selected = (it.category_id && it.category_id === c.id) || (it.category && c.name?.toLowerCase?.() === String(it.category).toLowerCase()) ? ' selected' : '';
-    return `<option value="${c.id}"${selected}>${esc(label)}</option>`;
-  }).join('');
+  const idx      = it.idx;
+  const catOpts  = (state.categories || []).filter(c => c.type !== 'income')
+    .map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const itemOpts = _px.items
     .map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('');
 
@@ -485,9 +478,10 @@ async function saveRegisterPrices() {
 
   if (!storeName) { _rpmErr('Informe o nome do estabelecimento.'); return; }
   if (!date)      { _rpmErr('Informe a data.'); return; }
-  if (errEl) errEl.style.display = 'none';
+  errEl.style.display = 'none';
 
-  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '⏳ Salvando...'; }
+  saveBtn.disabled    = true;
+  saveBtn.textContent = '⏳ Salvando...';
 
   try {
     const fid = _famId();
@@ -570,7 +564,8 @@ async function saveRegisterPrices() {
   } catch(e) {
     _rpmErr('Erro: ' + e.message);
   } finally {
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Salvar preços'; }
+    saveBtn.disabled    = false;
+    saveBtn.textContent = '💾 Salvar preços';
   }
 }
 
@@ -692,8 +687,7 @@ async function readPricesReceiptWithAI() {
     closePricesReceiptZone();
 
     // Open register prices modal with extracted data
-    await _loadPricesData();
-    _openRegisterModal(result);
+    await _openRegisterPricesModal(result);
 
   } catch(e) {
     if (status) { status.textContent = '❌ ' + e.message; }
