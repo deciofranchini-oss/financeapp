@@ -2709,13 +2709,28 @@
 </div>
 
 <!-- BOTTOM NAV -->
-<nav class="bottom-nav" id="bottomNav">
+<nav class="bottom-nav" id="bottomNav" aria-label="Navegação principal mobile">
   <div class="bottom-nav-inner">
-    <button class="bn-item active" onclick="navigate('dashboard')" data-page="dashboard"><span class="bn-icon">📊</span>Início</button>
-    <button class="bn-item" onclick="navigate('transactions')" data-page="transactions"><span class="bn-icon">↕</span>Lançamentos</button>
-    <button class="bn-item" onclick="navigate('accounts')" data-page="accounts"><span class="bn-icon">🏦</span>Contas</button>
-    <button class="bn-item" onclick="navigate('scheduled')" data-page="scheduled"><span class="bn-icon">📅</span>Programados</button>
-    <button class="bn-item" onclick="toggleSidebar()" data-page="more"><span class="bn-icon">☰</span>Mais</button>
+    <button class="bn-item active" onclick="navigate('dashboard')" data-page="dashboard" aria-label="Início">
+      <span class="bn-icon" aria-hidden="true">📊</span>
+      <span class="bn-label">Início</span>
+    </button>
+    <button class="bn-item" onclick="navigate('transactions')" data-page="transactions" aria-label="Lançamentos">
+      <span class="bn-icon" aria-hidden="true">↕</span>
+      <span class="bn-label">Lançamentos</span>
+    </button>
+    <button class="bn-item" onclick="navigate('accounts')" data-page="accounts" aria-label="Contas">
+      <span class="bn-icon" aria-hidden="true">🏦</span>
+      <span class="bn-label">Contas</span>
+    </button>
+    <button class="bn-item" onclick="navigate('scheduled')" data-page="scheduled" aria-label="Programados">
+      <span class="bn-icon" aria-hidden="true">📅</span>
+      <span class="bn-label">Programados</span>
+    </button>
+    <button class="bn-item" onclick="toggleSidebar()" data-page="more" aria-label="Mais opções">
+      <span class="bn-icon" aria-hidden="true">☰</span>
+      <span class="bn-label">Mais</span>
+    </button>
   </div>
 </nav>
 <button class="fab" onclick="openTransactionModal()" aria-label="Nova transação">+</button>
