@@ -1767,7 +1767,7 @@
     <!-- ══ PRICES PAGE ══════════════════════════════════════════════════════ -->
     <div class="page" id="page-prices">
       <div class="section-header mb-6">
-        <span class="section-title">🏷️ Preços</span>
+        <span class="section-title">🏷️ Gestão de Preços</span>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" onclick="openPricesStoreManager()">🏪 Estabelecimentos</button>
           <button class="btn btn-ghost btn-sm" id="pricesReceiptImportBtn" onclick="openPricesReceiptScan()">📷 Importar Recibo</button>
@@ -2711,14 +2711,47 @@
 <!-- BOTTOM NAV -->
 <nav class="bottom-nav" id="bottomNav">
   <div class="bottom-nav-inner">
-    <button class="bn-item active" onclick="navigate('dashboard')" data-page="dashboard"><span class="bn-icon">📊</span>Início</button>
-    <button class="bn-item" onclick="navigate('transactions')" data-page="transactions"><span class="bn-icon">↕</span>Lançamentos</button>
-    <button class="bn-item" onclick="navigate('accounts')" data-page="accounts"><span class="bn-icon">🏦</span>Contas</button>
-    <button class="bn-item" onclick="navigate('scheduled')" data-page="scheduled"><span class="bn-icon">📅</span>Programados</button>
-    <button class="bn-item" onclick="toggleSidebar()" data-page="more"><span class="bn-icon">☰</span>Mais</button>
+    <button class="bn-item active" onclick="navigate('dashboard')" data-page="dashboard" aria-label="Início">
+      <span class="bn-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20h5v-5h4v5h5V9.5"/></svg>
+      </span>
+      <span class="bn-label">Início</span>
+    </button>
+    <button class="bn-item" onclick="navigate('transactions')" data-page="transactions" aria-label="Lançamentos">
+      <span class="bn-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v16"/><path d="M17 4v16"/><path d="m4 8 3-3 3 3"/><path d="m14 16 3 3 3-3"/></svg>
+      </span>
+      <span class="bn-label">Lançamentos</span>
+    </button>
+
+    <div class="bn-fab-slot" aria-hidden="true"></div>
+
+    <button class="bn-item" onclick="navigate('accounts')" data-page="accounts" aria-label="Contas">
+      <span class="bn-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/></svg>
+      </span>
+      <span class="bn-label">Contas</span>
+    </button>
+    <button class="bn-item" onclick="navigate('scheduled')" data-page="scheduled" aria-label="Programados">
+      <span class="bn-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4"/><path d="M8 3v4"/><path d="M3 10h18"/><path d="M8 14h3"/></svg>
+      </span>
+      <span class="bn-label">Programados</span>
+    </button>
+    <button class="bn-item" onclick="toggleSidebar()" data-page="more" aria-label="Mais">
+      <span class="bn-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5 7h14"/><path d="M5 12h14"/><path d="M5 17h14"/></svg>
+      </span>
+      <span class="bn-label">Mais</span>
+    </button>
   </div>
 </nav>
-<button class="fab" onclick="openTransactionModal()" aria-label="Nova transação">+</button>
+<button class="fab" onclick="openTransactionModal()" aria-label="Nova transação">
+  <span class="fab-ring"></span>
+  <span class="fab-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+  </span>
+</button>
 
 <!-- MODALS -->
 <!-- Transaction Detail Modal -->
