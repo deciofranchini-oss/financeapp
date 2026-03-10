@@ -557,56 +557,73 @@ function _renderRpmRows(items) {
   const el = document.getElementById('rpmItemList');
   if (!el) return;
   window._rpmItems = items.map((it, idx) => ({ ...it, idx }));
-  el.innerHTML = window._rpmItems.map(it => _rpmRowHtml(it)).join('');
+  el.innerHTML = `
+  <table class="rpm-table">
+    <thead>
+      <tr>
+        <th style="width:36px">#</th>
+        <th>Descrição</th>
+        <th style="width:70px;text-align:center">Qtd</th>
+        <th style="width:100px;text-align:right">Preço Unit.</th>
+        <th style="width:130px">Categoria</th>
+        <th style="width:160px">Vincular Item</th>
+        <th style="width:52px"></th>
+      </tr>
+    </thead>
+    <tbody id="rpmTableBody">
+      ${window._rpmItems.map(it => _rpmRowHtml(it)).join('')}
+    </tbody>
+  </table>`;
   window._rpmItems.forEach(it => _rpmAutoLink(it.idx));
 }
 
 function _rpmRowHtml(it) {
-  const idx     = it.idx;
-  const catOpts = (state.categories || []).filter(c => c.type !== 'income')
+  const idx      = it.idx;
+  const catOpts  = (state.categories || []).filter(c => c.type !== 'income')
     .map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const itemOpts = _px.items.map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('');
   const catMatch = it.category
     ? (state.categories || []).find(c => c.name.toLowerCase() === (it.category||'').toLowerCase())
     : null;
-  return `
-  <div class="rpm-item" id="rpmItem-${idx}">
-    <div class="rpm-item-header">
-      <span class="rpm-item-num">${idx + 1}</span>
-      <input type="text" class="rpm-item-desc" id="rpmDesc-${idx}"
-             placeholder="Descrição do item"
-             value="${esc(it.description || it.ai_name || '')}"
-             style="flex:1" oninput="_rpmAutoLink(${idx})">
-      <button class="rpm-ai-btn" onclick="rpmNormalizeAI(${idx})" title="Normalizar com IA">🤖</button>
-      <button class="rpm-del-btn" onclick="rpmRemoveRow(${idx})" title="Remover">✕</button>
-    </div>
-    <div class="rpm-item-fields">
-      <div class="form-group" style="margin:0">
-        <label style="font-size:.72rem">Qtd</label>
-        <input type="number" id="rpmQty-${idx}" value="${it.quantity ?? 1}"
-               min="0.001" step="any" style="font-size:.83rem;text-align:center">
-      </div>
-      <div class="form-group" style="margin:0">
-        <label style="font-size:.72rem">Preço Unit. (R$)</label>
-        <input type="number" id="rpmPrice-${idx}" value="${(it.unit_price || 0).toFixed(2)}"
-               min="0" step="0.01" style="font-size:.83rem">
-      </div>
-      <div class="form-group" style="margin:0">
-        <label style="font-size:.72rem">Categoria</label>
-        <select id="rpmCat-${idx}" style="font-size:.8rem">
-          <option value="">—</option>
-          ${catOpts.replace(catMatch ? `value="${catMatch.id}"` : '___NM___', catMatch ? `value="${catMatch.id}" selected` : '___NM___')}
-        </select>
-      </div>
-    </div>
-    <div class="form-group" style="margin:6px 0 0">
-      <label style="font-size:.72rem">Vincular a item já cadastrado <span style="color:var(--muted)">(vazio = criar novo)</span></label>
-      <select id="rpmLink-${idx}" style="font-size:.8rem">
-        <option value="">— Criar novo item —</option>
+  const catOptsSelected = catMatch
+    ? catOpts.replace(`value="${catMatch.id}"`, `value="${catMatch.id}" selected`)
+    : catOpts;
+  const rawName = esc(it.description || it.ai_name || '');
+  const rawDesc = esc(it.ai_name && it.ai_name !== it.description ? it.ai_name : '');
+  const unitPrice = (it.unit_price || 0).toFixed(2);
+  return `<tr class="rpm-row" id="rpmItem-${idx}">
+    <td class="rpm-td-num">${idx + 1}</td>
+    <td class="rpm-td-desc">
+      <input type="text" id="rpmDesc-${idx}" class="rpm-inline-input"
+             value="${rawName}" placeholder="Descrição…"
+             oninput="_rpmAutoLink(${idx})" title="${rawDesc}">
+      ${rawDesc ? `<div class="rpm-ai-name">${rawDesc}</div>` : ''}
+    </td>
+    <td class="rpm-td-qty">
+      <input type="number" id="rpmQty-${idx}" class="rpm-inline-input rpm-input-center"
+             value="${it.quantity ?? 1}" min="0.001" step="any">
+    </td>
+    <td class="rpm-td-price">
+      <input type="number" id="rpmPrice-${idx}" class="rpm-inline-input rpm-input-right"
+             value="${unitPrice}" min="0" step="0.01">
+    </td>
+    <td class="rpm-td-cat">
+      <select id="rpmCat-${idx}" class="rpm-inline-select">
+        <option value="">—</option>
+        ${catOptsSelected}
+      </select>
+    </td>
+    <td class="rpm-td-link">
+      <select id="rpmLink-${idx}" class="rpm-inline-select">
+        <option value="">+ novo</option>
         ${itemOpts}
       </select>
-    </div>
-  </div>`;
+    </td>
+    <td class="rpm-td-act">
+      <button class="rpm-ai-btn" onclick="rpmNormalizeAI(${idx})" title="Normalizar com IA">🤖</button>
+      <button class="rpm-del-btn" onclick="rpmRemoveRow(${idx})" title="Remover linha">✕</button>
+    </td>
+  </tr>`;
 }
 
 function _rpmAutoLink(idx) {
@@ -619,7 +636,7 @@ function _rpmAutoLink(idx) {
   if (match) linkEl.value = match.id;
 }
 
-function rpmRemoveRow(idx) { document.getElementById(`rpmItem-${idx}`)?.remove(); }
+function rpmRemoveRow(idx) { document.getElementById(`rpmItem-${idx}`)?.remove(); window._rpmItems = (window._rpmItems||[]).filter(i => i.idx !== idx); }
 
 async function rpmNormalizeAI(idx) {
   const descEl = document.getElementById(`rpmDesc-${idx}`);
@@ -651,7 +668,7 @@ async function rpmNormalizeAI(idx) {
 }
 
 async function rpmNormalizeAllAI() {
-  const rows = document.querySelectorAll('.rpm-item');
+  const rows = document.querySelectorAll('tr.rpm-row');
   for (const row of rows) {
     await rpmNormalizeAI(row.id.replace('rpmItem-', ''));
     await new Promise(r => setTimeout(r, 200));
@@ -659,14 +676,14 @@ async function rpmNormalizeAllAI() {
 }
 
 function rpmAddRow() {
-  const container = document.getElementById('rpmItemList');
-  if (!container) return;
+  const tbody = document.getElementById('rpmTableBody');
+  if (!tbody) return;
   const maxIdx = window._rpmItems?.length ? Math.max(...window._rpmItems.map(i => i.idx)) + 1 : 0;
   const newItem = { idx: maxIdx, ai_name: '', quantity: 1, unit_price: 0 };
   window._rpmItems = [...(window._rpmItems || []), newItem];
-  const div = document.createElement('div');
-  div.innerHTML = _rpmRowHtml(newItem);
-  container.appendChild(div.firstElementChild);
+  const tmp = document.createElement('tbody');
+  tmp.innerHTML = _rpmRowHtml(newItem);
+  tbody.appendChild(tmp.firstElementChild);
   document.getElementById(`rpmDesc-${maxIdx}`)?.focus();
 }
 
@@ -697,7 +714,7 @@ async function saveRegisterPrices() {
         resolvedStoreId = ns.id;
       }
     }
-    const rows = document.querySelectorAll('.rpm-item');
+    const rows = document.querySelectorAll('tr.rpm-row');
     let saved  = 0;
     for (const row of rows) {
       const idx   = row.id.replace('rpmItem-', '');
@@ -740,7 +757,8 @@ function _rpmErr(msg) { const el = document.getElementById('rpmError'); if (el) 
 // STORE MANAGER
 // ─────────────────────────────────────────────────────────────────────────────
 
-function openPricesStoreManager() {
+async function openPricesStoreManager() {
+  await _loadPricesData();
   _renderStoreList('');
   const si = document.getElementById('storeSearch'); if (si) si.value = '';
   openModal('pricesStoreModal');
@@ -791,6 +809,9 @@ let _storeFormCallback = null;
 
 function openStoreForm(storeId, prefillName, callback, prefillAddress) {
   _storeFormCallback = callback || null;
+  // If called from store manager (no external callback), close manager first to avoid z-index stacking
+  const _managerWasOpen = !callback && document.getElementById('pricesStoreModal')?.classList.contains('open');
+  if (_managerWasOpen) closeModal('pricesStoreModal');
   const store = storeId ? _px.stores.find(s => s.id === storeId) : null;
   const el    = id => document.getElementById(id);
   if (el('storeFormId'))      el('storeFormId').value      = store?.id || '';
@@ -866,10 +887,9 @@ async function saveStoreForm() {
     return;
   }
   closeModal('storeFormModal');
-  const managerEl = document.getElementById('pricesStoreModal');
-  if (managerEl && managerEl.style.display !== 'none') {
-    _renderStoreList(el('storeSearch')?.value || '');
-  }
+  // Reopen store manager and refresh list
+  _renderStoreList(el('storeSearch')?.value || '');
+  openModal('pricesStoreModal');
 }
 
 async function deleteStore(storeId) {
