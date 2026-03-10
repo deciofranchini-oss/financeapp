@@ -1,29 +1,28 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   PRICES.JS — Gestão de Preços
-   • price_items  — catálogo de produtos
-   • price_stores — estabelecimentos (com vínculo opcional a payees)
-   • price_history — histórico de preço por item × estabelecimento
-   ─────────────────────────────────────────────────────────────────────────
-   Arquitectura:
-     _px.items   — todos os itens da família (com avg/last/min calculados)
-     _px.stores  — todos os estabelecimentos
-     _px.history — last loaded (per-item, no state)
+   PRICES.JS — Gerenciamento de Preços
+   Histórico de preços unitários por item × estabelecimento × família.
+   Ativado por família pelo admin global no painel de usuários.
+
+   ESTRUTURA DE DADOS:
+     price_items    — produto/item (nome, unidade, categoria)
+     price_stores   — estabelecimento (nome, endereço, payee_id, contato)
+     price_history  — registro de preço: item + store + data + qty + unit_price
 ═══════════════════════════════════════════════════════════════════════════ */
 
-// ── Estado local ──────────────────────────────────────────────────────────────
 const _px = {
   items:         [],
   stores:        [],
   activeItemId:  null,
-  activeHistAll: [],   // full history of active item (for filter)
   search:        '',
   catFilter:     '',
   storeFilter:   '',
+  pidStoreFilter: '',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FEATURE FLAG
 // ─────────────────────────────────────────────────────────────────────────────
+
 async function isPricesEnabled() {
   const famId = currentUser?.family_id;
   if (!famId) return false;
@@ -42,33 +41,31 @@ async function applyPricesFeature() {
 async function toggleFamilyPrices(familyId, enabled) {
   await saveAppSetting('prices_enabled_' + familyId, enabled);
   if (typeof applyPricesFeature === 'function') applyPricesFeature().catch(() => {});
-  toast(enabled ? '✓ Gestão de Preços ativada para esta família' : 'Gestão de Preços desativada', 'success');
+  toast(enabled ? '✓ Gestão de Preços ativada' : 'Gestão de Preços desativada', 'success');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PAGE INIT & DATA LOAD
 // ─────────────────────────────────────────────────────────────────────────────
+
 async function initPricesPage() {
   const on = await isPricesEnabled();
   if (!on) { toast('Recurso de preços não está ativo para esta família.', 'warning'); navigate('dashboard'); return; }
-  _px.search = ''; _px.catFilter = ''; _px.storeFilter = '';
+  _px.search = _px.catFilter = _px.storeFilter = '';
   const searchEl = document.getElementById('pricesSearch');
-  const catEl    = document.getElementById('pricesCatFilter');
-  const storeEl  = document.getElementById('pricesStoreFilter');
   if (searchEl) searchEl.value = '';
-  if (catEl)    catEl.value    = '';
-  if (storeEl)  storeEl.value  = '';
   _populatePricesCatFilter();
   await _loadPricesData();
+  _populatePricesStoreFilter();
   _renderPricesPage();
 }
 
 function _populatePricesCatFilter() {
   const sel = document.getElementById('pricesCatFilter');
   if (!sel) return;
+  const exp = (state.categories || []).filter(c => c.type !== 'income');
   sel.innerHTML = '<option value="">Todas as categorias</option>' +
-    (state.categories || []).filter(c => c.type !== 'income')
-      .map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    exp.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
 }
 
 function _populatePricesStoreFilter() {
@@ -83,15 +80,14 @@ async function _loadPricesData() {
   if (!fid) return;
   const [itemsRes, storesRes] = await Promise.all([
     sb.from('price_items')
-      .select('id, name, description, unit, category_id, avg_price, last_price, min_price, record_count, categories(name,color)')
+      .select('id, name, description, unit, category_id, avg_price, last_price, record_count, categories(name)')
       .eq('family_id', fid).order('name'),
     sb.from('price_stores')
-      .select('id, name, address, city, state_uf, phone, cnpj, payee_id, payees(id,name,address,city,state_uf,phone,cnpj_cpf)')
+      .select('id, name, address, city, state_uf, zip_code, phone, cnpj, payee_id, payees(id, name, phone, address, city, state_uf, cnpj_cpf, whatsapp, website)')
       .eq('family_id', fid).order('name'),
   ]);
   _px.items  = itemsRes.data  || [];
   _px.stores = storesRes.data || [];
-  _populatePricesStoreFilter();
 }
 
 function _famId() { return currentUser?.family_id || null; }
@@ -99,65 +95,49 @@ function _famId() { return currentUser?.family_id || null; }
 // ─────────────────────────────────────────────────────────────────────────────
 // RENDER PRICES PAGE
 // ─────────────────────────────────────────────────────────────────────────────
+
 function _renderPricesPage() {
   const listEl = document.getElementById('pricesItemList');
   if (!listEl) return;
-
   let items = _px.items;
   if (_px.search) {
     const q = _px.search.toLowerCase();
     items = items.filter(i => i.name.toLowerCase().includes(q) || (i.description||'').toLowerCase().includes(q));
   }
-  if (_px.catFilter)   items = items.filter(i => i.category_id === _px.catFilter);
-
+  if (_px.catFilter) items = items.filter(i => i.category_id === _px.catFilter);
   const countEl = document.getElementById('pricesCount');
   if (countEl) countEl.textContent = items.length + (items.length !== 1 ? ' itens' : ' item');
-
   if (!items.length) {
-    listEl.innerHTML = `<div class="prices-empty">
-      <div style="font-size:2.8rem;margin-bottom:12px">🏷️</div>
-      <div style="font-weight:700;font-size:.95rem;margin-bottom:6px">Nenhum item cadastrado</div>
-      <div style="font-size:.82rem;color:var(--muted);max-width:280px;text-align:center;line-height:1.55">
-        Use <strong>+ Novo Item</strong> para cadastrar um produto<br>ou importe um recibo com IA.
-      </div></div>`;
+    listEl.innerHTML = `
+      <div class="prices-empty">
+        <div style="font-size:2.8rem;margin-bottom:12px">🏷️</div>
+        <div style="font-weight:700;font-size:.95rem;margin-bottom:6px">Nenhum item cadastrado</div>
+        <div style="font-size:.82rem;color:var(--muted);max-width:280px;text-align:center;line-height:1.55">
+          Registre preços ao incluir transações com recibo lido por IA,<br>ou clique em <strong>+ Novo Item</strong>.
+        </div>
+      </div>`;
     return;
   }
-
-  listEl.innerHTML = `<div class="price-list">` + items.map(item => {
-    const avg  = item.avg_price  != null ? fmt(item.avg_price)  : '—';
-    const last = item.last_price != null ? fmt(item.last_price) : '—';
-    const min  = item.min_price  != null ? fmt(item.min_price)  : '—';
-    const cat  = item.categories;
-    const catBadge = cat
-      ? `<span style="font-size:.68rem;font-weight:600;color:${cat.color||'var(--accent)'};background:${cat.color||'var(--accent)'}18;border-radius:4px;padding:1px 6px;margin-top:3px;display:inline-block">${esc(cat.name)}</span>`
-      : '';
-    return `<div class="price-card" onclick="openPriceItemDetail('${item.id}')">
-      <div class="price-card-body">
-        <div class="price-card-name">${esc(item.name)}</div>
-        ${catBadge}
-        ${item.description ? `<div class="price-card-desc">${esc(item.description)}</div>` : ''}
-      </div>
-      <div class="price-card-stats">
-        <div class="price-stat-col">
-          <span class="price-stat-lbl">Médio</span>
-          <span class="price-stat-val accent">${avg}</span>
+  listEl.innerHTML = `<div class="price-list">` +
+    items.map(item => {
+      const avg  = item.avg_price  != null ? fmt(item.avg_price)  : '—';
+      const last = item.last_price != null ? fmt(item.last_price) : '—';
+      const cat  = item.categories?.name || '';
+      return `
+      <div class="price-card" onclick="openPriceItemDetail('${item.id}')">
+        <div class="price-card-body">
+          <div class="price-card-name">${esc(item.name)}${item.unit && item.unit !== 'un' ? ` <span style="font-size:.72rem;color:var(--muted);font-weight:400">${esc(item.unit)}</span>` : ''}</div>
+          ${cat  ? `<div class="price-card-tag">${esc(cat)}</div>` : ''}
+          ${item.description ? `<div class="price-card-desc">${esc(item.description)}</div>` : ''}
         </div>
-        <div class="price-stat-col">
-          <span class="price-stat-lbl">Mínimo</span>
-          <span class="price-stat-val" style="color:var(--green)">${min}</span>
+        <div class="price-card-stats">
+          <div class="price-stat-col"><span class="price-stat-lbl">Média</span><span class="price-stat-val accent">${avg}</span></div>
+          <div class="price-stat-col"><span class="price-stat-lbl">Último</span><span class="price-stat-val">${last}</span></div>
+          <div class="price-stat-col"><span class="price-stat-lbl">Registros</span><span class="price-stat-val">${item.record_count || 0}</span></div>
         </div>
-        <div class="price-stat-col">
-          <span class="price-stat-lbl">Último</span>
-          <span class="price-stat-val">${last}</span>
-        </div>
-        <div class="price-stat-col">
-          <span class="price-stat-lbl">Reg.</span>
-          <span class="price-stat-val">${item.record_count || 0}</span>
-        </div>
-      </div>
-      <div class="price-card-chevron">›</div>
-    </div>`;
-  }).join('') + `</div>`;
+        <div class="price-card-chevron">›</div>
+      </div>`;
+    }).join('') + `</div>`;
 }
 
 function pricesSearch(val)      { _px.search = val;      _renderPricesPage(); }
@@ -167,71 +147,68 @@ function pricesStoreFilter(val) { _px.storeFilter = val; _renderPricesPage(); }
 // ─────────────────────────────────────────────────────────────────────────────
 // ITEM DETAIL MODAL
 // ─────────────────────────────────────────────────────────────────────────────
+
 async function openPriceItemDetail(itemId) {
   _px.activeItemId = itemId;
   const item = _px.items.find(i => i.id === itemId);
   if (!item) return;
-
-  document.getElementById('pidModalTitle').textContent = '📦 ' + item.name;
-  const _pidCat  = document.getElementById('pidItemCat');  if (_pidCat)  _pidCat.textContent  = item.categories?.name || '';
-  const _pidDesc = document.getElementById('pidItemDesc'); if (_pidDesc) { _pidDesc.textContent = item.description || ''; _pidDesc.style.display = item.description ? '' : 'none'; }
-  const _pidUnit = document.getElementById('pidItemUnit'); if (_pidUnit) _pidUnit.textContent  = item.unit ? '(' + item.unit + ')' : '';
-  document.getElementById('pidAvgPrice').textContent  = item.avg_price  != null ? fmt(item.avg_price)  : '—';
-  document.getElementById('pidMinPrice').textContent  = item.min_price  != null ? fmt(item.min_price)  : '—';
-  document.getElementById('pidLastPrice').textContent = item.last_price != null ? fmt(item.last_price) : '—';
-  document.getElementById('pidCount').textContent = item.record_count || '0';
-
-  const histEl = document.getElementById('pidHistoryList');
-  histEl.innerHTML = '<div class="pid-loading">⏳ Carregando histórico...</div>';
-  openModal('priceItemDetailModal');
-
-  const { data: hist } = await sb
-    .from('price_history')
-    .select('id, unit_price, quantity, purchased_at, price_stores(id, name, address, city, state_uf)')
-    .eq('item_id', itemId)
-    .order('purchased_at', { ascending: false })
-    .limit(120);
-
-  _px.activeHistAll = hist || [];
-
-  // Populate store filter for this item
-  const storeFilter = document.getElementById('pidStoreFilter');
-  if (storeFilter) {
-    const stores = [...new Map((hist||[]).filter(h=>h.price_stores).map(h=>[h.price_stores.id, h.price_stores])).values()];
-    storeFilter.innerHTML = '<option value="">Todos os estabelecimentos</option>' +
-      stores.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  const el = id => document.getElementById(id);
+  if (el('pidModalTitle')) el('pidModalTitle').textContent = '📦 ' + item.name;
+  if (el('pidItemCat'))  el('pidItemCat').textContent  = item.categories?.name || '';
+  if (el('pidItemDesc')) { el('pidItemDesc').textContent = item.description || ''; el('pidItemDesc').style.display = item.description ? '' : 'none'; }
+  if (el('pidItemUnit')) el('pidItemUnit').textContent  = item.unit ? '(' + item.unit + ')' : '';
+  if (el('pidAvgPrice'))  el('pidAvgPrice').textContent  = item.avg_price  != null ? fmt(item.avg_price)  : '—';
+  if (el('pidLastPrice')) el('pidLastPrice').textContent = item.last_price != null ? fmt(item.last_price) : '—';
+  if (el('pidMinPrice'))  el('pidMinPrice').textContent  = '—';
+  if (el('pidCount'))     el('pidCount').textContent = item.record_count || '0';
+  const pidStoreSel = el('pidStoreFilter');
+  if (pidStoreSel) {
+    pidStoreSel.innerHTML = '<option value="">Todos os estabelecimentos</option>' +
+      _px.stores.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+    pidStoreSel.value = _px.pidStoreFilter || '';
   }
-
-  _renderPidHistory(_px.activeHistAll);
+  const histEl = el('pidHistoryList');
+  if (histEl) histEl.innerHTML = '<div class="pid-loading">⏳ Carregando histórico...</div>';
+  openModal('priceItemDetailModal');
+  await _loadAndRenderPidHistory(itemId);
 }
 
-function filterPidHistory() {
-  const storeId = document.getElementById('pidStoreFilter')?.value || '';
-  const filtered = storeId ? _px.activeHistAll.filter(h => h.price_stores?.id === storeId) : _px.activeHistAll;
-  _renderPidHistory(filtered);
-}
-
-function _renderPidHistory(hist) {
+async function _loadAndRenderPidHistory(itemId) {
   const histEl = document.getElementById('pidHistoryList');
   if (!histEl) return;
-  if (!hist?.length) { histEl.innerHTML = '<div class="pid-empty">Nenhum registro encontrado.</div>'; return; }
-
+  let q = sb.from('price_history')
+    .select('id, unit_price, quantity, purchased_at, store_id, price_stores(id, name, address, city, state_uf, payees(name))')
+    .eq('item_id', itemId).order('purchased_at', { ascending: false }).limit(100);
+  if (_px.pidStoreFilter) q = q.eq('store_id', _px.pidStoreFilter);
+  const { data: hist, error } = await q;
+  if (error || !hist?.length) { histEl.innerHTML = '<div class="pid-empty">Nenhum registro encontrado.</div>'; return; }
+  const prices = hist.map(h => h.unit_price).filter(v => v != null);
+  const minPrice = prices.length ? Math.min(...prices) : null;
+  const minEl = document.getElementById('pidMinPrice');
+  if (minEl) minEl.textContent = minPrice != null ? fmt(minPrice) : '—';
   histEl.innerHTML = hist.map(h => {
     const store   = h.price_stores;
     const dateStr = h.purchased_at ? new Date(h.purchased_at + 'T12:00:00').toLocaleDateString('pt-BR') : '—';
-    const loc = [store?.city, store?.state_uf].filter(Boolean).join('/');
-    return `<div class="pid-row">
+    const loc     = [store?.address, store?.city, store?.state_uf].filter(Boolean).join(', ');
+    const payeeName = store?.payees?.name;
+    return `
+    <div class="pid-row">
       <div class="pid-row-date">${dateStr}</div>
       <div class="pid-row-store">
-        <div class="pid-row-store-name">${esc(store?.name || '—')}</div>
-        ${store?.address ? `<div class="pid-row-store-addr">${esc(store.address)}${loc?' · '+esc(loc):''}</div>` : (loc ? `<div class="pid-row-store-addr">${esc(loc)}</div>` : '')}
+        <div class="pid-row-store-name">${esc(store?.name || '—')}${payeeName && payeeName !== store?.name ? ` <span style="font-size:.68rem;color:var(--muted)">(${esc(payeeName)})</span>` : ''}</div>
+        ${loc ? `<div class="pid-row-store-addr">${esc(loc)}</div>` : ''}
       </div>
       <div class="pid-row-qty">×${h.quantity ?? 1}</div>
       <div class="pid-row-price">${fmt(h.unit_price)}</div>
-      <button class="pid-row-del" onclick="event.stopPropagation();deletePriceHistory('${h.id}','${_px.activeItemId}')"
-              title="Remover registro">🗑</button>
+      <button class="pid-row-del btn-icon" onclick="event.stopPropagation();deletePriceHistory('${h.id}','${itemId}')" title="Remover">🗑</button>
     </div>`;
   }).join('');
+}
+
+async function filterPidHistory() {
+  const sel = document.getElementById('pidStoreFilter');
+  _px.pidStoreFilter = sel?.value || '';
+  if (_px.activeItemId) await _loadAndRenderPidHistory(_px.activeItemId);
 }
 
 async function deletePriceHistory(histId, itemId) {
@@ -240,7 +217,7 @@ async function deletePriceHistory(histId, itemId) {
   if (error) { toast('Erro: ' + error.message, 'error'); return; }
   await _refreshItemStats(itemId);
   await _loadPricesData();
-  await openPriceItemDetail(itemId);
+  await _loadAndRenderPidHistory(itemId);
   _renderPricesPage();
   toast('Registro removido', 'success');
 }
@@ -253,10 +230,11 @@ async function openEditPriceItem() {
 }
 
 function deletePriceItemCurrent() { deletePriceItem(); }
+
 async function deletePriceItem() {
   const item = _px.items.find(i => i.id === _px.activeItemId);
   if (!item) return;
-  if (!confirm(`Excluir o item "${item.name}" e todo o histórico de preços?\n\nEsta ação é irreversível.`)) return;
+  if (!confirm(`Excluir o item "${item.name}" e todo o histórico?\n\nEsta ação é irreversível.`)) return;
   await sb.from('price_history').delete().eq('item_id', item.id);
   await sb.from('price_items').delete().eq('id', item.id);
   closeModal('priceItemDetailModal');
@@ -266,322 +244,213 @@ async function deletePriceItem() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ADD PRICE RECORD (manual, from detail modal)
+// ADD PRICE RECORD MODAL  (manual, from item detail "+ Registrar Preço")
 // ─────────────────────────────────────────────────────────────────────────────
+
 function openAddPriceRecord() {
   const item = _px.items.find(i => i.id === _px.activeItemId);
   if (!item) return;
-  document.getElementById('aprItemId').value   = item.id;
-  document.getElementById('aprModalTitle').textContent = '📌 Registrar Preço — ' + item.name;
-  document.getElementById('aprStoreInput').value = '';
-  document.getElementById('aprStoreId').value    = '';
-  document.getElementById('aprPrice').value      = '';
-  document.getElementById('aprQty').value        = '1';
-  document.getElementById('aprDate').value       = new Date().toISOString().slice(0, 10);
-  document.getElementById('aprError').style.display = 'none';
-  _closeSuggest('aprStoreSuggest');
+  const el = id => document.getElementById(id);
+  if (el('aprModalTitle')) el('aprModalTitle').textContent = '📌 Registrar Preço — ' + item.name;
+  if (el('aprItemId'))     el('aprItemId').value = item.id;
+  if (el('aprPrice'))      el('aprPrice').value  = '';
+  if (el('aprQty'))        el('aprQty').value    = '1';
+  if (el('aprDate'))       el('aprDate').value   = new Date().toISOString().slice(0, 10);
+  if (el('aprStoreInput')) el('aprStoreInput').value = '';
+  if (el('aprStoreId'))    el('aprStoreId').value    = '';
+  const sug = el('aprStoreSuggest');
+  if (sug) sug.style.display = 'none';
+  if (el('aprError')) el('aprError').style.display = 'none';
   openModal('addPriceRecordModal');
-  setTimeout(() => document.getElementById('aprStoreInput')?.focus(), 150);
+  setTimeout(() => el('aprPrice')?.focus(), 150);
 }
 
 async function saveAddPriceRecord() {
-  const itemId  = document.getElementById('aprItemId').value;
-  const storeId = document.getElementById('aprStoreId').value;
-  const price   = parseFloat(document.getElementById('aprPrice').value);
-  const qty     = parseFloat(document.getElementById('aprQty').value) || 1;
-  const date    = document.getElementById('aprDate').value;
-  const errEl   = document.getElementById('aprError');
-  const saveBtn = document.getElementById('aprSaveBtn');
-
-  if (!storeId) { errEl.textContent = 'Selecione um estabelecimento.'; errEl.style.display=''; return; }
-  if (!price || price <= 0) { errEl.textContent = 'Informe o valor unitário.'; errEl.style.display=''; return; }
-  if (!date)  { errEl.textContent = 'Informe a data.'; errEl.style.display=''; return; }
-  errEl.style.display = 'none';
-  saveBtn.disabled = true; saveBtn.textContent = '⏳';
-
+  const el      = id => document.getElementById(id);
+  const itemId  = el('aprItemId')?.value;
+  const price   = parseFloat(el('aprPrice')?.value);
+  const qty     = parseFloat(el('aprQty')?.value)  || 1;
+  const date    = el('aprDate')?.value;
+  const storeId   = el('aprStoreId')?.value   || null;
+  const storeName = el('aprStoreInput')?.value?.trim();
+  if (!price || price <= 0) { _aprErr('Informe o valor unitário.'); return; }
+  if (!date)                { _aprErr('Informe a data.'); return; }
+  const saveBtn = el('aprSaveBtn');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '⏳'; }
   try {
+    const fid = _famId();
+    let resolvedStoreId = storeId;
+    if (!resolvedStoreId && storeName) {
+      const { data: ns, error: nsErr } = await sb.from('price_stores')
+        .insert({ family_id: fid, name: storeName }).select('id').single();
+      if (nsErr) throw new Error('Erro ao criar estabelecimento: ' + nsErr.message);
+      resolvedStoreId = ns.id;
+      await _loadPricesData();
+    }
     const { error } = await sb.from('price_history').insert({
-      family_id: _famId(), item_id: itemId, store_id: storeId,
+      family_id: fid, item_id: itemId, store_id: resolvedStoreId,
       unit_price: price, quantity: qty, purchased_at: date,
     });
     if (error) throw error;
     await _refreshItemStats(itemId);
     await _loadPricesData();
+    _populatePricesStoreFilter();
+    toast('✓ Preço registrado', 'success');
     closeModal('addPriceRecordModal');
     await openPriceItemDetail(itemId);
     _renderPricesPage();
-    toast('✓ Preço registrado', 'success');
   } catch(e) {
-    errEl.textContent = 'Erro: ' + e.message; errEl.style.display = '';
+    _aprErr('Erro: ' + e.message);
   } finally {
-    saveBtn.disabled = false; saveBtn.textContent = '💾 Salvar';
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Salvar'; }
   }
 }
 
-// Store autocomplete helpers for addPriceRecord modal
+function _aprErr(msg) { const el = document.getElementById('aprError'); if (el) { el.textContent = msg; el.style.display = ''; } }
+
 function _aprStoreSearch(val) {
-  _storeAutoComplete(val, 'aprStoreSuggest', (s) => {
-    document.getElementById('aprStoreInput').value = s.name;
-    document.getElementById('aprStoreId').value    = s.id;
-    _closeSuggest('aprStoreSuggest');
-  });
+  const suggest = document.getElementById('aprStoreSuggest');
+  const hidEl   = document.getElementById('aprStoreId');
+  if (hidEl) hidEl.value = '';
+  if (!val.trim()) { if (suggest) suggest.style.display = 'none'; return; }
+  const q = val.toLowerCase();
+  const matches = _px.stores.filter(s => s.name.toLowerCase().includes(q));
+  if (!suggest) return;
+  if (!matches.length) { suggest.style.display = 'none'; return; }
+  suggest.style.display = '';
+  suggest.innerHTML = matches.map(s => {
+    const loc = [s.address, s.city].filter(Boolean).join(', ');
+    return `<div class="store-suggest-item" onclick="_aprSelectStore('${s.id}','${esc(s.name).replace(/'/g,"\\'")}')">
+      <strong>${esc(s.name)}</strong>${loc ? `<div style="font-size:.72rem;color:var(--muted)">${esc(loc)}</div>` : ''}
+    </div>`;
+  }).join('');
 }
-function aprNewStore() { _openStoreFormInline(() => openAddPriceRecord()); }
+
+function _aprSelectStore(id, name) {
+  document.getElementById('aprStoreId').value    = id;
+  document.getElementById('aprStoreInput').value = name;
+  const sug = document.getElementById('aprStoreSuggest');
+  if (sug) sug.style.display = 'none';
+}
+
+function aprNewStore() {
+  const name = document.getElementById('aprStoreInput')?.value?.trim() || '';
+  closeModal('addPriceRecordModal');
+  openStoreForm(null, name, (ns) => { _aprSelectStore(ns.id, ns.name); openModal('addPriceRecordModal'); });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ITEM CREATE / EDIT FORM
 // ─────────────────────────────────────────────────────────────────────────────
+
 function openNewPriceItem() { _openItemForm(null); }
 
 function _openItemForm(item) {
-  document.getElementById('pifItemId').value    = item?.id || '';
-  document.getElementById('pifName').value      = item?.name || '';
-  document.getElementById('pifDesc').value      = item?.description || '';
-  document.getElementById('pifUnit').value      = item?.unit || 'un';
-  document.getElementById('pifModalTitle').textContent = item ? '✏️ Editar Item' : '🏷️ Novo Item';
-
-  // Category select
-  const catSel = document.getElementById('pifCategory');
-  catSel.innerHTML = '<option value="">— Nenhuma —</option>' +
-    (state.categories || []).filter(c => c.type !== 'income')
-      .map(c => `<option value="${c.id}"${item?.category_id === c.id ? ' selected' : ''}>${esc(c.name)}</option>`)
-      .join('');
-
-  // Show/hide price section — only for new items
-  const priceSection = document.getElementById('pifPriceSection');
-  if (priceSection) priceSection.style.display = item ? 'none' : '';
-
-  // Price fields
-  if (!item) {
-    document.getElementById('pifPrice').value      = '';
-    document.getElementById('pifQty').value        = '1';
-    document.getElementById('pifDate').value       = new Date().toISOString().slice(0, 10);
-    document.getElementById('pifStoreInput').value = '';
-    document.getElementById('pifStoreId').value    = '';
-    _closeSuggest('pifStoreSuggest');
+  const el = id => document.getElementById(id);
+  if (el('pifItemId'))     el('pifItemId').value = item?.id || '';
+  if (el('pifName'))       el('pifName').value   = item?.name || '';
+  if (el('pifDesc'))       el('pifDesc').value   = item?.description || '';
+  const unitSel = el('pifUnit'); if (unitSel) unitSel.value = item?.unit || 'un';
+  if (el('pifModalTitle')) el('pifModalTitle').textContent = item ? '✏️ Editar Item' : '🏷️ Novo Item';
+  if (el('pifPrice'))      el('pifPrice').value  = '';
+  if (el('pifQty'))        el('pifQty').value    = '1';
+  if (el('pifDate'))       el('pifDate').value   = new Date().toISOString().slice(0, 10);
+  if (el('pifStoreInput')) el('pifStoreInput').value = '';
+  if (el('pifStoreId'))    el('pifStoreId').value    = '';
+  const sug = el('pifStoreSuggest'); if (sug) sug.style.display = 'none';
+  const catSel = el('pifCategory');
+  if (catSel) {
+    catSel.innerHTML = '<option value="">— Nenhuma —</option>' +
+      (state.categories || []).filter(c => c.type !== 'income')
+        .map(c => `<option value="${c.id}"${item?.category_id === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
   }
-
-  document.getElementById('pifError').style.display = 'none';
+  if (el('pifError')) el('pifError').style.display = 'none';
   openModal('priceItemFormModal');
-  setTimeout(() => document.getElementById('pifName')?.focus(), 150);
+  setTimeout(() => el('pifName')?.focus(), 150);
 }
 
 async function savePriceItem() {
-  const id    = document.getElementById('pifItemId').value;
-  const name  = document.getElementById('pifName').value.trim();
-  const desc  = document.getElementById('pifDesc').value.trim();
-  const unit  = document.getElementById('pifUnit').value || 'un';
-  const catId = document.getElementById('pifCategory').value || null;
-  const errEl = document.getElementById('pifError');
-
+  const el    = id => document.getElementById(id);
+  const id    = el('pifItemId')?.value;
+  const name  = el('pifName')?.value?.trim();
+  const desc  = el('pifDesc')?.value?.trim();
+  const unit  = el('pifUnit')?.value || 'un';
+  const catId = el('pifCategory')?.value || null;
+  const price = parseFloat(el('pifPrice')?.value);
+  const qty   = parseFloat(el('pifQty')?.value)  || 1;
+  const date  = el('pifDate')?.value;
+  const storeId   = el('pifStoreId')?.value   || null;
+  const storeName = el('pifStoreInput')?.value?.trim();
   if (!name) { _pifErr('Informe o nome do item.'); return; }
-
-  // Price fields (only for new items)
-  const price   = !id ? parseFloat(document.getElementById('pifPrice').value)  : null;
-  const qty     = !id ? parseFloat(document.getElementById('pifQty').value) || 1 : null;
-  const date    = !id ? document.getElementById('pifDate').value : null;
-  const storeId = !id ? document.getElementById('pifStoreId').value : null;
-
-  errEl.style.display = 'none';
-
-  const payload = { name, description: desc || null, unit, category_id: catId, family_id: _famId() };
-  let itemId = id;
-
-  try {
-    if (id) {
-      const { error } = await sb.from('price_items').update(payload).eq('id', id);
-      if (error) throw error;
-    } else {
-      const { data: ni, error } = await sb.from('price_items').insert(payload).select('id').single();
-      if (error) throw error;
-      itemId = ni.id;
-
-      // Optionally save initial price record
-      if (price > 0 && storeId && date) {
-        await sb.from('price_history').insert({
-          family_id: _famId(), item_id: itemId, store_id: storeId,
-          unit_price: price, quantity: qty, purchased_at: date,
-        });
-        await _refreshItemStats(itemId);
-      }
+  if (el('pifError')) el('pifError').style.display = 'none';
+  const fid     = _famId();
+  const payload = { name, description: desc || null, unit, category_id: catId, family_id: fid };
+  let itemId;
+  if (id) {
+    const { error } = await sb.from('price_items').update(payload).eq('id', id);
+    if (error) { _pifErr('Erro: ' + error.message); return; }
+    itemId = id;
+  } else {
+    const { data: ni, error } = await sb.from('price_items').insert(payload).select('id').single();
+    if (error) { _pifErr('Erro: ' + error.message); return; }
+    itemId = ni.id;
+  }
+  if (price > 0 && date) {
+    let resolvedStoreId = storeId;
+    if (!resolvedStoreId && storeName) {
+      const { data: ns } = await sb.from('price_stores')
+        .insert({ family_id: fid, name: storeName }).select('id').single();
+      if (ns) resolvedStoreId = ns.id;
     }
-    toast(id ? '✓ Item atualizado' : '✓ Item criado', 'success');
-    closeModal('priceItemFormModal');
-    await _loadPricesData();
-    _renderPricesPage();
-  } catch(e) { _pifErr('Erro: ' + e.message); }
+    await sb.from('price_history').insert({
+      family_id: fid, item_id: itemId, store_id: resolvedStoreId || null,
+      unit_price: price, quantity: qty, purchased_at: date,
+    });
+    await _refreshItemStats(itemId);
+  }
+  toast(id ? '✓ Item atualizado' : '✓ Item criado', 'success');
+  closeModal('priceItemFormModal');
+  await _loadPricesData();
+  _populatePricesStoreFilter();
+  _renderPricesPage();
 }
 
-function _pifErr(msg) {
-  const el = document.getElementById('pifError');
-  if (el) { el.textContent = msg; el.style.display = ''; }
-}
+function _pifErr(msg) { const el = document.getElementById('pifError'); if (el) { el.textContent = msg; el.style.display = ''; } }
 
-// Store autocomplete for pif modal
 function _pifStoreSearch(val) {
-  _storeAutoComplete(val, 'pifStoreSuggest', (s) => {
-    document.getElementById('pifStoreInput').value = s.name;
-    document.getElementById('pifStoreId').value    = s.id;
-    _closeSuggest('pifStoreSuggest');
-  });
-}
-function _pifStoreNew() { _openStoreFormInline(null); }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// STORE MANAGER
-// ─────────────────────────────────────────────────────────────────────────────
-function openPricesStoreManager() {
-  _renderStoreList('');
-  openModal('pricesStoreModal');
-}
-
-let _storeListFilter = '';
-function _filterStoreList(val) { _storeListFilter = val; _renderStoreList(val); }
-
-function _renderStoreList(filter) {
-  const el = document.getElementById('storeList');
-  if (!el) return;
-  let stores = _px.stores;
-  if (filter) { const q = filter.toLowerCase(); stores = stores.filter(s => s.name.toLowerCase().includes(q) || (s.address||'').toLowerCase().includes(q)); }
-  if (!stores.length) { el.innerHTML = '<div class="pid-empty">Nenhum estabelecimento cadastrado.</div>'; return; }
-
-  el.innerHTML = stores.map(s => {
-    const payeeName = s.payees?.name;
-    const loc = [s.address, s.city, s.state_uf].filter(Boolean).join(', ');
-    return `<div class="store-row">
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:.875rem">${esc(s.name)}</div>
-        ${payeeName ? `<div style="font-size:.7rem;color:var(--accent);margin-top:1px">🔗 ${esc(payeeName)}</div>` : ''}
-        ${loc ? `<div style="font-size:.72rem;color:var(--muted);margin-top:1px">📍 ${esc(loc)}</div>` : ''}
-        ${s.phone ? `<div style="font-size:.72rem;color:var(--muted)">📞 ${esc(s.phone)}</div>` : ''}
-      </div>
-      <div style="display:flex;gap:5px;flex-shrink:0">
-        <button class="btn-icon" onclick="openStoreForm('${s.id}')" title="Editar">✏️</button>
-        <button class="btn-icon" onclick="deleteStore('${s.id}')" title="Excluir" style="color:var(--red)">🗑️</button>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function openStoreForm(storeId) {
-  const store = storeId ? _px.stores.find(s => s.id === storeId) : null;
-  document.getElementById('storeFormId').value      = store?.id || '';
-  document.getElementById('storeFormName').value    = store?.name || '';
-  document.getElementById('storeFormAddress').value = store?.address || '';
-  document.getElementById('storeFormCity').value    = store?.city || '';
-  document.getElementById('storeFormUf').value      = store?.state_uf || '';
-  document.getElementById('storeFormPhone').value   = store?.phone || '';
-  document.getElementById('storeFormCnpj').value    = store?.cnpj || '';
-  document.getElementById('storeFormTitle').textContent = store ? '✏️ Editar Estabelecimento' : '🏪 Novo Estabelecimento';
-  document.getElementById('storeFormError').style.display = 'none';
-
-  // Payee select
-  const payeeSel = document.getElementById('storeFormPayee');
-  payeeSel.innerHTML = '<option value="">— Nenhum —</option>' +
-    (state.payees || []).map(p => `<option value="${p.id}"${store?.payee_id === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
-  // When payee selected, auto-fill address if empty
-  payeeSel.onchange = () => {
-    const payee = (state.payees||[]).find(p=>p.id===payeeSel.value);
-    if (payee) {
-      if (!document.getElementById('storeFormAddress').value && payee.address) document.getElementById('storeFormAddress').value = payee.address;
-      if (!document.getElementById('storeFormCity').value    && payee.city)    document.getElementById('storeFormCity').value    = payee.city;
-      if (!document.getElementById('storeFormUf').value      && payee.state_uf) document.getElementById('storeFormUf').value     = payee.state_uf;
-      if (!document.getElementById('storeFormPhone').value   && payee.phone)   document.getElementById('storeFormPhone').value   = payee.phone;
-      if (!document.getElementById('storeFormCnpj').value    && payee.cnpj_cpf) document.getElementById('storeFormCnpj').value   = payee.cnpj_cpf;
-    }
-  };
-
-  openModal('storeFormModal');
-  setTimeout(() => document.getElementById('storeFormName')?.focus(), 150);
-}
-
-async function saveStoreForm() {
-  const id      = document.getElementById('storeFormId').value;
-  const name    = document.getElementById('storeFormName').value.trim();
-  const errEl   = document.getElementById('storeFormError');
-  if (!name) { errEl.textContent = 'Informe o nome do estabelecimento.'; errEl.style.display=''; return; }
-  errEl.style.display = 'none';
-
-  const payload = {
-    name,
-    address:   document.getElementById('storeFormAddress').value.trim() || null,
-    city:      document.getElementById('storeFormCity').value.trim()    || null,
-    state_uf:  document.getElementById('storeFormUf').value.trim().toUpperCase() || null,
-    phone:     document.getElementById('storeFormPhone').value.trim()   || null,
-    cnpj:      document.getElementById('storeFormCnpj').value.trim()    || null,
-    payee_id:  document.getElementById('storeFormPayee').value || null,
-    family_id: _famId(),
-  };
-
-  const { error } = id
-    ? await sb.from('price_stores').update(payload).eq('id', id)
-    : await sb.from('price_stores').insert(payload);
-
-  if (error) { errEl.textContent = 'Erro: ' + error.message; errEl.style.display=''; return; }
-
-  toast(id ? '✓ Estabelecimento atualizado' : '✓ Estabelecimento criado', 'success');
-  closeModal('storeFormModal');
-  await _loadPricesData();
-  _renderStoreList(_storeListFilter);
-}
-
-async function deleteStore(storeId) {
-  const store = _px.stores.find(s => s.id === storeId);
-  if (!store) return;
-  if (!confirm(`Excluir "${store.name}"?\n\nOs registros de preços com este estabelecimento serão mantidos mas sem vínculo de loja.`)) return;
-  const { error } = await sb.from('price_stores').delete().eq('id', storeId);
-  if (error) { toast('Erro: ' + error.message, 'error'); return; }
-  toast('✓ Estabelecimento excluído', 'success');
-  await _loadPricesData();
-  _renderStoreList(_storeListFilter);
-}
-
-// Called from registerPricesModal / addPriceRecordModal to quickly create a store
-function _openStoreFormInline(callback) {
-  openStoreForm(null);
-  // After save, callback
-  window._storeFormCallback = callback;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// STORE AUTOCOMPLETE (shared)
-// ─────────────────────────────────────────────────────────────────────────────
-function _storeAutoComplete(val, suggestId, onSelect) {
-  const el = document.getElementById(suggestId);
-  if (!el) return;
-  if (!val || val.length < 1) { _closeSuggest(suggestId); return; }
+  const suggest = document.getElementById('pifStoreSuggest');
+  const hidEl   = document.getElementById('pifStoreId');
+  if (hidEl) hidEl.value = '';
+  if (!val.trim()) { if (suggest) suggest.style.display = 'none'; return; }
   const q = val.toLowerCase();
-  const matches = _px.stores.filter(s => s.name.toLowerCase().includes(q) || (s.address||'').toLowerCase().includes(q));
-  if (!matches.length) { _closeSuggest(suggestId); return; }
-  el.style.display = '';
-  el.innerHTML = matches.map(s => {
-    const loc = [s.city, s.state_uf].filter(Boolean).join('/');
-    return `<div style="padding:8px 12px;cursor:pointer;font-size:.85rem;border-bottom:1px solid var(--border2)"
-                 onmousedown="event.preventDefault()"
-                 onclick="(${onSelect.toString()})(${JSON.stringify(s)})"
-                 onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''">
-      <div style="font-weight:600">${esc(s.name)}</div>
-      ${s.address||loc ? `<div style="font-size:.72rem;color:var(--muted)">${esc([s.address,loc].filter(Boolean).join(' · '))}</div>` : ''}
+  const matches = _px.stores.filter(s => s.name.toLowerCase().includes(q));
+  if (!suggest) return;
+  if (!matches.length) { suggest.style.display = 'none'; return; }
+  suggest.style.display = '';
+  suggest.innerHTML = matches.map(s => {
+    const loc = [s.address, s.city].filter(Boolean).join(', ');
+    return `<div class="store-suggest-item" onclick="_pifSelectStore('${s.id}','${esc(s.name).replace(/'/g,"\\'")}')">
+      <strong>${esc(s.name)}</strong>${loc ? `<div style="font-size:.72rem;color:var(--muted)">${esc(loc)}</div>` : ''}
     </div>`;
   }).join('');
 }
 
-function _closeSuggest(id) {
-  const el = document.getElementById(id);
-  if (el) el.style.display = 'none';
+function _pifSelectStore(id, name) {
+  document.getElementById('pifStoreId').value    = id;
+  document.getElementById('pifStoreInput').value = name;
+  const sug = document.getElementById('pifStoreSuggest'); if (sug) sug.style.display = 'none';
 }
 
-// Close suggest on blur
-document.addEventListener('click', e => {
-  ['pifStoreSuggest','rpmStoreSuggest','aprStoreSuggest'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el && !el.contains(e.target)) _closeSuggest(id);
-  });
-});
+function _pifStoreNew() {
+  const name = document.getElementById('pifStoreInput')?.value?.trim() || '';
+  closeModal('priceItemFormModal');
+  openStoreForm(null, name, (ns) => { _pifSelectStore(ns.id, ns.name); openModal('priceItemFormModal'); });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // REGISTER PRICES FROM RECEIPT
 // ─────────────────────────────────────────────────────────────────────────────
+
 async function openRegisterPricesFromReceipt() {
   const result = window._lastReceiptAiResult;
   if (!result) { toast('Leia o recibo com IA primeiro.', 'warning'); return; }
@@ -590,119 +459,124 @@ async function openRegisterPricesFromReceipt() {
 }
 
 function _openRegisterModal(aiResult) {
-  // Try to match store from known stores OR payees
-  let matchedStore = null;
+  const el = id => document.getElementById(id);
+  if (el('rpmStoreInput')) el('rpmStoreInput').value = '';
+  if (el('rpmStoreId'))    el('rpmStoreId').value    = '';
+  if (el('rpmStoreInfo'))  { el('rpmStoreInfo').style.display = 'none'; el('rpmStoreInfo').innerHTML = ''; }
+  const sug = el('rpmStoreSuggest'); if (sug) sug.style.display = 'none';
+  if (el('rpmDate'))  el('rpmDate').value  = aiResult.date || new Date().toISOString().slice(0, 10);
+  if (el('rpmError')) el('rpmError').style.display = 'none';
+  window._rpmAiAddress = aiResult.address || null;
+  window._rpmAiCnpj    = aiResult.cnpj    || null;
+
   if (aiResult.payee) {
-    const q = aiResult.payee.toLowerCase();
-    matchedStore = _px.stores.find(s =>
-      s.name.toLowerCase().includes(q) || q.includes(s.name.toLowerCase())
-    );
-    // Try matching via payee name
-    if (!matchedStore) {
-      const matchedPayee = (state.payees||[]).find(p =>
-        p.name.toLowerCase().includes(q) || q.includes(p.name.toLowerCase())
-      );
-      if (matchedPayee) {
-        matchedStore = _px.stores.find(s => s.payee_id === matchedPayee.id);
+    const normQ = aiResult.payee.toLowerCase();
+    // Match by CNPJ first (most reliable)
+    let known = aiResult.cnpj
+      ? _px.stores.find(s => s.cnpj && s.cnpj.replace(/\D/g,'') === aiResult.cnpj.replace(/\D/g,''))
+      : null;
+    // Match by name
+    if (!known) known = _px.stores.find(s => s.name.toLowerCase().includes(normQ) || normQ.includes(s.name.toLowerCase()));
+    // Match via payee
+    if (!known && state.payees) {
+      const pm = state.payees.find(p => p.name.toLowerCase().includes(normQ) || normQ.includes(p.name.toLowerCase()));
+      if (pm) known = _px.stores.find(s => s.payee_id === pm.id);
+    }
+    if (known) {
+      if (el('rpmStoreInput')) el('rpmStoreInput').value = known.name;
+      if (el('rpmStoreId'))    el('rpmStoreId').value    = known.id;
+      _rpmShowStoreInfo(known);
+    } else {
+      if (el('rpmStoreInput')) el('rpmStoreInput').value = aiResult.payee;
+      if (aiResult.address && el('rpmStoreInfo')) {
+        el('rpmStoreInfo').style.display = '';
+        el('rpmStoreInfo').innerHTML = `<span style="color:var(--accent)">📍 Novo estabelecimento</span> · ${esc(aiResult.address)}${aiResult.cnpj ? ' · 🪪 '+esc(aiResult.cnpj) : ''}`;
       }
     }
   }
-
-  const storeInput = document.getElementById('rpmStoreInput');
-  const storeIdEl  = document.getElementById('rpmStoreId');
-  const storeInfo  = document.getElementById('rpmStoreInfo');
-  const dateEl     = document.getElementById('rpmDate');
-  const errEl      = document.getElementById('rpmError');
-
-  if (matchedStore) {
-    if (storeInput) storeInput.value = matchedStore.name;
-    if (storeIdEl)  storeIdEl.value  = matchedStore.id;
-    _showRpmStoreInfo(matchedStore, aiResult.address);
-  } else {
-    if (storeInput) storeInput.value = aiResult.payee || '';
-    if (storeIdEl)  storeIdEl.value  = '';
-    if (storeInfo)  storeInfo.style.display = 'none';
-    // If AI returned an address, show it as hint
-    if (aiResult.address && storeInfo) {
-      storeInfo.style.display = '';
-      storeInfo.innerHTML = `📍 Endereço do recibo: <strong>${esc(aiResult.address)}</strong> — <a href="#" onclick="event.preventDefault();rpmNewStore()" style="color:var(--accent)">Criar estabelecimento</a>`;
-    }
-  }
-  if (dateEl) dateEl.value = aiResult.date || new Date().toISOString().slice(0, 10);
-  if (errEl)  errEl.style.display = 'none';
-  _closeSuggest('rpmStoreSuggest');
-
   const rawItems = aiResult.items || [];
-  _renderRpmRows(rawItems.length ? rawItems : [{
-    ai_name: aiResult.description || '', quantity: 1, unit_price: aiResult.amount || 0,
-  }]);
-
+  _renderRpmRows(rawItems.length ? rawItems : [{ ai_name: aiResult.description || '', quantity: 1, unit_price: aiResult.amount || 0 }]);
   openModal('registerPricesModal');
 }
 
-function _showRpmStoreInfo(store, aiAddress) {
+function _rpmShowStoreInfo(store) {
   const el = document.getElementById('rpmStoreInfo');
   if (!el) return;
-  const loc = [store.address || aiAddress, store.city, store.state_uf].filter(Boolean).join(', ');
-  el.style.display = '';
-  el.innerHTML = `✓ Estabelecimento encontrado` +
-    (loc ? ` · <span style="color:var(--text)">📍 ${esc(loc)}</span>` : '') +
-    (store.payees ? ` · 🔗 ${esc(store.payees.name)}` : '') +
-    ` <button onclick="openStoreForm('${store.id}')" style="background:none;border:none;cursor:pointer;font-size:.78rem;color:var(--accent);padding:0 4px">✏️</button>`;
+  const parts = [];
+  const addr = [store.address, store.city, store.state_uf].filter(Boolean).join(', ');
+  if (addr)         parts.push('📍 ' + addr);
+  if (store.phone)  parts.push('📞 ' + store.phone);
+  if (store.cnpj)   parts.push('🪪 ' + store.cnpj);
+  if (store.payees) parts.push('👤 ' + store.payees.name);
+  if (parts.length) { el.style.display = ''; el.textContent = parts.join('  ·  '); }
+  else              el.style.display = 'none';
 }
 
-// rpm store search
 function _rpmStoreSearch(val) {
-  _storeAutoComplete(val, 'rpmStoreSuggest', (s) => {
-    document.getElementById('rpmStoreInput').value = s.name;
-    document.getElementById('rpmStoreId').value    = s.id;
-    _closeSuggest('rpmStoreSuggest');
-    _showRpmStoreInfo(s, null);
-  });
+  const suggest = document.getElementById('rpmStoreSuggest');
+  const hidEl   = document.getElementById('rpmStoreId');
+  if (hidEl) hidEl.value = '';
+  const si = document.getElementById('rpmStoreInfo');
+  if (si) si.style.display = 'none';
+  if (!val.trim()) { if (suggest) suggest.style.display = 'none'; return; }
+  const q = val.toLowerCase();
+  const matches = _px.stores.filter(s => s.name.toLowerCase().includes(q));
+  if (!suggest) return;
+  if (!matches.length) { suggest.style.display = 'none'; return; }
+  suggest.style.display = '';
+  suggest.innerHTML = matches.map(s => {
+    const loc = [s.address, s.city].filter(Boolean).join(', ');
+    const payeeLine = s.payees ? ` <span style="font-size:.68rem;color:var(--muted)">· ${esc(s.payees.name)}</span>` : '';
+    return `<div class="store-suggest-item" onclick="_rpmSelectStore('${s.id}','${esc(s.name).replace(/'/g,"\\'")}')">
+      <strong>${esc(s.name)}</strong>${payeeLine}
+      ${loc ? `<div style="font-size:.72rem;color:var(--muted)">${esc(loc)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function _rpmSelectStore(id, name) {
+  document.getElementById('rpmStoreId').value    = id;
+  document.getElementById('rpmStoreInput').value = name;
+  const sug = document.getElementById('rpmStoreSuggest'); if (sug) sug.style.display = 'none';
+  const store = _px.stores.find(s => s.id === id);
+  if (store) _rpmShowStoreInfo(store);
 }
 
 function rpmNewStore() {
-  window._storeFormCallback = () => {
-    // Reload and try to re-open register modal with last AI result
-    _loadPricesData().then(() => {
-      if (window._lastReceiptAiResult) _openRegisterModal(window._lastReceiptAiResult);
-    });
-  };
-  openStoreForm(null);
-  // Pre-fill from AI result if available
-  const r = window._lastReceiptAiResult;
-  if (r) {
-    setTimeout(() => {
-      if (r.payee) document.getElementById('storeFormName').value = r.payee;
-      if (r.address) document.getElementById('storeFormAddress').value = r.address;
-    }, 50);
-  }
+  const name    = document.getElementById('rpmStoreInput')?.value?.trim() || '';
+  const aiAddr  = window._rpmAiAddress || '';
+  closeModal('registerPricesModal');
+  openStoreForm(null, name, (ns) => { _rpmSelectStore(ns.id, ns.name); openModal('registerPricesModal'); }, aiAddr);
 }
 
-// Render rpm item rows
+// ─────────────────────────────────────────────────────────────────────────────
+// RPM ITEM ROWS
+// ─────────────────────────────────────────────────────────────────────────────
+
 function _renderRpmRows(items) {
   const el = document.getElementById('rpmItemList');
   if (!el) return;
   window._rpmItems = items.map((it, idx) => ({ ...it, idx }));
   el.innerHTML = window._rpmItems.map(it => _rpmRowHtml(it)).join('');
+  window._rpmItems.forEach(it => _rpmAutoLink(it.idx));
 }
 
 function _rpmRowHtml(it) {
-  const idx      = it.idx;
-  const catOpts  = (state.categories || []).filter(c => c.type !== 'income')
+  const idx     = it.idx;
+  const catOpts = (state.categories || []).filter(c => c.type !== 'income')
     .map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  // Try to match existing item name
-  const nameLower = (it.description || it.ai_name || '').toLowerCase();
-  const bestMatch = _px.items.find(i => i.name.toLowerCase().includes(nameLower) || nameLower.includes(i.name.toLowerCase()));
-  const itemOpts  = _px.items.map(i => `<option value="${i.id}"${bestMatch?.id===i.id?' selected':''}>${esc(i.name)}</option>`).join('');
-
-  return `<div class="rpm-item" id="rpmItem-${idx}">
+  const itemOpts = _px.items.map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('');
+  const catMatch = it.category
+    ? (state.categories || []).find(c => c.name.toLowerCase() === (it.category||'').toLowerCase())
+    : null;
+  return `
+  <div class="rpm-item" id="rpmItem-${idx}">
     <div class="rpm-item-header">
       <span class="rpm-item-num">${idx + 1}</span>
       <input type="text" class="rpm-item-desc" id="rpmDesc-${idx}"
              placeholder="Descrição do item"
              value="${esc(it.description || it.ai_name || '')}"
-             style="flex:1">
+             style="flex:1" oninput="_rpmAutoLink(${idx})">
       <button class="rpm-ai-btn" onclick="rpmNormalizeAI(${idx})" title="Normalizar com IA">🤖</button>
       <button class="rpm-del-btn" onclick="rpmRemoveRow(${idx})" title="Remover">✕</button>
     </div>
@@ -720,17 +594,29 @@ function _rpmRowHtml(it) {
       <div class="form-group" style="margin:0">
         <label style="font-size:.72rem">Categoria</label>
         <select id="rpmCat-${idx}" style="font-size:.8rem">
-          <option value="">—</option>${catOpts}
+          <option value="">—</option>
+          ${catOpts.replace(catMatch ? `value="${catMatch.id}"` : '___NM___', catMatch ? `value="${catMatch.id}" selected` : '___NM___')}
         </select>
       </div>
     </div>
     <div class="form-group" style="margin:6px 0 0">
-      <label style="font-size:.72rem">Vincular a item cadastrado <span style="color:var(--muted)">(vazio = criar novo)</span></label>
+      <label style="font-size:.72rem">Vincular a item já cadastrado <span style="color:var(--muted)">(vazio = criar novo)</span></label>
       <select id="rpmLink-${idx}" style="font-size:.8rem">
-        <option value="">— Criar novo item —</option>${itemOpts}
+        <option value="">— Criar novo item —</option>
+        ${itemOpts}
       </select>
     </div>
   </div>`;
+}
+
+function _rpmAutoLink(idx) {
+  const descEl = document.getElementById(`rpmDesc-${idx}`);
+  const linkEl = document.getElementById(`rpmLink-${idx}`);
+  if (!descEl || !linkEl || linkEl.value) return;
+  const q = (descEl.value || '').toLowerCase().trim();
+  if (q.length < 3) return;
+  const match = _px.items.find(i => { const n = i.name.toLowerCase(); return n.includes(q) || q.includes(n); });
+  if (match) linkEl.value = match.id;
 }
 
 function rpmRemoveRow(idx) { document.getElementById(`rpmItem-${idx}`)?.remove(); }
@@ -740,23 +626,25 @@ async function rpmNormalizeAI(idx) {
   const raw    = descEl?.value?.trim();
   if (!raw) return;
   const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
-  if (!apiKey) { toast('Configure a chave Gemini.', 'warning'); return; }
+  if (!apiKey) { toast('Configure a chave Gemini para usar IA.', 'warning'); return; }
   const btn = descEl?.parentElement?.querySelector('.rpm-ai-btn');
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
   try {
     const url  = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
     const resp = await fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text:
-        `Normalize este nome de produto de supermercado para descrição curta e padronizada em PT-BR.\n` +
-        `Remova: abreviações técnicas, códigos internos, caracteres desnecessários.\n` +
-        `Padronize: "ARROZ BRANCO TYPE1 5KG" → "Arroz Branco 5kg"\n` +
-        `Retorne APENAS o nome normalizado em Title Case, sem explicações.\n\nProduto: ${raw}`
-      }] }], generationConfig: { maxOutputTokens: 50, temperature: 0.1 } }),
+      body: JSON.stringify({
+        contents: [{ parts: [{ text:
+          `Normalize este nome de produto para uma descrição curta e padronizada em português brasileiro.\n` +
+          `Remova abreviações técnicas e códigos internos.\n` +
+          `Retorne APENAS o nome normalizado em Title Case.\n\nProduto: ${raw}`
+        }] }],
+        generationConfig: { maxOutputTokens: 50, temperature: 0.1 },
+      }),
     });
     const data = await resp.json();
     const norm = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (norm && descEl) descEl.value = norm;
+    if (norm && descEl) { descEl.value = norm; _rpmAutoLink(idx); }
     toast('✓ Nome normalizado', 'success');
   } catch(e) { toast('Erro na IA: ' + e.message, 'error'); }
   finally { if (btn) { btn.textContent = '🤖'; btn.disabled = false; } }
@@ -783,59 +671,51 @@ function rpmAddRow() {
 }
 
 async function saveRegisterPrices() {
-  const storeId   = document.getElementById('rpmStoreId')?.value;
-  const storeName = document.getElementById('rpmStoreInput')?.value?.trim();
-  const date      = document.getElementById('rpmDate')?.value;
-  const errEl     = document.getElementById('rpmError');
-  const saveBtn   = document.getElementById('rpmSaveBtn');
-
-  if (!date) { _rpmErr('Informe a data.'); return; }
-  errEl.style.display = 'none';
-  saveBtn.disabled = true; saveBtn.textContent = '⏳ Salvando...';
-
+  const el      = id => document.getElementById(id);
+  const storeId = el('rpmStoreId')?.value   || null;
+  const storeName = el('rpmStoreInput')?.value?.trim();
+  const date    = el('rpmDate')?.value;
+  const saveBtn = el('rpmSaveBtn');
+  if (!storeName) { _rpmErr('Informe o nome do estabelecimento.'); return; }
+  if (!date)      { _rpmErr('Informe a data.'); return; }
+  el('rpmError').style.display = 'none';
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '⏳ Salvando...'; }
   try {
     const fid = _famId();
-
-    // Resolve or create store
     let resolvedStoreId = storeId;
-    if (!resolvedStoreId && storeName) {
-      // Try exact match
-      const existing = _px.stores.find(s => s.name.toLowerCase() === storeName.toLowerCase());
-      if (existing) {
-        resolvedStoreId = existing.id;
+    if (!resolvedStoreId) {
+      const { data: existStore } = await sb.from('price_stores')
+        .select('id').eq('family_id', fid).ilike('name', storeName).maybeSingle();
+      if (existStore?.id) {
+        resolvedStoreId = existStore.id;
       } else {
-        const { data: ns, error: nsErr } = await sb
-          .from('price_stores')
-          .insert({ family_id: fid, name: storeName })
-          .select('id').single();
+        const aiAddr = window._rpmAiAddress || null;
+        const aiCnpj = window._rpmAiCnpj    || null;
+        const { data: ns, error: nsErr } = await sb.from('price_stores')
+          .insert({ family_id: fid, name: storeName, address: aiAddr, cnpj: aiCnpj }).select('id').single();
         if (nsErr) throw new Error('Erro ao salvar estabelecimento: ' + nsErr.message);
         resolvedStoreId = ns.id;
-        await _loadPricesData(); // refresh store list
       }
     }
-    if (!resolvedStoreId) { _rpmErr('Informe o estabelecimento.'); return; }
-
-    const rows  = document.querySelectorAll('.rpm-item');
-    let   saved = 0;
+    const rows = document.querySelectorAll('.rpm-item');
+    let saved  = 0;
     for (const row of rows) {
       const idx   = row.id.replace('rpmItem-', '');
-      const desc  = document.getElementById(`rpmDesc-${idx}`)?.value?.trim();
-      const qty   = parseFloat(document.getElementById(`rpmQty-${idx}`)?.value)   || 1;
-      const price = parseFloat(document.getElementById(`rpmPrice-${idx}`)?.value) || 0;
-      const catId = document.getElementById(`rpmCat-${idx}`)?.value  || null;
-      const link  = document.getElementById(`rpmLink-${idx}`)?.value || null;
+      const desc  = el(`rpmDesc-${idx}`)?.value?.trim();
+      const qty   = parseFloat(el(`rpmQty-${idx}`)?.value)   || 1;
+      const price = parseFloat(el(`rpmPrice-${idx}`)?.value) || 0;
+      const catId = el(`rpmCat-${idx}`)?.value  || null;
+      const link  = el(`rpmLink-${idx}`)?.value || null;
       if (!desc || price <= 0) continue;
-
       let itemId = link;
       if (!itemId) {
-        const { data: ni, error: niErr } = await sb
-          .from('price_items').insert({ family_id: fid, name: desc, category_id: catId }).select('id').single();
+        const { data: ni, error: niErr } = await sb.from('price_items')
+          .insert({ family_id: fid, name: desc, category_id: catId }).select('id').single();
         if (niErr) { console.warn('price_item insert:', niErr.message); continue; }
         itemId = ni.id;
       } else if (catId) {
         await sb.from('price_items').update({ category_id: catId }).eq('id', itemId);
       }
-
       const { error: hErr } = await sb.from('price_history').insert({
         family_id: fid, item_id: itemId, store_id: resolvedStoreId,
         unit_price: price, quantity: qty, purchased_at: date,
@@ -844,42 +724,190 @@ async function saveRegisterPrices() {
       await _refreshItemStats(itemId);
       saved++;
     }
-
     toast(`✓ ${saved} preço${saved !== 1 ? 's' : ''} registrado${saved !== 1 ? 's' : ''}!`, 'success');
     closeModal('registerPricesModal');
-    if (state.currentPage === 'prices') { await _loadPricesData(); _renderPricesPage(); }
-  } catch(e) { _rpmErr('Erro: ' + e.message); }
-  finally { saveBtn.disabled = false; saveBtn.textContent = '💾 Salvar Preços'; }
+    if (state.currentPage === 'prices') { await _loadPricesData(); _populatePricesStoreFilter(); _renderPricesPage(); }
+  } catch(e) {
+    _rpmErr('Erro: ' + e.message);
+  } finally {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Salvar Preços'; }
+  }
 }
 
-function _rpmErr(msg) {
-  const el = document.getElementById('rpmError');
-  if (el) { el.textContent = msg; el.style.display = ''; }
+function _rpmErr(msg) { const el = document.getElementById('rpmError'); if (el) { el.textContent = msg; el.style.display = ''; } }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STORE MANAGER
+// ─────────────────────────────────────────────────────────────────────────────
+
+function openPricesStoreManager() {
+  _renderStoreList('');
+  const si = document.getElementById('storeSearch'); if (si) si.value = '';
+  openModal('pricesStoreModal');
+}
+
+function _filterStoreList(val) { _renderStoreList(val); }
+
+function _renderStoreList(search) {
+  const el = document.getElementById('storeList');
+  if (!el) return;
+  let stores = _px.stores;
+  if (search) {
+    const q = search.toLowerCase();
+    stores = stores.filter(s =>
+      s.name.toLowerCase().includes(q) || (s.address||'').toLowerCase().includes(q) ||
+      (s.city||'').toLowerCase().includes(q) || (s.payees?.name||'').toLowerCase().includes(q)
+    );
+  }
+  if (!stores.length) {
+    el.innerHTML = '<div style="text-align:center;padding:32px;color:var(--muted);font-size:.83rem">Nenhum estabelecimento cadastrado.</div>';
+    return;
+  }
+  el.innerHTML = stores.map(s => {
+    const loc = [s.address, s.city, s.state_uf].filter(Boolean).join(', ');
+    const contact = [
+      s.payees ? `<span>👤 ${esc(s.payees.name)}</span>` : '',
+      s.phone  ? `<span>📞 ${esc(s.phone)}</span>`  : '',
+      s.cnpj   ? `<span>🪪 ${esc(s.cnpj)}</span>`   : '',
+    ].filter(Boolean).join(' · ');
+    return `
+    <div class="store-list-row" onclick="openStoreForm('${s.id}')">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:.88rem">${esc(s.name)}</div>
+        ${loc     ? `<div style="font-size:.75rem;color:var(--muted)">${esc(loc)}</div>` : ''}
+        ${contact ? `<div style="font-size:.72rem;color:var(--muted);margin-top:2px;display:flex;gap:8px;flex-wrap:wrap">${contact}</div>` : ''}
+      </div>
+      <button class="btn-icon" title="Excluir" onclick="event.stopPropagation();deleteStore('${s.id}')" style="color:var(--red)">🗑</button>
+    </div>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STORE CREATE / EDIT FORM
+// callback(newStore) — used when opened inline from rpm/pif/apr modals
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _storeFormCallback = null;
+
+function openStoreForm(storeId, prefillName, callback, prefillAddress) {
+  _storeFormCallback = callback || null;
+  const store = storeId ? _px.stores.find(s => s.id === storeId) : null;
+  const el    = id => document.getElementById(id);
+  if (el('storeFormId'))      el('storeFormId').value      = store?.id || '';
+  if (el('storeFormName'))    el('storeFormName').value    = store?.name    || prefillName    || '';
+  if (el('storeFormAddress')) el('storeFormAddress').value = store?.address || prefillAddress || '';
+  if (el('storeFormCity'))    el('storeFormCity').value    = store?.city     || '';
+  if (el('storeFormUf'))      el('storeFormUf').value      = store?.state_uf || '';
+  if (el('storeFormPhone'))   el('storeFormPhone').value   = store?.phone    || '';
+  if (el('storeFormCnpj'))    el('storeFormCnpj').value    = store?.cnpj     || '';
+  if (el('storeFormTitle'))   el('storeFormTitle').textContent = store ? '✏️ Editar Estabelecimento' : '🏪 Novo Estabelecimento';
+  if (el('storeFormError'))   el('storeFormError').style.display = 'none';
+  const paySel = el('storeFormPayee');
+  if (paySel) {
+    const payees = (state.payees || []).filter(p => p.type !== 'income_source');
+    paySel.innerHTML = '<option value="">— Nenhum —</option>' +
+      payees.map(p => `<option value="${p.id}"${store?.payee_id === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+    paySel.onchange = () => _storeFormSyncFromPayee(paySel.value);
+    // If new store: auto-sync from AI CNPJ match
+    if (!store && window._rpmAiCnpj) {
+      const pm = payees.find(p => p.cnpj_cpf?.replace(/\D/g,'') === (window._rpmAiCnpj||'').replace(/\D/g,''));
+      if (pm) { paySel.value = pm.id; _storeFormSyncFromPayee(pm.id, false); }
+    }
+  }
+  openModal('storeFormModal');
+  setTimeout(() => el('storeFormName')?.focus(), 150);
+}
+
+function _storeFormSyncFromPayee(payeeId, overwrite = true) {
+  if (!payeeId) return;
+  const p  = (state.payees || []).find(p => p.id === payeeId);
+  if (!p) return;
+  const el = id => document.getElementById(id);
+  const set = (elId, val) => { if (val && el(elId) && (overwrite || !el(elId).value)) el(elId).value = val; };
+  set('storeFormAddress', p.address);
+  set('storeFormCity',    p.city);
+  set('storeFormUf',      p.state_uf);
+  set('storeFormPhone',   p.phone);
+  set('storeFormCnpj',    p.cnpj_cpf);
+}
+
+async function saveStoreForm() {
+  const el      = id => document.getElementById(id);
+  const id      = el('storeFormId')?.value;
+  const name    = el('storeFormName')?.value?.trim();
+  const address = el('storeFormAddress')?.value?.trim() || null;
+  const city    = el('storeFormCity')?.value?.trim()    || null;
+  const uf      = el('storeFormUf')?.value?.trim()?.toUpperCase() || null;
+  const phone   = el('storeFormPhone')?.value?.trim()   || null;
+  const cnpj    = el('storeFormCnpj')?.value?.trim()    || null;
+  const payeeId = el('storeFormPayee')?.value           || null;
+  const errEl   = el('storeFormError');
+  if (!name) { if (errEl) { errEl.textContent = 'Informe o nome.'; errEl.style.display = ''; } return; }
+  if (errEl) errEl.style.display = 'none';
+  const payload = { name, address, city, state_uf: uf, phone, cnpj, payee_id: payeeId, family_id: _famId() };
+  let result;
+  if (id) {
+    const { data, error } = await sb.from('price_stores').update(payload).eq('id', id).select().single();
+    if (error) { if (errEl) { errEl.textContent = 'Erro: ' + error.message; errEl.style.display = ''; } return; }
+    result = data;
+  } else {
+    const { data, error } = await sb.from('price_stores').insert(payload).select().single();
+    if (error) { if (errEl) { errEl.textContent = 'Erro: ' + error.message; errEl.style.display = ''; } return; }
+    result = data;
+  }
+  toast(id ? '✓ Estabelecimento atualizado' : '✓ Estabelecimento criado', 'success');
+  await _loadPricesData();
+  _populatePricesStoreFilter();
+  if (_storeFormCallback) {
+    const freshStore = _px.stores.find(s => s.id === result.id) || result;
+    _storeFormCallback(freshStore);
+    _storeFormCallback = null;
+    closeModal('storeFormModal');
+    return;
+  }
+  closeModal('storeFormModal');
+  const managerEl = document.getElementById('pricesStoreModal');
+  if (managerEl && managerEl.style.display !== 'none') {
+    _renderStoreList(el('storeSearch')?.value || '');
+  }
+}
+
+async function deleteStore(storeId) {
+  const store = _px.stores.find(s => s.id === storeId);
+  if (!store) return;
+  if (!confirm(`Excluir "${store.name}"?\n\nOs registros de histórico vinculados serão mantidos sem referência de estabelecimento.`)) return;
+  await sb.from('price_history').update({ store_id: null }).eq('store_id', storeId);
+  const { error } = await sb.from('price_stores').delete().eq('id', storeId);
+  if (error) { toast('Erro: ' + error.message, 'error'); return; }
+  toast('Estabelecimento excluído', 'success');
+  await _loadPricesData();
+  _populatePricesStoreFilter();
+  _renderStoreList(document.getElementById('storeSearch')?.value || '');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STATS RECALCULATION
 // ─────────────────────────────────────────────────────────────────────────────
+
 async function _refreshItemStats(itemId) {
-  const { data: rows } = await sb.from('price_history').select('unit_price, purchased_at')
-    .eq('item_id', itemId).order('purchased_at', { ascending: false });
+  const { data: rows } = await sb.from('price_history')
+    .select('unit_price, purchased_at').eq('item_id', itemId)
+    .order('purchased_at', { ascending: false });
   if (!rows?.length) {
-    await sb.from('price_items').update({ avg_price: null, last_price: null, min_price: null, record_count: 0 }).eq('id', itemId);
+    await sb.from('price_items').update({ avg_price: null, last_price: null, record_count: 0 }).eq('id', itemId);
     return;
   }
   const prices = rows.map(r => r.unit_price).filter(v => v != null);
   const avg    = prices.reduce((a, b) => a + b, 0) / prices.length;
   await sb.from('price_items').update({
-    avg_price:    Math.round(avg * 100) / 100,
-    last_price:   prices[0],
-    min_price:    Math.min(...prices),
-    record_count: prices.length,
+    avg_price: Math.round(avg * 100) / 100, last_price: prices[0], record_count: prices.length,
   }).eq('id', itemId);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // RECEIPT SCAN na página de Preços
 // ══════════════════════════════════════════════════════════════════════════════
+
 let _pricesReceiptPending = null;
 
 function openPricesReceiptScan() {
@@ -888,9 +916,9 @@ function openPricesReceiptScan() {
   _pricesReceiptPending = null;
   const nameEl = document.getElementById('pricesReceiptFileName');
   if (nameEl) nameEl.textContent = '';
-  const btn    = document.getElementById('pricesReadAiBtn');
+  const btn = document.getElementById('pricesReadAiBtn');
+  if (btn) btn.style.display = 'none';
   const status = document.getElementById('pricesAiStatus');
-  if (btn)    btn.style.display    = 'none';
   if (status) status.style.display = 'none';
 }
 
@@ -907,10 +935,10 @@ async function onPricesReceiptSelected(inputEl) {
   if (!file) return;
   inputEl.value = '';
   const nameEl = document.getElementById('pricesReceiptFileName');
+  if (nameEl) nameEl.textContent = file.name;
   const btn    = document.getElementById('pricesReadAiBtn');
   const status = document.getElementById('pricesAiStatus');
-  if (nameEl) nameEl.textContent = file.name;
-  if (btn)    btn.style.display  = 'none';
+  if (btn)    btn.style.display = 'none';
   if (status) { status.style.display = ''; status.textContent = '⏳ Preparando arquivo...'; }
   try {
     if (file.type === 'application/pdf') {
@@ -919,11 +947,12 @@ async function onPricesReceiptSelected(inputEl) {
     } else if (file.type.startsWith('image/')) {
       const b64 = await _fileToBase64(file);
       _pricesReceiptPending = { base64: b64, mediaType: file.type, fileName: file.name };
-    } else { throw new Error('Formato não suportado.'); }
+    } else { throw new Error('Formato não suportado. Use imagem ou PDF.'); }
     if (status) status.style.display = 'none';
-    if (btn)    btn.style.display    = '';
+    if (btn)    btn.style.display = '';
   } catch(e) {
     if (status) status.textContent = '❌ ' + e.message;
+    toast('Erro ao preparar arquivo: ' + e.message, 'error');
   }
 }
 
@@ -959,44 +988,21 @@ async function readPricesReceiptWithAI() {
 }
 
 async function _callPricesVision(apiKey, pending) {
-  const catList = (state.categories || []).filter(c => c.type === 'expense').map(c => c.name).join(', ');
-  const today   = new Date().toISOString().slice(0, 10);
-  const prompt  =
-`Você é especialista em leitura de notas fiscais, cupons e recibos brasileiros.
-Analise a imagem e extraia TODOS os itens com seus preços unitários e quantidades.
-Responda SOMENTE com JSON válido, sem markdown.
-
-CATEGORIAS DISPONÍVEIS (use o nome exato ou null): ${catList || 'Alimentação, Higiene, Limpeza, Outros'}
-
-RETORNE EXATAMENTE ESTE JSON:
-{
-  "date": "YYYY-MM-DD",
-  "payee": "nome do estabelecimento",
-  "address": "endereço completo se visível, ou null",
-  "phone": "telefone do estabelecimento se visível, ou null",
-  "cnpj": "CNPJ se visível, ou null",
-  "items": [
-    {
-      "description": "nome normalizado do produto",
-      "ai_name": "nome exato como aparece no recibo",
-      "quantity": 1,
-      "unit_price": 0.00,
-      "total_price": 0.00,
-      "category": "categoria da lista ou null"
-    }
-  ]
-}
-
-REGRAS:
-- description: nome limpo, sem abreviações, em português, Title Case
-- quantity: decimal para peso (ex: 0.546 kg)
-- unit_price = total_price / quantity
-- date: data da compra; se não encontrar use ${today}
-- address: rua + número + bairro + cidade se visível
-
-Arquivo: ${pending.fileName}`;
-
-  const url  = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
+  const catList   = (state.categories || []).filter(c => c.type === 'expense').map(c => c.name).join(', ');
+  const storeList = _px.stores.slice(0, 20).map(s => s.name).join(', ');
+  const today     = new Date().toISOString().slice(0, 10);
+  const prompt =
+    `Você é especialista em leitura de notas fiscais e recibos brasileiros.\n` +
+    `Analise a imagem e extraia TODOS os itens com preços unitários e quantidades.\n` +
+    `ESTABELECIMENTOS JÁ CADASTRADOS: ${storeList || '(nenhum ainda)'}\n` +
+    `CATEGORIAS DISPONÍVEIS: ${catList || 'Alimentação, Higiene, Limpeza, Outros'}\n` +
+    `Responda SOMENTE com JSON válido, sem markdown.\n\n` +
+    `RETORNE EXATAMENTE ESTE JSON:\n` +
+    `{"date":"YYYY-MM-DD","payee":"nome do estabelecimento","address":"endereço ou null","cnpj":"CNPJ ou null",` +
+    `"items":[{"description":"nome normalizado","ai_name":"nome exato no recibo","quantity":1,"unit_price":0.00,"total_price":0.00,"category":"categoria ou null"}]}\n\n` +
+    `REGRAS: description=nome limpo sem abreviações; unit_price=total_price/quantity; date=${today} se não encontrar; ` +
+    `se payee bater com algum da lista use o nome exato.`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
   const resp = await fetch(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
