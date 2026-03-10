@@ -39,7 +39,6 @@
 #sidebarLogoImg {
   height: 52px !important; max-height: 52px !important; width: auto !important;
   max-width: 100% !important; object-fit: contain !important;
-  filter: brightness(0) invert(1) !important;
 }
 .nav-label { color: rgba(255,255,255,.35) !important; }
 .nav-item { color: rgba(255,255,255,.85) !important; }
@@ -3658,6 +3657,59 @@ function toggleUpcomingGroup(id) {
   body.style.display = isOpen ? 'none' : '';
   if (arrow) arrow.classList.toggle('open', !isOpen);
 }
+
+// ── Logo alternativo para fundo escuro (#16301f) ─────────────────
+// Deriva a URL "v2" inserindo "2" antes da extensão.
+// Ex: logo.png → logo2.png  |  logo → logo2  |  logo.svg → logo2.svg
+function _darkLogoUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  const dot = url.lastIndexOf('.');
+  const slash = url.lastIndexOf('/');
+  if (dot > slash) {                                 // tem extensão
+    return url.slice(0, dot) + '2' + url.slice(dot);
+  }
+  return url + '2';                                  // sem extensão
+}
+
+// Patch do setAppLogo: aguarda o módulo principal definir a função,
+// depois envolve ela para aplicar logo2 no sidebar escuro.
+(function patchSetAppLogo() {
+  let _orig = null;
+
+  function _applyDarkLogo() {
+    const el = document.getElementById('sidebarLogoImg');
+    if (!el) return;
+    const base = el.src;
+    const dark = _darkLogoUrl(base);
+    if (dark && dark !== base) el.src = dark;
+  }
+
+  function _wrap() {
+    if (typeof window.setAppLogo !== 'function') {
+      // ainda não carregou — tentar de novo após scripts
+      setTimeout(_wrap, 50);
+      return;
+    }
+    if (window.setAppLogo._darkPatched) return;   // já aplicado
+
+    _orig = window.setAppLogo;
+    window.setAppLogo = function(url) {
+      _orig(url);           // aplica o logo padrão em todos os elementos
+      _applyDarkLogo();     // depois sobrescreve apenas o sidebar
+    };
+    window.setAppLogo._darkPatched = true;
+
+    // Aplicar imediatamente ao logo já carregado
+    _applyDarkLogo();
+  }
+
+  // Iniciar patch assim que o DOM estiver pronto
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _wrap);
+  } else {
+    _wrap();
+  }
+})();
 </script>
 </body>
 </html>
