@@ -2709,38 +2709,31 @@
 </div>
 
 <!-- BOTTOM NAV -->
-<nav class="bottom-nav" id="bottomNav" aria-label="Navegação principal">
+<nav class="bottom-nav" id="bottomNav" aria-label="Navegação principal mobile">
   <div class="bottom-nav-inner">
-    <button class="bn-item active" onclick="navigate('dashboard')" data-page="dashboard" aria-label="Início" title="Início">
-      <span class="bn-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" focusable="false"><path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
-      </span>
+    <button class="bn-item active" onclick="navigate('dashboard')" data-page="dashboard" aria-label="Início">
+      <span class="bn-icon" aria-hidden="true">📊</span>
+      <span class="bn-label">Início</span>
     </button>
-    <button class="bn-item" onclick="navigate('transactions')" data-page="transactions" aria-label="Lançamentos" title="Lançamentos">
-      <span class="bn-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" focusable="false"><path d="M7 7h11"/><path d="M14 4l4 3-4 3"/><path d="M17 17H6"/><path d="M10 20l-4-3 4-3"/></svg>
-      </span>
+    <button class="bn-item" onclick="navigate('transactions')" data-page="transactions" aria-label="Lançamentos">
+      <span class="bn-icon" aria-hidden="true">↕</span>
+      <span class="bn-label">Lançamentos</span>
     </button>
-    <button class="fab" onclick="openTransactionModal()" aria-label="Nova transação" title="Nova transação">
-      <svg viewBox="0 0 24 24" focusable="false"><path d="M12 5v14M5 12h14"/></svg>
+    <button class="bn-item" onclick="navigate('accounts')" data-page="accounts" aria-label="Contas">
+      <span class="bn-icon" aria-hidden="true">🏦</span>
+      <span class="bn-label">Contas</span>
     </button>
-    <button class="bn-item" onclick="navigate('accounts')" data-page="accounts" aria-label="Contas" title="Contas">
-      <span class="bn-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" focusable="false"><path d="M4 9.5 12 4l8 5.5"/><path d="M6 10h12"/><path d="M7 10v8"/><path d="M12 10v8"/><path d="M17 10v8"/><path d="M4 18.5h16"/></svg>
-      </span>
+    <button class="bn-item" onclick="navigate('scheduled')" data-page="scheduled" aria-label="Programados">
+      <span class="bn-icon" aria-hidden="true">📅</span>
+      <span class="bn-label">Programados</span>
     </button>
-    <button class="bn-item" onclick="navigate('scheduled')" data-page="scheduled" aria-label="Programados" title="Programados">
-      <span class="bn-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" focusable="false"><path d="M7 3v3"/><path d="M17 3v3"/><path d="M4 8h16"/><rect x="4" y="5" width="16" height="15" rx="3" ry="3"/></svg>
-      </span>
-    </button>
-    <button class="bn-item" onclick="toggleSidebar()" data-page="more" aria-label="Mais" title="Mais">
-      <span class="bn-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" focusable="false"><path d="M5 7h14"/><path d="M5 12h14"/><path d="M5 17h14"/></svg>
-      </span>
+    <button class="bn-item" onclick="toggleSidebar()" data-page="more" aria-label="Mais opções">
+      <span class="bn-icon" aria-hidden="true">☰</span>
+      <span class="bn-label">Mais</span>
     </button>
   </div>
 </nav>
+<button class="fab" onclick="openTransactionModal()" aria-label="Nova transação">+</button>
 
 <!-- MODALS -->
 <!-- Transaction Detail Modal -->
