@@ -3514,17 +3514,18 @@ html, body{
 ══════════════════════════════════════════════════════════════════════════ */
 /* ── FX bar palette (dark-green, dark-mode-safe) ─── */
 :root {
-  --fx-bg:        #1a3329;   /* deep forest green                   */
-  --fx-bg2:       #1f3d30;   /* slightly lighter for chips          */
-  --fx-border:    rgba(255,255,255,.08);
-  --fx-text:      rgba(255,255,255,.55);   /* muted label/age        */
-  --fx-cur:       rgba(255,255,255,.80);   /* currency code          */
-  --fx-val:       #6ee7b7;   /* mint green — readable on dark bg    */
-  --fx-sep:       rgba(255,255,255,.28);
-  --fx-chip-h:    rgba(255,255,255,.06);   /* chip hover tint        */
-  --fx-stale-bg:  rgba(251,191,36,.12);
-  --fx-stale-brd: rgba(251,191,36,.45);
-  --fx-stale-txt: #fbbf24;
+  /* FX bar — paleta extraída do logo Family FinTrack */
+  --fx-bg:        #eef7f2;   /* verde menta muito claro             */
+  --fx-bg2:       rgba(255,255,255,.75);  /* chips: branco semi-transparente */
+  --fx-border:    #b0d9c0;   /* borda verde sage                    */
+  --fx-text:      #3a7a52;   /* verde médio para labels             */
+  --fx-cur:       #03511d;   /* verde escuro do texto "Family"      */
+  --fx-val:       #037762;   /* teal do texto "Fintrack"            */
+  --fx-sep:       #8abfa0;   /* separador verde suave               */
+  --fx-chip-h:    rgba(3,119,98,.08);    /* chip hover tint          */
+  --fx-stale-bg:  rgba(212,147,58,.10);
+  --fx-stale-brd: #d4933a;
+  --fx-stale-txt: #b5621a;
 }
 
 /* ── Container ────────────────────────────────────── */
@@ -3532,7 +3533,7 @@ html, body{
   position: sticky;
   top: var(--topbar-h);
   z-index: 99;
-  background: var(--fx-bg);
+  background: linear-gradient(90deg, #eaf5ee 0%, #f0faf5 50%, #eaf5ee 100%);
   border-bottom: 1px solid var(--fx-border);
   width: 100%;
 }
@@ -3602,7 +3603,7 @@ html, body{
 }
 .fx-chip:hover {
   background: var(--fx-chip-h);
-  border-color: rgba(110,231,183,.25);
+  border-color: #037762;
 }
 .fx-chip-stale {
   background: var(--fx-stale-bg);
