@@ -8,6 +8,10 @@ function openSidebar(){
   document.body.style.width='100%';
   document.body.dataset.scrollY=scrollY;
 }
+function toggleSidebar(){
+  const isOpen = document.getElementById('sidebar').classList.contains('open');
+  if (isOpen) closeSidebar(); else openSidebar();
+}
 function closeSidebar(){
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('sidebarOverlay').classList.remove('open');
