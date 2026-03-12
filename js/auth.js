@@ -150,27 +150,51 @@ async function _loadCurrentUserContext() {
     .maybeSingle();
 
   // family_members: fonte de verdade para vínculos multi-família
+  // Compatibilidade: alguns ambientes antigos podem ter salvo user_id como app_users.id
+  // e outros como auth.uid(). Aqui lemos ambos para não perder vínculos.
   let fm = [];
   try {
-    const { data: fmData } = await sb
-      .from('family_members')
-      .select('family_id, role, families(id,name)')
-      .eq('user_id', appUserRow?.id || user.id)
-      .order('created_at', { ascending: true });
-    fm = fmData || [];
+    const candidateIds = [appUserRow?.id, user.id].filter(Boolean);
+    if (candidateIds.length) {
+      const { data: fmData } = await sb
+        .from('family_members')
+        .select('user_id, family_id, role, families(id,name)')
+        .in('user_id', candidateIds)
+        .order('created_at', { ascending: true });
+      fm = fmData || [];
+    }
   } catch (_) { /* tabela ainda não existe */ }
 
   // Role global: app_users tem prioridade (owner/admin global)
   const appRole = appUserRow?.role || 'viewer';
 
   // Monta lista de famílias disponíveis com o role específico em cada uma
-  let userFamilies = fm
-    .filter(r => r.family_id)
-    .map(r => ({ id: r.family_id, name: r.families?.name || r.family_id, role: r.role || 'user' }));
+  // Faz deduplicação por família e prioriza o papel mais forte.
+  const roleRank = { owner: 4, admin: 3, user: 2, editor: 2, viewer: 1 };
+  const byFamily = new Map();
+  (fm || []).filter(r => r.family_id).forEach(r => {
+    const item = { id: r.family_id, name: r.families?.name || r.family_id, role: r.role || 'user' };
+    const prev = byFamily.get(item.id);
+    if (!prev || (roleRank[item.role] || 0) > (roleRank[prev.role] || 0)) byFamily.set(item.id, item);
+  });
+  let userFamilies = Array.from(byFamily.values());
 
   // Fallback: se family_members ainda não tem dados, usa app_users.family_id
+  // mas tenta buscar o nome real da família para não exibir UUID na UI.
   if (!userFamilies.length && appUserRow?.family_id) {
-    userFamilies = [{ id: appUserRow.family_id, name: appUserRow.family_id, role: appRole }];
+    let famName = appUserRow.family_id;
+    try {
+      const { data: famRow } = await sb
+        .from('families')
+        .select('id,name')
+        .eq('id', appUserRow.family_id)
+        .maybeSingle();
+      famName = famRow?.name || famName;
+    } catch (_) {}
+
+    // Admin/owner global mantém poder de gerenciar essa família legada.
+    const fallbackRole = (appRole === 'admin' || appRole === 'owner') ? 'owner' : appRole;
+    userFamilies = [{ id: appUserRow.family_id, name: famName, role: fallbackRole }];
   }
 
   // Prioridade: 1) preferência salva no banco, 2) última usada (localStorage), 3) primeira da lista
@@ -1560,12 +1584,23 @@ async function saveFamily() {
   }
   if (error) { toast('Erro: '+error.message,'error'); return; }
 
-  // Quando um owner cria uma nova família: adicioná-lo como owner nela
+  // Quando uma nova família é criada: vincular o usuário logado como owner
   if (!id && newFam?.id && currentUser?.id) {
     // Buscar app_users.id do usuário logado (currentUser.id é auth.uid)
-    const { data: appRow } = await sb.from('app_users').select('id').eq('email', currentUser.email).maybeSingle();
+    const { data: appRow } = await sb.from('app_users').select('id, family_id, preferred_family_id').eq('email', currentUser.email).maybeSingle();
     if (appRow?.id) {
-      await sb.from('family_members').insert({ user_id: appRow.id, family_id: newFam.id, role: 'owner' }).catch(()=>{});
+      await sb.from('family_members').upsert(
+        { user_id: appRow.id, family_id: newFam.id, role: 'owner' },
+        { onConflict: 'user_id,family_id' }
+      ).catch(()=>{});
+
+      // Em bases legadas, manter a primeira família também em app_users para compatibilidade
+      if (!appRow.family_id) {
+        await sb.from('app_users').update({ family_id: newFam.id }).eq('id', appRow.id).catch(()=>{});
+      }
+      if (!appRow.preferred_family_id) {
+        await sb.from('app_users').update({ preferred_family_id: newFam.id }).eq('id', appRow.id).catch(()=>{});
+      }
     }
   }
 
@@ -2688,7 +2723,7 @@ function _renderUserMenuFamilies() {
   const isGlobalAdmin = currentUser?.role === 'owner' || currentUser?.role === 'admin' || currentUser?.can_admin;
   const manageFamBtn  = document.getElementById('umManageFamilyBtn');
   if (manageFamBtn) {
-    manageFamBtn.style.display = (currentUser?.role === 'owner' && isFamOwner) ? '' : 'none';
+    manageFamBtn.style.display = (isFamOwner || isGlobalAdmin) ? '' : 'none';
   }
 
   // Ocultar switcher se só tiver 0 ou 1 família
