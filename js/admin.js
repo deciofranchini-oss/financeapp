@@ -16,24 +16,31 @@ function switchUATab(tab) {
 
 async function loadFamiliesList() {
   let families = [];
+  let lastErr = null;
   try {
-    const { data: rpcData, error: rpcErr } = await sb.rpc('get_manageable_families');
-    if (!rpcErr && Array.isArray(rpcData)) {
-      families = rpcData;
-    } else {
+    const { data, error } = await sb.rpc('get_manageable_families');
+    if (error) throw error;
+    families = data || [];
+  } catch (e) {
+    lastErr = e;
+    try {
       const { data, error } = await sb.from('families').select('*').order('name');
       if (error) throw error;
       families = data || [];
+    } catch (e2) {
+      lastErr = e2;
+      families = [];
     }
-  } catch(e) {
+  }
+  _families = families;
+  if (!_families.length && lastErr) {
     const el = document.getElementById('familiesList');
     if (el) el.innerHTML = `<div style="background:var(--amber-lt);border:1px solid var(--amber);border-radius:8px;padding:14px;font-size:.82rem">
       ⚠️ <strong>Não foi possível carregar as famílias.</strong><br>
-      Verifique as policies/RPCs de gestão de famílias no Supabase.
+      ${esc(lastErr.message || 'Verifique a configuração de RLS/RPC no Supabase.')}
     </div>`;
     return;
   }
-  _families = families || [];
 
   // Populate family select in user form
   const sel = document.getElementById('uFamilyId');
@@ -127,33 +134,23 @@ async function saveFamily() {
   const desc = document.getElementById('fDesc').value.trim();
   if (!name) { toast('Informe o nome da família','error'); return; }
   const data = { name, description: desc||null };
-  let error = null;
-  try {
-    if (id) {
-      const { error: rpcErr } = await sb.rpc('update_family_as_owner', {
-        p_family_id: id,
-        p_name: data.name,
-        p_description: data.description
-      });
-      if (rpcErr) {
-        const upd = await sb.from('families').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id);
-        error = upd.error;
-      }
-    } else {
-      const { error: rpcErr } = await sb.rpc('create_family_with_owner', {
-        p_name: data.name,
-        p_description: data.description
-      });
-      if (rpcErr) {
-        const ins = await sb.from('families').insert({ ...data, updated_at: new Date().toISOString() });
-        error = ins.error;
-      }
+  let error;
+  if (id) {
+    try {
+      const res = await sb.rpc('update_family_as_owner', { p_family_id: id, p_name: data.name, p_description: data.description });
+      error = res.error;
+      if (error) throw error;
+    } catch (e) {
+      ({ error } = await sb.from('families').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id));
     }
-  } catch(_) {
-    const res = id
-      ? await sb.from('families').update({ ...data, updated_at: new Date().toISOString() }).eq('id', id)
-      : await sb.from('families').insert({ ...data, updated_at: new Date().toISOString() });
-    error = res.error;
+  } else {
+    try {
+      const res = await sb.rpc('create_family_with_owner', { p_name: data.name, p_description: data.description });
+      error = res.error;
+      if (error) throw error;
+    } catch (e) {
+      ({ error } = await sb.from('families').insert({ ...data, updated_at: new Date().toISOString() }));
+    }
   }
   if (error) { toast('Erro: '+error.message,'error'); return; }
   toast(id ? '✓ Família atualizada!' : '✓ Família criada!','success');
