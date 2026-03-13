@@ -377,12 +377,32 @@ function _scrollActivePageToTop(page){
   });
 }
 
+// ── Navigation history (Feature 5 — Botão Voltar) ─────────────────────────
+const _navHistory = [];
+function navigateBack() {
+  if (_navHistory.length < 2) return;
+  _navHistory.pop(); // remove current
+  const prev = _navHistory.pop(); // will be re-pushed by navigate()
+  if (prev) navigate(prev);
+}
+function _syncBackBtn() {
+  const btn = document.getElementById('topbarBackBtn');
+  if (btn) btn.style.display = _navHistory.length >= 2 ? 'flex' : 'none';
+}
+
 function navigate(page){
-  // Guard: settings is admin-only
-  if((page==='settings' || page==='audit') && currentUser?.role !== 'admin') {
+  // Guard: settings/audit são admin-only
+  if((page==='settings'||page==='audit') && currentUser?.role !== 'admin'){
     toast('Acesso restrito: apenas admin/owner pode acessar Configurações.','warning');
     return;
   }
+
+  // Track history — skip duplicate consecutive
+  if (_navHistory[_navHistory.length-1] !== page) {
+    _navHistory.push(page);
+    if (_navHistory.length > 30) _navHistory.shift();
+  }
+  _syncBackBtn();
 
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.remove('active'));

@@ -609,64 +609,91 @@ function _onTxSourceAccountChange(accountId) {
 
 // ── Currency helpers for regular expense/income transactions ──────────────
 
-/** Returns currency of currently selected source account */
+/** Returns the account currency for the currently selected account */
 function _getTxAccountCurrency() {
   const accId = document.getElementById('txAccountId')?.value;
   const acc   = (state.accounts || []).find(a => a.id === accId);
   return acc?.currency || 'BRL';
 }
 
+/** Returns the transaction currency chosen by user (may differ from account currency) */
+function _getTxSelectedCurrency() {
+  const sel = document.getElementById('txCurrencySelect');
+  return (sel && sel.value) ? sel.value : _getTxAccountCurrency();
+}
+
 function _hideTxCurrencyPanel() {
   const p = document.getElementById('txCurrencyPanel');
   if (p) p.style.display = 'none';
-  const badge = document.getElementById('txCurrencyBadge');
-  if (badge) badge.textContent = 'BRL';
 }
 
-/** Updates currency badge and shows/hides the FX panel for expense/income */
-function _updateTxCurrencyPanel(accountId) {
-  const acc = (state.accounts || []).find(a => a.id === accountId);
-  const cur = acc?.currency || 'BRL';
-  const badge = document.getElementById('txCurrencyBadge');
-  if (badge) badge.textContent = cur;
+/** Rebuilds the currency selector keeping accountCurrency as first option */
+function _rebuildTxCurrencySelect(accountCur, selectedCur) {
+  const sel = document.getElementById('txCurrencySelect');
+  if (!sel) return;
+  const CURRENCIES = ['BRL','USD','EUR','GBP','AED','ARS','CAD','CHF','JPY','MXN','CLP','COP','PEN','UYU'];
+  const list = [...new Set([accountCur, ...CURRENCIES])];
+  sel.innerHTML = list.map(c =>
+    `<option value="${c}"${c===(selectedCur||accountCur)?' selected':''}>${c}</option>`
+  ).join('');
+}
 
-  const panel = document.getElementById('txCurrencyPanel');
+/** Updates currency panel and badge whenever account or currency changes */
+function _updateTxCurrencyPanel(accountId, forceCur) {
+  const acc        = (state.accounts || []).find(a => a.id === accountId);
+  const accountCur = acc?.currency || 'BRL';
+
+  // Build or reset the selector
+  const currentSel = forceCur || _getTxSelectedCurrency();
+  _rebuildTxCurrencySelect(accountCur, currentSel);
+
+  const txCur  = _getTxSelectedCurrency();
+  const badge  = document.getElementById('txCurrencyBadge');
+  if (badge) badge.textContent = txCur;
+
+  const panel  = document.getElementById('txCurrencyPanel');
   if (!panel) return;
 
-  if (cur === 'BRL' || !accountId) {
+  // Show panel whenever transaction currency differs from account currency
+  const needsConversion = (txCur !== accountCur) && !!accountId;
+  if (!needsConversion) {
     panel.style.display = 'none';
-    return;
+  } else {
+    panel.style.display = '';
+    const title     = document.getElementById('txCurrencyPanelTitle');
+    const fromLabel = document.getElementById('txCurrencyRateFromLabel');
+    const toLabel   = document.getElementById('txCurrencyRateToLabel');
+    if (title)     title.textContent = `Conversão: ${txCur} → ${accountCur}`;
+    if (fromLabel) fromLabel.textContent = txCur;
+    if (toLabel)   toLabel.textContent = accountCur;
+    const sugg = document.getElementById('txCurrencySuggestion');
+    if (sugg) sugg.style.display = 'none';
+    const preview = document.getElementById('txCurrencyPreview');
+    if (preview) preview.textContent = '';
+    fetchTxCurrencyRate();
   }
 
-  // Non-BRL account: show conversion panel
-  panel.style.display = '';
-  const title = document.getElementById('txCurrencyPanelTitle');
-  const fromLabel = document.getElementById('txCurrencyRateFromLabel');
-  if (title) title.textContent = `Conversão: ${cur} → BRL`;
-  if (fromLabel) fromLabel.textContent = cur;
+  // Feature 2: auto-trigger IOF when credit card + currencies differ
+  checkAccountIofConfig(accountId, txCur);
+}
 
-  // Clear suggestion + preview
-  const sugg = document.getElementById('txCurrencySuggestion');
-  if (sugg) sugg.style.display = 'none';
-  const preview = document.getElementById('txCurrencyPreview');
-  if (preview) preview.textContent = '';
-
-  // Auto-fetch suggestion
-  fetchTxCurrencyRate();
+/** Called when user picks a different transaction currency */
+function onTxCurrencyChange() {
+  const accId = document.getElementById('txAccountId')?.value;
+  _updateTxCurrencyPanel(accId);
 }
 
 function onTxAmountInput() {
-  // IOF mirror (existing)
   if (document.getElementById('txIsInternational')?.checked) updateIofMirror();
-  // Currency preview
   updateTxCurrencyPreview();
 }
 
 function updateTxCurrencyPreview() {
-  const cur    = _getTxAccountCurrency();
-  const panel  = document.getElementById('txCurrencyPanel');
+  const accountCur = _getTxAccountCurrency();
+  const txCur      = _getTxSelectedCurrency();
+  const panel      = document.getElementById('txCurrencyPanel');
   if (!panel || panel.style.display === 'none') return;
-  if (cur === 'BRL') return;
+  if (txCur === accountCur) return;
 
   const rateVal = parseFloat(document.getElementById('txCurrencyRate')?.value?.replace(',', '.'));
   const amtVal  = Math.abs(getAmtField('txAmount') || 0);
@@ -677,14 +704,15 @@ function updateTxCurrencyPreview() {
     if (hint) hint.textContent = '—';
     return;
   }
-  const brl = amtVal * rateVal;
-  if (preview) preview.textContent = `= ${fmt(brl, 'BRL')}`;
-  if (hint) hint.textContent = fmt(brl, 'BRL');
+  const converted = amtVal * rateVal;
+  if (preview) preview.textContent = `= ${fmt(converted, accountCur)}`;
+  if (hint) hint.textContent = fmt(converted, accountCur);
 }
 
 async function fetchTxCurrencyRate() {
-  const cur = _getTxAccountCurrency();
-  if (cur === 'BRL') return;
+  const accountCur = _getTxAccountCurrency();
+  const txCur      = _getTxSelectedCurrency();
+  if (!txCur || txCur === accountCur) return;
 
   const btn  = document.getElementById('txCurrencyFetchBtn');
   const icon = document.getElementById('txCurrencyFetchIcon');
@@ -694,25 +722,15 @@ async function fetchTxCurrencyRate() {
   if (sugg) sugg.style.display = 'none';
 
   try {
-    let txDate = document.getElementById('txDate')?.value || new Date().toISOString().slice(0, 10);
-    const todayStr = new Date().toISOString().slice(0, 10);
+    let txDate = document.getElementById('txDate')?.value || new Date().toISOString().slice(0,10);
+    const todayStr = new Date().toISOString().slice(0,10);
     if (txDate > todayStr) txDate = todayStr;
 
-    // Frankfurter: base=cur, to=BRL
-    // If cur = EUR use a direct call; EUR is always available as base
-    // Frankfurter doesn't serve EUR→EUR, so handle BRL base specially
-    let url, rate;
-    if (cur === 'EUR') {
-      url = `${FX_API_BASE}/${txDate}?base=EUR&to=BRL`;
-    } else {
-      // For USD, AED, etc: get cur→BRL directly
-      // Frankfurter supports any of its currencies as base
-      url = `${FX_API_BASE}/${txDate}?base=${cur}&to=BRL`;
-    }
+    const url = `${FX_API_BASE}/${txDate}?base=${txCur}&to=${accountCur}`;
     const res  = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    rate = json?.rates?.BRL;
+    const rate = json?.rates?.[accountCur];
     if (!rate) throw new Error('Taxa não encontrada');
 
     const usedDate = json.date || txDate;
@@ -720,12 +738,14 @@ async function fetchTxCurrencyRate() {
     const rateInput = document.getElementById('txCurrencyRate');
     if (rateInput) rateInput.value = rateStr;
     if (sugg) {
-      sugg.textContent = `📡 Cotação de ${usedDate} (BCE): 1 ${cur} = ${rateStr} BRL`;
+      sugg.textContent = `📡 Cotação de ${usedDate} (BCE): 1 ${txCur} = ${rateStr} ${accountCur}`;
       sugg.style.display = '';
       sugg.style.background = '';
       sugg.style.color = '';
     }
     updateTxCurrencyPreview();
+    // Atualiza preview de IOF se marcado
+    if (document.getElementById('txIsInternational')?.checked) updateIofMirror();
   } catch (e) {
     if (sugg) {
       sugg.textContent = `⚠️ Não foi possível buscar: ${e.message}. Informe a taxa manualmente.`;
@@ -911,14 +931,19 @@ async function saveTransaction(){
   const existingUrl    = document.getElementById('txAttachUrl').value || null;
   const existingName   = document.getElementById('txAttachNameHidden').value || null;
 
-  // Determine transaction currency from selected account
+  // Determine transaction currency — user may pick different currency than account (Feature 1)
   const _txSrcAccId = document.getElementById('txAccountId').value;
   const _txSrcAcc   = (state.accounts || []).find(a => a.id === _txSrcAccId);
-  const txCurrency  = _txSrcAcc?.currency || 'BRL';
+  const accountCurrency = _txSrcAcc?.currency || 'BRL';
+  const txCurrency  = _getTxSelectedCurrency?.() || accountCurrency;
 
-  // For non-BRL expense/income: compute brl_amount from the exchange rate panel
+  // Compute brl_amount when tx currency differs from account currency
   let brlAmount = null;
-  if (!isTransfer && txCurrency !== 'BRL') {
+  if (!isTransfer && txCurrency !== accountCurrency) {
+    const fxRate = parseFloat(document.getElementById('txCurrencyRate')?.value?.replace(',', '.'));
+    if (fxRate > 0) brlAmount = Math.abs(amount) * fxRate;
+  } else if (!isTransfer && accountCurrency !== 'BRL') {
+    // Non-BRL account, same currency — still compute BRL equivalent if rate present
     const fxRate = parseFloat(document.getElementById('txCurrencyRate')?.value?.replace(',', '.'));
     if (fxRate > 0) brlAmount = Math.abs(amount) * fxRate;
   }
@@ -1369,4 +1394,100 @@ async function setTransactionStatus(txId, status){
   if(state.currentPage==='transactions') await loadTransactions();
   if(state.currentPage==='dashboard') await loadDashboard();
   toast(status==='confirmed' ? '✅ Confirmada' : '⏳ Marcada como pendente', 'success');
+}
+
+// ── Feature 9: Sugestão automática do melhor cartão ──────────────────────
+
+/**
+ * Calcula quantos dias de prazo um cartão dá a partir de hoje.
+ * Lógica: se hoje <= best_purchase_day → paga na fatura deste mês (due_day)
+ *         senão → paga na fatura do mês seguinte
+ */
+function _cardDaysUntilPayment(card) {
+  if (!card.best_purchase_day || !card.due_day) return -1;
+  const today   = new Date();
+  const todayD  = today.getDate();
+  const bestDay = parseInt(card.best_purchase_day);
+  const dueDay  = parseInt(card.due_day);
+  if (isNaN(bestDay) || isNaN(dueDay)) return -1;
+
+  // Data de vencimento desta ou da próxima fatura
+  let dueDate;
+  if (todayD <= bestDay) {
+    // Ainda dentro do melhor período — vence neste mês
+    dueDate = new Date(today.getFullYear(), today.getMonth(), dueDay);
+  } else {
+    // Passou do melhor dia — vence no próximo mês
+    dueDate = new Date(today.getFullYear(), today.getMonth() + 1, dueDay);
+  }
+  const diff = Math.ceil((dueDate - today) / 86400000);
+  return diff;
+}
+
+/** Mostra (ou atualiza) o banner de sugestão de cartão no modal de transação */
+function suggestBestCard() {
+  const banner = document.getElementById('txBestCardSuggestion');
+  if (!banner) return;
+
+  const txType = document.getElementById('txTypeField')?.value;
+  // Só faz sentido para despesas
+  if (txType !== 'expense') { banner.style.display = 'none'; return; }
+
+  const cards = (state.accounts || []).filter(a =>
+    a.type === 'cartao_credito' && a.best_purchase_day && a.due_day
+  );
+
+  if (!cards.length) {
+    // Fallback: sugere última conta usada
+    const lastAccId = state.txFilter?.account || '';
+    const lastAcc   = lastAccId ? state.accounts.find(a => a.id === lastAccId) : null;
+    if (lastAcc) {
+      banner.style.display = '';
+      banner.innerHTML = `<span style="font-size:.8rem;color:var(--muted)">💡 Última conta usada: <strong>${esc(lastAcc.name)}</strong></span>`;
+    } else {
+      banner.style.display = 'none';
+    }
+    return;
+  }
+
+  // Ordena por maior prazo
+  const ranked = cards
+    .map(c => ({ card: c, days: _cardDaysUntilPayment(c) }))
+    .filter(x => x.days >= 0)
+    .sort((a, b) => b.days - a.days);
+
+  if (!ranked.length) { banner.style.display = 'none'; return; }
+
+  const best = ranked[0];
+  const today = new Date();
+  const bestPurchaseDate = new Date(today.getFullYear(), today.getMonth(), best.card.best_purchase_day);
+  const bestPurchaseFmt  = bestPurchaseDate.toLocaleDateString('pt-BR', {day:'2-digit',month:'2-digit'});
+
+  banner.style.display = '';
+  banner.innerHTML = `
+    <div style="display:flex;align-items:flex-start;gap:10px">
+      <span style="font-size:1.1rem;flex-shrink:0">💳</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:.78rem;font-weight:700;color:var(--accent);margin-bottom:2px">Cartão sugerido</div>
+        <div style="font-size:.85rem;font-weight:600">${esc(best.card.name)}</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:2px">
+          Melhor compra até dia <strong>${best.card.best_purchase_day}</strong> (${bestPurchaseFmt}) ·
+          <strong>${best.days}</strong> dias até pagamento
+        </div>
+        ${ranked.length > 1 ? `<div style="font-size:.7rem;color:var(--muted);margin-top:1px">${ranked.length-1} outro${ranked.length>2?'s':''} cartão${ranked.length>2?'s':''} disponível${ranked.length>2?'is':''}</div>` : ''}
+      </div>
+      <button type="button" onclick="event.stopPropagation();_applyCardSuggestion('${best.card.id}')"
+        style="font-size:.72rem;padding:4px 9px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;font-family:inherit;font-weight:600">
+        Usar
+      </button>
+    </div>`;
+}
+
+function _applyCardSuggestion(cardId) {
+  const sel = document.getElementById('txAccountId');
+  if (sel) {
+    sel.value = cardId;
+    _onTxSourceAccountChange(cardId);
+  }
+  suggestBestCard();
 }

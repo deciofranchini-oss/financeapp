@@ -88,7 +88,9 @@ function renderAccounts(ft=''){
 
 function renderAccountsFlat(accs,grid){
   if(!accs.length){grid.innerHTML='<div class="empty-state" style="grid-column:1/-1"><div class="es-icon">🏦</div><p>Nenhuma conta encontrada</p></div>';return;}
-  grid.innerHTML=accs.map(a=>accountCardHTML(a)).join('');
+  // Favoritas no topo (Feature 7)
+  const sorted = [...accs].sort((a,b)=>(b.is_favorite?1:0)-(a.is_favorite?1:0));
+  grid.innerHTML=sorted.map(a=>accountCardHTML(a)).join('');
 }
 
 function renderAccountsGrouped(accs,grid){
@@ -179,7 +181,11 @@ function renderAccountsSummary(){
 }
 
 function accountCardHTML(a){
-  return `<div class="account-card" onclick="goToAccountTransactions('${a.id}')">
+  const favStar = a.is_favorite ? '<span title="Favorita" style="position:absolute;top:6px;left:8px;font-size:.9rem">⭐</span>' : '';
+  const dueLine = (a.type==='cartao_credito' && a.due_day)
+    ? `<div style="font-size:.68rem;color:var(--muted);margin-top:2px">Vence dia ${a.due_day}</div>` : '';
+  return `<div class="account-card" onclick="goToAccountTransactions('${a.id}')" style="position:relative">
+    ${favStar}
     <div class="account-card-stripe" style="background:${a.color||'var(--accent)'}"></div>
     <div class="account-actions"><button class="btn-icon" onclick="event.stopPropagation();openAccountModal('${a.id}')">✏️</button><button class="btn-icon" onclick="event.stopPropagation();deleteAccount('${a.id}')">🗑️</button></div>
     <div class="account-icon" style="font-size:1.6rem;margin-bottom:8px">${renderIconEl(a.icon,a.color,36)}</div>
@@ -187,6 +193,7 @@ function accountCardHTML(a){
     <div class="account-type">${accountTypeLabel(a.type)}</div>
     <div class="account-balance ${a.balance<0?'text-red':'text-accent'}">${fmt(a.balance,a.currency)}</div>
     <div class="account-currency">${a.currency}</div>
+    ${dueLine}
   </div>`;
 }
 
@@ -210,7 +217,7 @@ function accountTypeLabel(t){
 }
 
 function openAccountModal(id=''){
-  const form={id:'',name:'',type:'corrente',currency:'BRL',initial_balance:0,icon:'',color:'#2a6049',is_brazilian:false,iof_rate:3.5,group_id:''};
+  const form={id:'',name:'',type:'corrente',currency:'BRL',initial_balance:0,icon:'',color:'#2a6049',is_brazilian:false,iof_rate:3.5,group_id:'',is_favorite:false,best_purchase_day:null,due_day:null};
   if(id){
     const a=state.accounts.find(x=>x.id===id);
     if(a){Object.assign(form,a);form.initial_balance=parseFloat(a.initial_balance)||0;}
@@ -228,15 +235,26 @@ function openAccountModal(id=''){
     gSel.innerHTML='<option value="">— Sem grupo —</option>'+state.groups.map(g=>`<option value="${g.id}">${g.emoji||'🗂️'} ${esc(g.name)}</option>`).join('');
     gSel.value=form.group_id||'';
   }
+  // Favorite (Feature 7)
+  const favEl=document.getElementById('accountIsFavorite');
+  if(favEl) favEl.checked=!!form.is_favorite;
+  // Credit card config
   const isCC=form.type==='cartao_credito';
   const iofConfig=document.getElementById('accountIofConfig');
   if(iofConfig)iofConfig.style.display=isCC?'':'none';
+  const cardDates=document.getElementById('accountCardDatesConfig');
+  if(cardDates)cardDates.style.display=isCC?'':'none';
   const isBREl=document.getElementById('accountIsBrazilian');
   if(isBREl)isBREl.checked=!!form.is_brazilian;
   const iofRateEl=document.getElementById('accountIofRate');
   if(iofRateEl)iofRateEl.value=form.iof_rate||3.5;
   const iofRateGrp=document.getElementById('accountIofRateGroup');
   if(iofRateGrp)iofRateGrp.style.display=form.is_brazilian?'':'none';
+  // Card dates (Feature 8)
+  const bpdEl=document.getElementById('accountBestPurchaseDay');
+  if(bpdEl) bpdEl.value=form.best_purchase_day||'';
+  const ddEl=document.getElementById('accountDueDay');
+  if(ddEl) ddEl.value=form.due_day||'';
   setTimeout(()=>syncIconPickerToValue(form.icon||'',form.color||'#2a6049'),50);
   openModal('accountModal');
 }
@@ -249,6 +267,9 @@ async function saveAccount(){
   const gSel=document.getElementById('accountGroupId');
   const gid=gSel?gSel.value||null:null;
   const iofRateEl=document.getElementById('accountIofRate');
+  const favEl=document.getElementById('accountIsFavorite');
+  const bpdEl=document.getElementById('accountBestPurchaseDay');
+  const ddEl=document.getElementById('accountDueDay');
   const data={
     name:document.getElementById('accountName').value.trim(),
     type:document.getElementById('accountType').value,
@@ -259,6 +280,9 @@ async function saveAccount(){
     is_brazilian:isBR,
     iof_rate:isBR?(parseFloat(iofRateEl&&iofRateEl.value)||3.5):null,
     group_id:gid,
+    is_favorite: favEl ? !!favEl.checked : false,
+    best_purchase_day: isCC&&bpdEl&&bpdEl.value ? (parseInt(bpdEl.value)||null) : null,
+    due_day: isCC&&ddEl&&ddEl.value ? (parseInt(ddEl.value)||null) : null,
     updated_at:new Date().toISOString()
   };
   if(!data.name){toast('Informe o nome da conta','error');return;}
@@ -625,6 +649,8 @@ function onAccountTypeChange(){
   const isCC=type==='cartao_credito';
   const iofConfig=document.getElementById('accountIofConfig');
   if(iofConfig)iofConfig.style.display=isCC?'':'none';
+  const cardDates=document.getElementById('accountCardDatesConfig');
+  if(cardDates)cardDates.style.display=isCC?'':'none';
 }
 
 async function checkAccountIofConfig(accountId){

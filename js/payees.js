@@ -174,10 +174,10 @@ function payeeRow(p) {
   const colorIdx = (p.name||'').charCodeAt(0) % colors.length;
   const avatarColor = colors[colorIdx];
   const txCount = _payeeTxCounts[p.id] || 0;
+  // Feature 4: badge clicável abre histórico
   const txBadge = txCount > 0
-    ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.72rem;font-weight:600;color:var(--accent);background:var(--accent-lt);border:1px solid var(--accent)30;border-radius:20px;padding:1px 7px">${txCount} tx</span>`
+    ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.72rem;font-weight:600;color:var(--accent);background:var(--accent-lt);border:1px solid var(--accent)30;border-radius:20px;padding:1px 7px;cursor:pointer" onclick="event.stopPropagation();openPayeeHistory('${p.id}','${esc(p.name)}')" title="Ver histórico">${txCount} tx 📋</span>`
     : `<span style="font-size:.72rem;color:var(--muted)">—</span>`;
-  // Build contact chips
   const locParts = [p.address, p.city, p.state_uf].filter(Boolean);
   const locLine  = locParts.length ? locParts.join(', ') : '';
   const contactChips = [
@@ -187,7 +187,11 @@ function payeeRow(p) {
     p.website ? `<a href="${esc(p.website)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="Site" style="font-size:.7rem;color:var(--accent)">🌐 ${esc(p.website.replace(/^https?:\/\//, ''))}</a>` : '',
     p.cnpj_cpf? `<span title="CNPJ/CPF" style="font-size:.7rem;color:var(--muted)">🪪 ${esc(p.cnpj_cpf)}</span>` : '',
   ].filter(Boolean);
-  return `<tr class="payee-row">
+  // Feature 4: linha clicável quando há transações
+  const rowAttrs = txCount > 0
+    ? `onclick="openPayeeHistory('${p.id}','${esc(p.name)}')" style="cursor:pointer"`
+    : '';
+  return `<tr class="payee-row" ${rowAttrs}>
     <td>
       <div style="display:flex;align-items:center;gap:10px">
         <div class="payee-row-avatar" style="background:${avatarColor}18;border:1.5px solid ${avatarColor}40;color:${avatarColor}">${initials}</div>
@@ -202,11 +206,73 @@ function payeeRow(p) {
     <td style="text-align:center">${txBadge}</td>
     <td>
       <div style="display:flex;gap:5px;justify-content:flex-end">
-        <button class="btn-icon" onclick="openPayeeModal('${p.id}')" title="Editar">✏️</button>
-        <button class="btn-icon" onclick="deletePayee('${p.id}')" title="Excluir" style="color:var(--red)">🗑️</button>
+        <button class="btn-icon" onclick="event.stopPropagation();openPayeeModal('${p.id}')" title="Editar">✏️</button>
+        <button class="btn-icon" onclick="event.stopPropagation();deletePayee('${p.id}')" title="Excluir" style="color:var(--red)">🗑️</button>
       </div>
     </td>
   </tr>`;
+}
+
+// Feature 4: modal com histórico de transações do beneficiário (últimos 6 meses)
+async function openPayeeHistory(payeeId, payeeName) {
+  const modal = document.getElementById('payeeHistoryModal');
+  if (!modal) return;
+  document.getElementById('payeeHistoryTitle').textContent = payeeName + ' — últimos 6 meses';
+  document.getElementById('payeeHistoryTotal').textContent = '';
+  document.getElementById('payeeHistoryBody').innerHTML =
+    '<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">Carregando…</td></tr>';
+  openModal('payeeHistoryModal');
+
+  const since = new Date();
+  since.setMonth(since.getMonth() - 6);
+  const sinceStr = since.toISOString().slice(0,10);
+
+  const { data, error } = await famQ(
+    sb.from('transactions')
+      .select('id,date,description,amount,currency,brl_amount,status,accounts!transactions_account_id_fkey(name,currency),categories(name,color)')
+      .eq('payee_id', payeeId)
+      .gte('date', sinceStr)
+      .order('date', { ascending: false })
+      .limit(200)
+  );
+
+  if (error) {
+    document.getElementById('payeeHistoryBody').innerHTML =
+      `<tr><td colspan="4" style="text-align:center;color:var(--red)">Erro: ${esc(error.message)}</td></tr>`;
+    return;
+  }
+  if (!data || !data.length) {
+    document.getElementById('payeeHistoryBody').innerHTML =
+      '<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">Nenhuma transação nos últimos 6 meses</td></tr>';
+    return;
+  }
+
+  const total = data.reduce((s,t) => s + (parseFloat(t.amount)||0), 0);
+  document.getElementById('payeeHistoryTotal').textContent =
+    data.length + ' transações · Total: ' + fmt(total);
+
+  document.getElementById('payeeHistoryBody').innerHTML = data.map(t => {
+    const cur = t.currency || t.accounts?.currency || 'BRL';
+    const amtClass = (parseFloat(t.amount)||0) >= 0 ? 'amount-pos' : 'amount-neg';
+    const catBadge = t.categories
+      ? `<span class="badge" style="background:${t.categories.color}18;color:${t.categories.color};border:1px solid ${t.categories.color}28;font-size:.65rem">${esc(t.categories.name)}</span>`
+      : '';
+    const pendDot = t.status==='pending'
+      ? '<span title="Pendente" style="color:var(--amber);font-size:.75rem"> ⏳</span>' : '';
+    return `<tr style="cursor:pointer" onclick="closeModal('payeeHistoryModal');editTransaction('${t.id}')">
+      <td style="white-space:nowrap;font-size:.8rem;color:var(--muted)">${fmtDate(t.date)}</td>
+      <td>
+        <div style="font-size:.85rem;font-weight:500">${esc(t.description||'')}${pendDot}</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">${catBadge}</div>
+        <div style="font-size:.7rem;color:var(--muted)">${esc(t.accounts?.name||'')}</div>
+      </td>
+      <td class="${amtClass}" style="white-space:nowrap;font-weight:600;text-align:right">
+        ${(parseFloat(t.amount)||0)>=0?'+':''}${fmt(t.amount,cur)}
+        ${cur!=='BRL'&&t.brl_amount?`<div style="font-size:.68rem;color:var(--muted)">${fmt(t.brl_amount,'BRL')}</div>`:''}
+      </td>
+      <td style="text-align:center;font-size:.75rem;color:var(--muted)">${esc(t.accounts?.name||'')}</td>
+    </tr>`;
+  }).join('');
 }
 
 const PAYEE_GROUP_DEF = [
