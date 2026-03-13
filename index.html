@@ -518,6 +518,14 @@
       <button class="hamburger" onclick="toggleSidebar()" aria-label="Menu">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
+      <!-- Feature 5: Botão Voltar universal -->
+      <button id="topbarBackBtn" onclick="navigateBack()" title="Voltar"
+        style="display:none;align-items:center;justify-content:center;width:32px;height:32px;
+               border:none;border-radius:8px;background:var(--surface2);cursor:pointer;
+               color:var(--text);flex-shrink:0;transition:background .15s"
+        onmouseover="this.style.background='var(--border2)'" onmouseout="this.style.background='var(--surface2)'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
       <img id="topbarLogoImg" src="" alt="Family FinTrack" style="height:36px;width:auto;object-fit:contain;display:none">
       <span class="topbar-title" id="pageTitle">Dashboard</span>
     </div>
@@ -2826,16 +2834,22 @@
               <input type="text" id="txAmount" inputmode="numeric" placeholder="0,00" pattern="[0-9.,]*" autocomplete="off"
                 oninput="onTxAmountInput()">
             </div>
-            <span id="txCurrencyBadge"
-              style="flex-shrink:0;padding:6px 10px;border-radius:var(--r-sm);background:var(--surface2);
+            <!-- Feature 1: seletor de moeda da transação (pode diferir da moeda da conta) -->
+            <select id="txCurrencySelect" onchange="onTxCurrencyChange()"
+              style="flex-shrink:0;padding:6px 8px;border-radius:var(--r-sm);background:var(--surface2);
                      border:1px solid var(--border);font-size:.8rem;font-weight:700;
-                     color:var(--accent);letter-spacing:.04em;white-space:nowrap">BRL</span>
+                     color:var(--accent);cursor:pointer;max-width:80px">
+              <option value="BRL">BRL</option>
+            </select>
+            <span id="txCurrencyBadge" style="display:none">BRL</span>
           </div>
         </div>
         <div class="form-group full"><label>Descrição *</label><input type="text" id="txDesc" placeholder="Ex: Almoço no restaurante"></div>
 
                 <div class="form-group"><label>Status</label><select id="txStatus"><option value="confirmed">Confirmada</option><option value="pending">Pendente</option></select></div>
 <div class="form-group"><label>Conta *</label><select id="txAccountId" onchange="_onTxSourceAccountChange(this.value)"></select></div>
+        <!-- Feature 9: sugestão do melhor cartão -->
+        <div id="txBestCardSuggestion" style="display:none;grid-column:1/-1;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 14px;margin-top:-4px"></div>
         <!-- Currency conversion panel — expense/income with non-BRL account -->
         <div id="txCurrencyPanel" style="display:none;grid-column:1/-1;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px 14px">
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
@@ -2851,7 +2865,7 @@
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
             <div style="flex:1;min-width:120px">
               <label style="font-size:.75rem;font-weight:600;color:var(--text-muted,#374151);display:block;margin-bottom:3px">
-                Taxa (1 <span id="txCurrencyRateFromLabel">USD</span> = ? BRL)
+                Taxa (1 <span id="txCurrencyRateFromLabel">USD</span> = ? <span id="txCurrencyRateToLabel">BRL</span>)
               </label>
               <input type="text" id="txCurrencyRate" inputmode="decimal" placeholder="1.00000"
                 style="width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:.9rem;font-family:var(--font-serif);font-weight:600;box-sizing:border-box;background:var(--surface)"
@@ -2860,7 +2874,7 @@
             <div id="txCurrencyPreview" style="font-size:.82rem;color:var(--accent);padding-top:18px;white-space:nowrap"></div>
           </div>
           <div style="font-size:.75rem;color:var(--muted);margin-top:8px">
-            💡 O valor em BRL (<span id="txCurrencyBrlHint">—</span>) será registrado para fins de relatórios e orçamentos.
+            💡 O valor convertido (<span id="txCurrencyBrlHint">—</span>) será registrado para fins de relatórios e orçamentos.
           </div>
         </div>
 
@@ -2946,6 +2960,33 @@
         <div class="form-group"><label>Tipo *</label><select id="accountType" onchange="onAccountTypeChange()"><option value="corrente">Conta Corrente</option><option value="poupanca">Poupança</option><option value="cartao_credito">Cartão de Crédito</option><option value="investimento">Investimentos</option><option value="dinheiro">Dinheiro</option><option value="outros">Outros</option></select></div>
         <div class="form-group"><label>Moeda</label><select id="accountCurrency"><option value="BRL">BRL — Real</option><option value="USD">USD — Dólar</option><option value="EUR">EUR — Euro</option><option value="AED">AED — Dirham</option></select></div>
         <div class="form-group full"><label>Grupo</label><select id="accountGroupId"><option value="">— Sem grupo —</option></select></div>
+        <!-- Feature 7: conta favorita -->
+        <div class="form-group full">
+          <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:.875rem;font-weight:500">
+            <input type="checkbox" id="accountIsFavorite" style="width:16px;height:16px;cursor:pointer">
+            ⭐ Conta favorita <span style="font-size:.75rem;color:var(--muted);font-weight:400">(aparece no topo da lista)</span>
+          </label>
+        </div>
+        <!-- Feature 8: datas do cartão (só para cartão de crédito) -->
+        <div class="form-group full" id="accountCardDatesConfig" style="display:none">
+          <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px 14px">
+            <div style="font-size:.78rem;font-weight:700;color:var(--accent);margin-bottom:10px">💳 Datas do Cartão</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div>
+                <label style="font-size:.75rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Melhor dia de compra</label>
+                <input type="number" id="accountBestPurchaseDay" min="1" max="31" placeholder="Ex: 10" inputmode="numeric"
+                  style="width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:.9rem;font-family:var(--font-serif);box-sizing:border-box;background:var(--surface)">
+                <div style="font-size:.7rem;color:var(--muted);margin-top:3px">Dia com maior prazo até vencimento</div>
+              </div>
+              <div>
+                <label style="font-size:.75rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Dia de vencimento</label>
+                <input type="number" id="accountDueDay" min="1" max="31" placeholder="Ex: 25" inputmode="numeric"
+                  style="width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:.9rem;font-family:var(--font-serif);box-sizing:border-box;background:var(--surface)">
+                <div style="font-size:.7rem;color:var(--muted);margin-top:3px">Data de pagamento da fatura</div>
+              </div>
+            </div>
+          </div>
+        </div>
         <!-- IOF config - só para cartão de crédito -->
         <div class="form-group full" id="accountIofConfig" style="display:none">
           <div class="iof-config visible">
@@ -3219,6 +3260,26 @@
       </div>
     </div>
     <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('categoryModal')">Cancelar</button><button class="btn btn-primary" onclick="saveCategory()">Salvar</button></div>
+  </div>
+</div>
+
+<!-- Feature 4: Histórico de transações do beneficiário -->
+<div class="modal-overlay" id="payeeHistoryModal">
+  <div class="modal" style="max-width:680px"><div class="modal-handle"></div>
+    <div class="modal-header">
+      <span class="modal-title" id="payeeHistoryTitle">Histórico</span>
+      <button class="modal-close" onclick="closeModal('payeeHistoryModal')">✕</button>
+    </div>
+    <div class="modal-body" style="padding:0">
+      <div style="padding:10px 16px 8px;background:var(--surface2);border-bottom:1px solid var(--border);font-size:.78rem;color:var(--muted)" id="payeeHistoryTotal"></div>
+      <div class="table-wrap" style="margin:0;max-height:60vh;overflow-y:auto">
+        <table>
+          <thead><tr><th style="width:72px">Data</th><th>Descrição</th><th style="text-align:right">Valor</th><th style="width:40px"></th></tr></thead>
+          <tbody id="payeeHistoryBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('payeeHistoryModal')">Fechar</button></div>
   </div>
 </div>
 
