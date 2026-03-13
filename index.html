@@ -1447,6 +1447,17 @@
             </div>
             <button class="btn btn-ghost btn-sm" id="userMgmtBadgeBtn" onclick="openUserAdmin()">Gerenciar</button>
           </div>
+          <!-- Módulos da família — toggles visíveis para owner/admin -->
+          <div class="cfg-row" id="famModulesRow" style="display:none;align-items:flex-start;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px;width:100%">
+              <span class="cfg-row-icon" style="background:var(--green-lt)">🧩</span>
+              <div class="cfg-row-info">
+                <span class="cfg-row-label">Módulos da Família</span>
+                <span class="cfg-row-sub">Ative ou desative funcionalidades</span>
+              </div>
+            </div>
+            <div class="fam-mod-pills" id="famModulesPills" style="width:100%;padding-left:38px"></div>
+          </div>
           <!-- Menu visibility -->
           <div id="menuVisibilitySection" style="display:none">
             <div class="cfg-row cfg-row-expand" id="menuVisibilitySection_inner" style="align-items:flex-start;flex-direction:column;gap:8px">
