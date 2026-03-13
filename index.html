@@ -629,7 +629,7 @@
 
     <!-- DASHBOARD -->
     <div class="page active" id="page-dashboard">
-      <div class="grid-4 mb-6">
+      <div class="grid-4 mb-4">
         <div class="stat-card"><div class="stat-accent"></div><div class="stat-label">Patrimônio Total</div><div class="stat-value text-accent" id="statTotal">—</div><div class="stat-sub">Todas as contas</div></div>
         <div class="stat-card"><div class="stat-accent" style="background:var(--green)"></div><div class="stat-label">Receitas do Mês</div><div class="stat-value text-green" id="statIncome">—</div><div class="stat-sub">Mês atual</div></div>
         <div class="stat-card"><div class="stat-accent" style="background:var(--red)"></div><div class="stat-label">Despesas do Mês</div><div class="stat-value text-red" id="statExpenses">—</div><div class="stat-sub">Mês atual</div></div>
@@ -717,13 +717,10 @@
         <div class="table-wrap">
           <table class="tx-table">
             <thead><tr>
-              <th class="tx-th-date"   onclick="sortTx('date')">Data ⇅</th>
-              <th class="tx-th-acct">Conta</th>
-              <th class="tx-th-desc">Descrição</th>
-              <th class="tx-th-pay">Beneficiário</th>
-              <th class="tx-th-cat">Categoria</th>
-              <th class="tx-th-amt" onclick="sortTx('amount')">Valor ⇅</th>
-              <th class="tx-th-act"></th>
+              <th class="tx-v2-th-date" onclick="sortTx('date')">Data ⇅</th>
+              <th class="tx-v2-th-body">Descrição</th>
+              <th class="tx-v2-th-right" onclick="sortTx('amount')">Valor ⇅</th>
+              <th class="tx-v2-th-act"></th>
             </tr></thead>
             <tbody id="txBody">
               <tr><td colspan="7" class="text-muted" style="text-align:center;padding:32px;font-size:.83rem">Carregando...</td></tr>
@@ -1360,255 +1357,159 @@
 
     <!-- SETTINGS PAGE -->
     <div class="page" id="page-settings">
-      <div class="section-header mb-6"><span class="section-title">Configurações</span></div>
+      <!-- Compact header with user info inline -->
+      <div class="cfg-header">
+        <div class="cfg-user-row">
+          <div id="settingsUserAvatarWrap"
+               onclick="openMyProfile()" title="Alterar foto"
+               style="width:38px;height:38px;border-radius:50%;overflow:hidden;flex-shrink:0;cursor:pointer;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;background:var(--surface2)"
+               onmouseover="this.style.opacity='.75'" onmouseout="this.style.opacity='1'">
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="currentUserName">—</div>
+            <div style="font-size:.72rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="currentUserEmail">—</div>
+          </div>
+          <div style="display:flex;gap:5px;flex-shrink:0">
+            <button class="btn btn-ghost btn-sm" onclick="openMyProfile()" title="Foto de perfil">🖼️</button>
+            <button class="btn btn-ghost btn-sm" onclick="showChangeMyPwd()" title="Alterar senha">🔑</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="doLogout()" title="Sair">↩</button>
+          </div>
+        </div>
+        <img id="settingsLogoImg" src="https://deciofranchini-oss.github.io/fintrack/logo.png" alt="" style="height:28px;object-fit:contain;opacity:.6;margin-top:6px">
+      </div>
 
-<div class="settings-section">
-        <div class="settings-card">
-          <div class="settings-row" style="justify-content:center;padding:20px;flex-direction:column;gap:0">
-            <img id="settingsLogoImg" src="https://deciofranchini-oss.github.io/fintrack/logo.png" alt="Family FinTrack" style="height:150px;object-fit:contain;mix-blend-mode:normal">
-            <div style="text-align:center">
-              <div style="font-weight:700;font-size:1.15rem;font-family:var(--font-serif);color:var(--text)">Family FinTrack</div>
-              <div style="font-size:.75rem;color:var(--muted);margin-top:3px">Família inteligente,  Finanças sob controle</div>
-            </div>
+      <!-- ══ SEÇÃO: Conta & Segurança ══ -->
+      <div class="cfg-section" id="currentUserSection">
+        <button class="cfg-sec-hdr" onclick="toggleCfgSection('cfgSec_conta')">
+          <span class="cfg-sec-icon" style="background:var(--accent-lt)">👤</span>
+          <span class="cfg-sec-title">Conta &amp; Segurança</span>
+          <span class="cfg-sec-arr" id="cfgArr_conta">▾</span>
+        </button>
+        <div class="cfg-sec-body open" id="cfgSec_conta">
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:var(--bg2)">🖼️</span>
+            <span class="cfg-row-label">Foto de Perfil</span>
+            <button class="btn btn-ghost btn-sm" onclick="openMyProfile()">Alterar</button>
+          </div>
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:var(--bg2)">🔑</span>
+            <span class="cfg-row-label">Senha</span>
+            <button class="btn btn-ghost btn-sm" onclick="showChangeMyPwd()">Alterar</button>
+          </div>
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:var(--red-lt)">🚪</span>
+            <span class="cfg-row-label" style="color:var(--muted)" id="settingsCurrentUser">—</span>
+            <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="doLogout()">Sair</button>
           </div>
         </div>
       </div>
 
-
-
-
-      <!-- Current user info -->
-      <div class="settings-section" id="currentUserSection">
-        <div class="settings-card">
-          <div class="settings-row" style="gap:14px">
-            <div id="settingsUserAvatarWrap"
-                 onclick="openMyProfile()"
-                 title="Alterar foto"
-                 style="width:52px;height:52px;border-radius:50%;overflow:hidden;flex-shrink:0;
-                        cursor:pointer;border:2px solid var(--border);transition:opacity .15s;
-                        display:flex;align-items:center;justify-content:center;background:var(--surface2)"
-                 onmouseover="this.style.opacity='.75'" onmouseout="this.style.opacity='1'">
-            </div>
-            <div class="settings-row-info" style="flex:1;min-width:0">
-              <div class="settings-row-label" id="currentUserName">—</div>
-              <div class="settings-row-sub" id="currentUserEmail">—</div>
-            </div>
-            <div class="settings-row-action" style="display:flex;gap:6px;flex-wrap:wrap">
-              <button class="btn btn-ghost btn-sm" onclick="openMyProfile()">🖼️ Foto</button>
-              <button class="btn btn-ghost btn-sm" onclick="showChangeMyPwd()">🔑 Senha</button>
-              <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="doLogout()">↩ Sair</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <!-- Menu visibility (admin configurable) -->
-      <div class="settings-section" id="menuVisibilitySection" style="display:none">
-        <div class="settings-card">
-          <div class="settings-row" style="align-items:flex-start">
-            <div class="settings-row-icon" style="background:var(--accent-lt)">📋</div>
-            <div class="settings-row-body">
-              <div class="settings-row-title">Itens do menu</div>
-              <div class="settings-row-subtitle">Escolha quais páginas aparecem no menu lateral (configuração global).</div>
-
-              <div id="menuVisibilityForm" style="margin-top:10px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"></div>
-
-              <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-                <button class="btn btn-primary" onclick="saveMenuVisibility()">Salvar</button>
-                <button class="btn" onclick="resetMenuVisibility()">Restaurar padrão</button>
-              </div>
-              <div id="menuVisibilityHint" class="text-muted" style="margin-top:8px;font-size:.85rem"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-
-      <!-- Logo -->
-      
-      <!-- App logo (admin only) -->
-      <div class="settings-section" id="logoSettingsSection" style="display:none">
-        <div class="settings-card">
-          <div class="settings-row" style="align-items:flex-start;gap:12px;flex-wrap:wrap">
-            <div class="settings-row-icon" style="background:var(--amber-lt)">🖼️</div>
-            <div class="settings-row-info" style="min-width:240px;flex:1">
-              <div class="settings-row-label">Logotipo da aplicação (Admin)</div>
-              <div class="settings-row-sub">Faça upload (PNG/JPG/SVG) ou cole uma URL. O logo é aplicado imediatamente.</div>
-
-              <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
-                <input id="appLogoUrl" type="text" placeholder="URL ou DataURL do logo" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);color:var(--text2)">
-                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-                  <input id="appLogoFile" type="file" accept="image/*" style="max-width:260px">
-                  <button class="btn btn-primary btn-sm" onclick="saveAppLogo()">💾 Salvar</button>
-                  <button class="btn btn-ghost btn-sm" onclick="resetAppLogo()">↺ Restaurar padrão</button>
-                </div>
-                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-                  <img id="appLogoPreview" alt="Preview do logo" style="height:44px;max-width:220px;object-fit:contain;border:1px solid var(--border);border-radius:10px;padding:6px;background:var(--surface)">
-                  <span class="text-muted" style="font-size:.75rem">Preview</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Conexão -->
-      <div class="settings-section">
-        <div class="settings-group-label">🔗 Conexão &amp; Integrações</div>
-        <div class="settings-card">
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:var(--blue-lt)">🗄️</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Supabase</div>
-              <div class="settings-row-sub" id="supabaseStatusLabel">Verificando...</div>
-            </div>
-            <div class="settings-row-action">
-              <button class="btn btn-ghost btn-sm" onclick="document.getElementById('setupScreen').style.display='flex'">Reconfigurar</button>
-            </div>
-          </div>
-          <div class="settings-row" id="serviceRoleRow" style="display:none">
-            <div class="settings-row-icon" style="background:#fef3c7">🔑</div>
-            <div class="settings-row-info" style="flex:1;min-width:0">
-              <div class="settings-row-label">Service Role Key <span style="font-size:.68rem;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:4px;padding:1px 5px;margin-left:4px">Admin</span></div>
-              <div class="settings-row-sub">Necessária para redefinir senhas de outros usuários. Guardada só neste browser.</div>
-              <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
-                <input type="password" id="serviceRoleKeyInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." autocomplete="off"
-                  style="flex:1;font-size:.78rem;padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);color:var(--text);font-family:monospace;min-width:0">
-                <button class="btn btn-ghost btn-sm" onclick="saveServiceRoleKey()" style="white-space:nowrap;flex-shrink:0">Salvar</button>
-                <button class="btn btn-ghost btn-sm" onclick="clearServiceRoleKey()" style="white-space:nowrap;flex-shrink:0;color:var(--muted)">Remover</button>
-              </div>
-              <div id="serviceRoleKeyStatus" style="font-size:.72rem;margin-top:4px;color:var(--muted)"></div>
-            </div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:#fff7ed">🗑️</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Limpar Cache</div>
-              <div class="settings-row-sub">Remove dados temporários do navegador</div>
-            </div>
-            <div class="settings-row-action">
-              <button class="btn btn-ghost btn-sm" style="color:var(--orange)" onclick="clearAppCache()">Limpar</button>
-            </div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:var(--green-lt)">📧</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">EmailJS</div>
-              <div class="settings-row-sub" id="ejSettingsSub">Para envio de relatórios por e-mail</div>
-            </div>
-            <div class="settings-row-action">
-              <button class="btn btn-ghost btn-sm" onclick="showEmailConfig()">Configurar</button>
-            </div>
-          </div>
-          <!-- IA / Anthropic -->
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:#f5f3ff">🤖</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label" style="display:flex;align-items:center;gap:6px">
-                Leitura de Recibos com IA
-                <span id="aiStatusDot" style="width:8px;height:8px;border-radius:50%;background:#d1d5db;flex-shrink:0"></span>
-              </div>
-              <div class="settings-row-sub" id="aiSettingsSub">Configure para habilitar leitura automática de recibos</div>
-            </div>
-            <div class="settings-row-action">
-              <button class="btn btn-ghost btn-sm" onclick="showAiConfig()">Configurar</button>
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      <!-- User Management (admin only) -->
-      <div class="settings-section" id="userMgmtSection" style="display:none">
-
-        <!-- ── Painel inline de aprovação de usuários ── -->
+      <!-- ══ SEÇÃO: Família & Usuários (admin) ══ -->
+      <div class="cfg-section" id="userMgmtSection" style="display:none">
         <div id="pendingApprovalsAlert" style="display:none">
-          <div style="background:linear-gradient(135deg,#fef3c7,#fef9e8);border:1.5px solid #f59e0b;border-radius:14px;padding:0;margin-bottom:12px;overflow:hidden">
-            <!-- Header -->
-            <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #fde68a">
-              <span style="font-size:1.3rem">⏳</span>
+          <div style="background:linear-gradient(135deg,#fef3c7,#fef9e8);border:1.5px solid #f59e0b;border-radius:12px;padding:0;margin-bottom:8px;overflow:hidden">
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #fde68a">
+              <span style="font-size:1.1rem">⏳</span>
               <div style="flex:1">
-                <div style="font-size:.88rem;font-weight:700;color:#92400e" id="pendingApprovalsAlertText">Solicitações aguardando aprovação</div>
-                <div style="font-size:.74rem;color:#b45309">Aprovar ou rejeitar abaixo</div>
+                <div style="font-size:.84rem;font-weight:700;color:#92400e" id="pendingApprovalsAlertText">Aprovações pendentes</div>
               </div>
-              <button class="btn btn-ghost btn-sm" onclick="openUserAdmin()" style="font-size:.75rem;color:#92400e;border-color:#f59e0b">Ver todos →</button>
+              <button class="btn btn-ghost btn-sm" onclick="openUserAdmin()" style="font-size:.72rem;color:#92400e;border-color:#f59e0b">Ver →</button>
             </div>
-            <!-- Lista inline de pendentes -->
-            <div id="inlinePendingList" style="padding:10px 12px"></div>
+            <div id="inlinePendingList" style="padding:8px 12px"></div>
           </div>
         </div>
-
-        <!-- Card principal de gerenciamento -->
-        <div class="settings-card">
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:#e0f2fe">👥</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Gerenciar Usuários</div>
-              <div class="settings-row-sub" id="userMgmtSub">Controle de acesso e permissões</div>
+        <button class="cfg-sec-hdr" onclick="toggleCfgSection('cfgSec_familia')">
+          <span class="cfg-sec-icon" style="background:#e0f2fe">👥</span>
+          <span class="cfg-sec-title">Família &amp; Usuários</span>
+          <span class="cfg-sec-arr" id="cfgArr_familia">▾</span>
+        </button>
+        <div class="cfg-sec-body open" id="cfgSec_familia">
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:#e0f2fe">👥</span>
+            <div class="cfg-row-info">
+              <span class="cfg-row-label">Gerenciar Usuários</span>
+              <span class="cfg-row-sub" id="userMgmtSub">Controle de acesso e permissões</span>
             </div>
-            <div class="settings-row-action">
-              <button class="btn btn-ghost btn-sm" id="userMgmtBadgeBtn" onclick="openUserAdmin()">Gerenciar</button>
+            <button class="btn btn-ghost btn-sm" id="userMgmtBadgeBtn" onclick="openUserAdmin()">Gerenciar</button>
+          </div>
+          <!-- Menu visibility -->
+          <div id="menuVisibilitySection" style="display:none">
+            <div class="cfg-row cfg-row-expand" id="menuVisibilitySection_inner" style="align-items:flex-start;flex-direction:column;gap:8px">
+              <div style="display:flex;align-items:center;gap:10px;width:100%">
+                <span class="cfg-row-icon" style="background:var(--accent-lt)">📋</span>
+                <span class="cfg-row-label">Itens do menu</span>
+              </div>
+              <div id="menuVisibilityForm" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;width:100%"></div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button class="btn btn-primary btn-sm" onclick="saveMenuVisibility()">Salvar</button>
+                <button class="btn btn-ghost btn-sm" onclick="resetMenuVisibility()">Restaurar padrão</button>
+              </div>
+              <div id="menuVisibilityHint" class="text-muted" style="font-size:.78rem"></div>
             </div>
           </div>
-        </div>
-      </div>
-
-
-      <!-- ══ VISIBILIDADE DAS CONFIGURAÇÕES (admin only) ══ -->
-      <div class="settings-section" id="settingsVisibilitySection" style="display:none">
-        <div class="settings-group-label">🔒 Controle de Acesso — Configurações</div>
-        <div class="settings-card">
-          <div class="settings-row" style="align-items:flex-start">
-            <div class="settings-row-icon" style="background:#ede9fe">🔒</div>
-            <div class="settings-row-info" style="flex:1">
-              <div class="settings-row-label">Seções visíveis para usuários comuns</div>
-              <div class="settings-row-sub">Defina quais seções das Configurações aparecem para usuários que não são admin.</div>
-              <div id="settingsVisibilityForm" style="margin-top:14px;display:flex;flex-direction:column;gap:8px"></div>
-              <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+          <!-- Settings visibility -->
+          <div id="settingsVisibilitySection" style="display:none">
+            <div class="cfg-row" style="align-items:flex-start;flex-direction:column;gap:8px">
+              <div style="display:flex;align-items:center;gap:10px;width:100%">
+                <span class="cfg-row-icon" style="background:#ede9fe">🔒</span>
+                <div class="cfg-row-info">
+                  <span class="cfg-row-label">Seções visíveis para usuários comuns</span>
+                </div>
+              </div>
+              <div id="settingsVisibilityForm" style="display:flex;flex-direction:column;gap:6px;width:100%"></div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
                 <button class="btn btn-primary btn-sm" onclick="saveSettingsVisibility()">💾 Salvar</button>
                 <button class="btn btn-ghost btn-sm" onclick="resetSettingsVisibility()">↺ Padrão</button>
               </div>
-              <div id="settingsVisibilityHint" style="font-size:.75rem;color:var(--muted);margin-top:8px"></div>
+              <div id="settingsVisibilityHint" style="font-size:.72rem;color:var(--muted)"></div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- ══ LINK DA ESCOLA (admin only) ══ -->
-      <div class="settings-section" id="schoolLinkSection" style="display:none">
-        <div class="settings-group-label">🎓 Link da Escola</div>
-        <div class="settings-card">
-          <div class="settings-row" style="align-items:flex-start">
-            <div class="settings-row-icon" style="background:#fef3c7">🎓</div>
-            <div class="settings-row-info" style="flex:1">
-              <div class="settings-row-label">Ícone de atalho para a escola</div>
-              <div class="settings-row-sub">Exibe um ícone 🎓 na barra superior com link para o sistema de gestão escolar.</div>
-              <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
-                <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-                  <div style="position:relative;display:inline-block;width:42px;height:22px;flex-shrink:0">
-                    <input type="checkbox" id="schoolLinkEnabled" onchange="saveSchoolLinkConfig()" style="opacity:0;width:0;height:0">
-                    <span id="schoolLinkToggle" style="position:absolute;cursor:pointer;inset:0;background:#ccc;border-radius:100px;transition:.3s"></span>
-                  </div>
-                  <span style="font-size:.85rem;font-weight:600">Exibir ícone na topbar</span>
+      <!-- ══ SEÇÃO: Aparência (admin) ══ -->
+      <div class="cfg-section" id="logoSettingsSection" style="display:none">
+        <button class="cfg-sec-hdr" onclick="toggleCfgSection('cfgSec_aparencia')">
+          <span class="cfg-sec-icon" style="background:var(--amber-lt)">🎨</span>
+          <span class="cfg-sec-title">Aparência</span>
+          <span class="cfg-sec-arr" id="cfgArr_aparencia">▾</span>
+        </button>
+        <div class="cfg-sec-body" id="cfgSec_aparencia">
+          <div class="cfg-row" style="align-items:flex-start;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:10px;width:100%">
+              <span class="cfg-row-icon" style="background:var(--amber-lt)">🖼️</span>
+              <span class="cfg-row-label">Logotipo da aplicação</span>
+            </div>
+            <input id="appLogoUrl" type="text" placeholder="URL ou DataURL do logo" style="width:100%">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input id="appLogoFile" type="file" accept="image/*" style="max-width:240px">
+              <button class="btn btn-primary btn-sm" onclick="saveAppLogo()">💾 Salvar</button>
+              <button class="btn btn-ghost btn-sm" onclick="resetAppLogo()">↺ Padrão</button>
+            </div>
+            <img id="appLogoPreview" alt="" style="height:36px;max-width:200px;object-fit:contain;border:1px solid var(--border);border-radius:8px;padding:4px;background:var(--surface)">
+          </div>
+          <!-- School link -->
+          <div id="schoolLinkSection" style="display:none">
+            <div class="cfg-row" style="align-items:flex-start;flex-direction:column;gap:8px">
+              <div style="display:flex;align-items:center;gap:10px;width:100%">
+                <span class="cfg-row-icon" style="background:#fef3c7">🎓</span>
+                <div class="cfg-row-info">
+                  <span class="cfg-row-label">Link da Escola</span>
+                  <span class="cfg-row-sub">Ícone de atalho na barra superior</span>
+                </div>
+                <label style="position:relative;display:inline-block;width:38px;height:20px;flex-shrink:0">
+                  <input type="checkbox" id="schoolLinkEnabled" onchange="saveSchoolLinkConfig()" style="opacity:0;width:0;height:0">
+                  <span id="schoolLinkToggle" style="position:absolute;cursor:pointer;inset:0;background:#ccc;border-radius:100px;transition:.3s"></span>
                 </label>
-                <div id="schoolLinkUrlRow" style="display:flex;flex-direction:column;gap:6px">
-                  <label style="font-size:.8rem;font-weight:600;color:var(--text2)">URL do sistema da escola</label>
-                  <div style="display:flex;gap:8px;align-items:center">
-                    <input type="url" id="schoolLinkUrl" placeholder="https://..." 
-                      style="flex:1;padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:.85rem;background:var(--surface);color:var(--text)"
-                      oninput="saveSchoolLinkConfig()">
-                    <button class="btn btn-ghost btn-sm" onclick="window.open(document.getElementById('schoolLinkUrl').value,'_blank')" title="Testar link">🔗 Testar</button>
-                  </div>
-                  <label style="font-size:.8rem;font-weight:600;color:var(--text2);margin-top:4px">Texto do tooltip</label>
-                  <input type="text" id="schoolLinkTitle" placeholder="Ex: Gerenciamento Escola"
-                    style="padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:.85rem;background:var(--surface);color:var(--text)"
-                    oninput="saveSchoolLinkConfig()">
-                  <label style="font-size:.8rem;font-weight:600;color:var(--text2);margin-top:4px">Ícone (emoji)</label>
-                  <div style="display:flex;gap:8px;align-items:center">
-                    <input type="text" id="schoolLinkIcon" placeholder="🎓" maxlength="4"
-                      style="width:70px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:1.1rem;background:var(--surface);color:var(--text);text-align:center"
-                      oninput="saveSchoolLinkConfig()">
-                    <span style="font-size:.76rem;color:var(--muted)">Cole um emoji ou deixe em branco para usar 🎓</span>
-                  </div>
+              </div>
+              <div id="schoolLinkUrlRow" style="display:flex;flex-direction:column;gap:6px;width:100%">
+                <div style="display:flex;gap:6px">
+                  <input type="url" id="schoolLinkUrl" placeholder="https://..." style="flex:1" oninput="saveSchoolLinkConfig()">
+                  <button class="btn btn-ghost btn-sm" onclick="window.open(document.getElementById('schoolLinkUrl').value,'_blank')">🔗</button>
+                </div>
+                <div style="display:flex;gap:6px">
+                  <input type="text" id="schoolLinkTitle" placeholder="Tooltip" style="flex:1" oninput="saveSchoolLinkConfig()">
+                  <input type="text" id="schoolLinkIcon" placeholder="🎓" maxlength="4" style="width:52px;text-align:center;font-size:1.1rem" oninput="saveSchoolLinkConfig()">
                 </div>
               </div>
             </div>
@@ -1616,198 +1517,206 @@
         </div>
       </div>
 
-      <!-- ══ AUTOMAÇÃO ══ -->
-      <div class="settings-section">
-        <div class="settings-group-label">⚙️ Automação de Programados</div>
-        <div class="settings-card">
-          <!-- Enable/disable auto check -->
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:var(--green-lt)">🤖</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Verificação Automática</div>
-              <div class="settings-row-sub">Registra transações programadas automaticamente quando a data chegar</div>
+      <!-- ══ SEÇÃO: Conexão & Integrações ══ -->
+      <div class="cfg-section">
+        <button class="cfg-sec-hdr" onclick="toggleCfgSection('cfgSec_conexao')">
+          <span class="cfg-sec-icon" style="background:var(--blue-lt)">🔗</span>
+          <span class="cfg-sec-title">Conexão &amp; Integrações</span>
+          <span class="cfg-sec-arr" id="cfgArr_conexao">▾</span>
+        </button>
+        <div class="cfg-sec-body open" id="cfgSec_conexao">
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:var(--blue-lt)">🗄️</span>
+            <div class="cfg-row-info">
+              <span class="cfg-row-label">Supabase</span>
+              <span class="cfg-row-sub" id="supabaseStatusLabel">Verificando...</span>
             </div>
-            <div class="settings-row-action">
-              <label style="position:relative;display:inline-block;width:42px;height:22px">
-                <input type="checkbox" id="autoCheckEnabled" onchange="saveAutoCheckConfig()" style="opacity:0;width:0;height:0">
-                <span style="position:absolute;cursor:pointer;inset:0;background:#ccc;border-radius:100px;transition:.3s" id="autoCheckToggle"></span>
-              </label>
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('setupScreen').style.display='flex'">Config</button>
+          </div>
+          <div class="cfg-row" id="serviceRoleRow" style="display:none">
+            <span class="cfg-row-icon" style="background:#fef3c7">🔑</span>
+            <div class="cfg-row-info" style="flex:1;min-width:0">
+              <span class="cfg-row-label">Service Role Key <span style="font-size:.65rem;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:4px;padding:1px 5px">Admin</span></span>
+              <div style="display:flex;gap:5px;margin-top:4px">
+                <input type="password" id="serviceRoleKeyInput" placeholder="eyJhbGc..." autocomplete="off" style="flex:1;font-size:.75rem;font-family:monospace;min-width:0">
+                <button class="btn btn-ghost btn-sm" onclick="saveServiceRoleKey()">Salvar</button>
+                <button class="btn btn-ghost btn-sm" onclick="clearServiceRoleKey()" style="color:var(--muted)">✕</button>
+              </div>
+              <div id="serviceRoleKeyStatus" style="font-size:.7rem;margin-top:3px;color:var(--muted)"></div>
             </div>
           </div>
-
-          <!-- Frequency -->
-          <div class="settings-row" id="autoCheckFreqRow">
-            <div class="settings-row-icon" style="background:var(--bg2)">⏱️</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Frequência de Verificação</div>
-              <div class="settings-row-sub">Com que frequência verificar transações pendentes</div>
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:var(--green-lt)">📧</span>
+            <div class="cfg-row-info">
+              <span class="cfg-row-label">EmailJS</span>
+              <span class="cfg-row-sub" id="ejSettingsSub">Envio de relatórios</span>
             </div>
-            <div class="settings-row-action">
-              <select id="autoCheckInterval" onchange="saveAutoCheckConfig()" style="font-size:.82rem;padding:5px 8px;border:1.5px solid var(--border);border-radius:var(--r-sm);background:var(--surface)">
-                <option value="15">A cada 15 min</option>
-                <option value="30">A cada 30 min</option>
-                <option value="60" selected>A cada 1 hora</option>
-                <option value="360">A cada 6 horas</option>
-                <option value="720">A cada 12 horas</option>
-                <option value="1440">Uma vez ao dia</option>
-              </select>
-            </div>
+            <button class="btn btn-ghost btn-sm" onclick="showEmailConfig()">Config</button>
           </div>
-          <!-- Days ahead -->
-          <div class="settings-row" id="autoCheckDaysRow">
-            <div class="settings-row-icon" style="background:var(--bg2)">📅</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Antecipar Registro</div>
-              <div class="settings-row-sub">Quantos dias antes da data registrar a transação automática</div>
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:#f5f3ff">🤖</span>
+            <div class="cfg-row-info">
+              <span class="cfg-row-label" style="display:flex;align-items:center;gap:5px">
+                IA — Leitura de Recibos
+                <span id="aiStatusDot" style="width:8px;height:8px;border-radius:50%;background:#d1d5db;flex-shrink:0"></span>
+              </span>
+              <span class="cfg-row-sub" id="aiSettingsSub">Leitura automática de recibos</span>
             </div>
-            <div class="settings-row-action">
-              <select id="autoCheckDaysAhead" onchange="saveAutoCheckConfig()" style="font-size:.82rem;padding:5px 8px;border:1.5px solid var(--border);border-radius:var(--r-sm);background:var(--surface)">
-                <option value="0" selected>No dia exato</option>
-                <option value="1">1 dia antes</option>
-                <option value="2">2 dias antes</option>
-                <option value="3">3 dias antes</option>
-                <option value="7">1 semana antes</option>
-              </select>
-            </div>
+            <button class="btn btn-ghost btn-sm" onclick="showAiConfig()">Config</button>
           </div>
-          <!-- Email for notifications -->
-          <div class="settings-row" id="autoCheckEmailRow">
-            <div class="settings-row-icon" style="background:var(--bg2)">📧</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">E-mail para Notificações</div>
-              <div class="settings-row-sub">E-mail padrão para avisos de transações programadas</div>
-            </div>
-            <div class="settings-row-action">
-              <input type="email" id="autoCheckEmailDefault" placeholder="email@exemplo.com" oninput="saveAutoCheckConfig()"
-                style="font-size:.82rem;padding:5px 8px;border:1.5px solid var(--border);border-radius:var(--r-sm);max-width:220px;background:var(--surface)">
-            </div>
-          </div>
-          <!-- Method: browser vs Supabase -->
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:var(--bg2)">🔧</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Método de Execução</div>
-              <div class="settings-row-sub" id="autoCheckMethodSub">Como a verificação automática é executada</div>
-            </div>
-            <div class="settings-row-action">
-              <select id="autoCheckMethod" onchange="onAutoCheckMethodChange()" style="font-size:.82rem;padding:5px 8px;border:1.5px solid var(--border);border-radius:var(--r-sm);background:var(--surface)">
-                <option value="browser">Navegador (setInterval)</option>
-                <option value="supabase_cron">Supabase pg_cron</option>
-                <option value="supabase_edge">Supabase Edge Function</option>
-              </select>
-            </div>
-          </div>
-          <!-- Supabase cron info (shown when method=supabase) -->
-          <div id="autoCheckSupabaseInfo" style="display:none;padding:12px 16px;background:var(--accent-lt);border-radius:var(--r-sm);margin:8px 16px 16px;border-left:3px solid var(--accent)">
-            <div style="font-size:.82rem;font-weight:600;color:var(--accent);margin-bottom:8px">📋 SQL para configurar no Supabase</div>
-            <div style="font-size:.75rem;color:var(--text2);margin-bottom:8px">Execute este SQL no Editor SQL do Supabase para registrar transações automaticamente via pg_cron:</div>
-            <pre id="autoCheckSqlCode" style="font-size:.7rem;background:var(--surface);padding:10px;border-radius:6px;overflow-x:auto;color:var(--text1);border:1px solid var(--border);white-space:pre-wrap;word-break:break-all"></pre>
-            <div style="display:flex;gap:8px;margin-top:8px">
-              <button class="btn btn-ghost btn-sm" onclick="copyAutoCheckSql()">📋 Copiar SQL</button>
-              <button class="btn btn-ghost btn-sm" onclick="window.open('https://supabase.com/dashboard','_blank')">🔗 Abrir Supabase</button>
-            </div>
-          </div>
-          <!-- Last run info -->
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:var(--bg2)">📊</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Última Verificação</div>
-              <div class="settings-row-sub" id="autoCheckLastRun">Nunca executada</div>
-            </div>
-            <div class="settings-row-action">
-              <button class="btn btn-ghost btn-sm" onclick="runAutoRegister(true)">▶️ Executar agora</button>
-            </div>
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:#fff7ed">🗑️</span>
+            <span class="cfg-row-label">Cache local</span>
+            <button class="btn btn-ghost btn-sm" style="color:var(--muted)" onclick="clearAppCache()">Limpar</button>
           </div>
         </div>
       </div>
 
-      <!-- Logout -->
-      <div class="settings-section">
-        <div class="settings-card">
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:var(--red-lt)">🚪</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Sair</div>
-              <div class="settings-row-sub" id="settingsCurrentUser">Usuário atual</div>
+      <!-- ══ SEÇÃO: Automação ══ -->
+      <div class="cfg-section">
+        <button class="cfg-sec-hdr" onclick="toggleCfgSection('cfgSec_auto')">
+          <span class="cfg-sec-icon" style="background:var(--green-lt)">⚙️</span>
+          <span class="cfg-sec-title">Automação de Programados</span>
+          <span class="cfg-sec-arr" id="cfgArr_auto">▾</span>
+        </button>
+        <div class="cfg-sec-body" id="cfgSec_auto">
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:var(--green-lt)">🤖</span>
+            <div class="cfg-row-info">
+              <span class="cfg-row-label">Verificação Automática</span>
+              <span class="cfg-row-sub">Registra transações quando a data chegar</span>
             </div>
-            <div class="settings-row-action">
-              <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="doLogout()">Sair</button>
+            <label style="position:relative;display:inline-block;width:38px;height:20px;flex-shrink:0">
+              <input type="checkbox" id="autoCheckEnabled" onchange="saveAutoCheckConfig()" style="opacity:0;width:0;height:0">
+              <span style="position:absolute;cursor:pointer;inset:0;background:#ccc;border-radius:100px;transition:.3s" id="autoCheckToggle"></span>
+            </label>
+          </div>
+          <div class="cfg-row" id="autoCheckFreqRow">
+            <span class="cfg-row-icon" style="background:var(--bg2)">⏱️</span>
+            <span class="cfg-row-label">Frequência</span>
+            <select id="autoCheckInterval" onchange="saveAutoCheckConfig()" class="cfg-select">
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+              <option value="60" selected>1 hora</option>
+              <option value="360">6 horas</option>
+              <option value="720">12 horas</option>
+              <option value="1440">1 dia</option>
+            </select>
+          </div>
+          <div class="cfg-row" id="autoCheckDaysRow">
+            <span class="cfg-row-icon" style="background:var(--bg2)">📅</span>
+            <span class="cfg-row-label">Antecipar registro</span>
+            <select id="autoCheckDaysAhead" onchange="saveAutoCheckConfig()" class="cfg-select">
+              <option value="0" selected>No dia</option>
+              <option value="1">1 dia antes</option>
+              <option value="2">2 dias antes</option>
+              <option value="3">3 dias antes</option>
+              <option value="7">1 semana</option>
+            </select>
+          </div>
+          <div class="cfg-row" id="autoCheckEmailRow">
+            <span class="cfg-row-icon" style="background:var(--bg2)">📧</span>
+            <span class="cfg-row-label">E-mail notificações</span>
+            <input type="email" id="autoCheckEmailDefault" placeholder="email@…" oninput="saveAutoCheckConfig()" class="cfg-input">
+          </div>
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:var(--bg2)">🔧</span>
+            <div class="cfg-row-info">
+              <span class="cfg-row-label">Método</span>
+              <span class="cfg-row-sub" id="autoCheckMethodSub"></span>
             </div>
+            <select id="autoCheckMethod" onchange="onAutoCheckMethodChange()" class="cfg-select">
+              <option value="browser">Navegador</option>
+              <option value="supabase_cron">pg_cron</option>
+              <option value="supabase_edge">Edge Function</option>
+            </select>
+          </div>
+          <div id="autoCheckSupabaseInfo" style="display:none;padding:10px 14px;background:var(--accent-lt);border-radius:var(--r-sm);margin:6px 14px;border-left:3px solid var(--accent)">
+            <div style="font-size:.78rem;font-weight:600;color:var(--accent);margin-bottom:6px">📋 SQL para Supabase</div>
+            <pre id="autoCheckSqlCode" style="font-size:.68rem;background:var(--surface);padding:8px;border-radius:6px;overflow-x:auto;border:1px solid var(--border);white-space:pre-wrap;word-break:break-all"></pre>
+            <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+              <button class="btn btn-ghost btn-sm" onclick="copyAutoCheckSql()">📋 Copiar</button>
+              <button class="btn btn-ghost btn-sm" onclick="window.open('https://supabase.com/dashboard','_blank')">🔗 Supabase</button>
+            </div>
+          </div>
+          <div class="cfg-row">
+            <span class="cfg-row-icon" style="background:var(--bg2)">📊</span>
+            <div class="cfg-row-info">
+              <span class="cfg-row-label">Última verificação</span>
+              <span class="cfg-row-sub" id="autoCheckLastRun">Nunca executada</span>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="runAutoRegister(true)">▶ Executar</button>
           </div>
         </div>
       </div>
 
-
-      <!-- ══ NORMALIZAÇÃO DE NOMES (admin only) ══ -->
-      <div class="settings-section" id="normalizeNamesSection" style="display:none">
-        <div class="settings-group-label">🔤 Normalização de Nomes</div>
-        <div class="settings-card">
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:#f0fdf4">🔤</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Padronizar beneficiários e categorias</div>
-              <div class="settings-row-sub" id="normalizeNamesSub">
-                Converte todos os nomes para Title Case (Primeira Letra Maiúscula por Palavra),
-                respeitando preposições e siglas. Executado automaticamente todo domingo às 03:00 UTC via pg_cron.
+      <!-- ══ SEÇÃO: Dados & Backup (admin) ══ -->
+      <div class="cfg-section">
+        <button class="cfg-sec-hdr" onclick="toggleCfgSection('cfgSec_dados')">
+          <span class="cfg-sec-icon" style="background:var(--blue-lt)">💾</span>
+          <span class="cfg-sec-title">Dados &amp; Backup</span>
+          <span class="cfg-sec-arr" id="cfgArr_dados">▾</span>
+        </button>
+        <div class="cfg-sec-body" id="cfgSec_dados">
+          <div class="cfg-section" id="dbBackupSection" style="display:none;border:0;padding:0;box-shadow:none">
+            <div class="cfg-row">
+              <span class="cfg-row-icon" style="background:var(--blue-lt)">📸</span>
+              <div class="cfg-row-info">
+                <span class="cfg-row-label">Snapshots no Supabase</span>
+                <span class="cfg-row-sub">Cópia dentro do banco. Até 20 snapshots.</span>
+              </div>
+              <button class="btn btn-primary btn-sm" id="dbBackupCreateBtn" onclick="openDbBackupCreate()">📸 Criar</button>
+            </div>
+            <div id="dbBackupMigrationHint" style="display:none;margin:4px 14px 8px;padding:10px 12px;background:var(--amber-lt);border:1px solid var(--amber);border-radius:var(--r-sm);font-size:.78rem;line-height:1.5">
+              ⚠️ Execute <code>migration_db_backup.sql</code> no Supabase para habilitar esta funcionalidade.
+              <button class="btn btn-ghost btn-sm" style="margin-top:6px;display:block" onclick="window.open('https://supabase.com/dashboard','_blank')">🔗 Abrir Supabase</button>
+            </div>
+            <div style="padding:0 14px 8px">
+              <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Snapshots salvos</div>
+              <div id="dbBackupList"><div style="color:var(--muted);font-size:.8rem">Carregando…</div></div>
+            </div>
+          </div>
+          <!-- Normalização de nomes (admin) -->
+          <div id="normalizeNamesSection" style="display:none">
+            <div class="cfg-row">
+              <span class="cfg-row-icon" style="background:#f0fdf4">🔤</span>
+              <div class="cfg-row-info">
+                <span class="cfg-row-label">Normalizar nomes</span>
+                <span class="cfg-row-sub" id="normalizeNamesSub">Padronizar beneficiários e categorias (Title Case)</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+                <button class="btn btn-ghost btn-sm" onclick="openNormalizeNamesPreview()">🔍 Prévia</button>
+                <button class="btn btn-primary btn-sm" id="normalizeNamesRunBtn" onclick="runNormalizeNames()">▶ Executar</button>
               </div>
             </div>
-            <div class="settings-row-action" style="flex-direction:column;align-items:flex-end;gap:6px">
-              <button class="btn btn-ghost btn-sm" onclick="openNormalizeNamesPreview()">🔍 Prévia</button>
-              <button class="btn btn-primary btn-sm" id="normalizeNamesRunBtn" onclick="runNormalizeNames()">▶ Executar agora</button>
-            </div>
-          </div>
-          <!-- Last run info -->
-          <div id="normalizeNamesLastRun" style="display:none;margin:0 16px 12px;padding:10px 14px;
-               background:var(--surface2);border-radius:var(--r-sm);font-size:.78rem;color:var(--muted)"></div>
-          <!-- pg_cron hint -->
-          <div id="normalizeNamesCronHint" style="display:none;margin:0 16px 12px;padding:10px 14px;
-               background:var(--amber-lt,#fef3e2);border:1px solid var(--amber);border-radius:var(--r-sm);
-               font-size:.78rem;line-height:1.6">
-            ⚠️ <strong>pg_cron não detectado.</strong>
-            Habilite em <em>Supabase → Database → Extensions → pg_cron</em>, depois execute
-            <code>migration_normalize_names.sql</code> novamente.
-            A execução manual pelo botão acima funciona independentemente.
-          </div>
-        </div>
-      </div>
-
-      <!-- ══ BACKUP NO BANCO (admin only) ══ -->
-      <div class="settings-section" id="dbBackupSection" style="display:none">
-        <div class="settings-group-label">🗄️ Backup no Banco de Dados</div>
-        <div class="settings-card">
-          <!-- Header / create -->
-          <div class="settings-row">
-            <div class="settings-row-icon" style="background:var(--blue-lt,#e8f0fb)">📸</div>
-            <div class="settings-row-info">
-              <div class="settings-row-label">Snapshots no Supabase</div>
-              <div class="settings-row-sub">Salva uma cópia completa dos dados dentro do próprio banco. Até 20 snapshots armazenados.</div>
-            </div>
-            <div class="settings-row-action">
-              <button class="btn btn-primary btn-sm" id="dbBackupCreateBtn" onclick="openDbBackupCreate()">📸 Criar Snapshot</button>
-            </div>
-          </div>
-
-          <!-- Migration hint (shown when table doesn't exist) -->
-          <div id="dbBackupMigrationHint" style="display:none;margin:4px 16px 12px;padding:12px 14px;background:var(--amber-lt,#fef3e2);border:1px solid var(--amber);border-radius:var(--r-sm);font-size:.8rem;line-height:1.6">
-            ⚠️ A tabela <code>app_backups</code> ainda não existe no banco.<br>
-            Execute o arquivo <code>migration_db_backup.sql</code> no SQL Editor do Supabase para habilitar esta funcionalidade.
-            <div style="margin-top:8px">
-              <button class="btn btn-ghost btn-sm" onclick="window.open('https://supabase.com/dashboard','_blank')">🔗 Abrir Supabase</button>
-            </div>
-          </div>
-
-          <!-- Backup list -->
-          <div style="padding:0 16px 12px">
-            <div style="font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px">Snapshots salvos</div>
-            <div id="dbBackupList">
-              <div style="color:var(--muted);font-size:.83rem;padding:8px 0">Acesse Configurações para ver os backups.</div>
+            <div id="normalizeNamesLastRun" style="display:none;margin:0 14px 6px;padding:8px 12px;background:var(--surface2);border-radius:var(--r-sm);font-size:.75rem;color:var(--muted)"></div>
+            <div id="normalizeNamesCronHint" style="display:none;margin:0 14px 6px;padding:10px 12px;background:var(--amber-lt);border:1px solid var(--amber);border-radius:var(--r-sm);font-size:.75rem;line-height:1.5">
+              ⚠️ <strong>pg_cron não detectado.</strong> Habilite em Supabase → Database → Extensions → pg_cron.
             </div>
           </div>
         </div>
       </div>
 
+      <!-- ══ SEÇÃO: Sobre ══ -->
+      <div class="cfg-section">
+        <button class="cfg-sec-hdr" onclick="toggleCfgSection('cfgSec_sobre')">
+          <span class="cfg-sec-icon" style="background:var(--surface2)">ℹ️</span>
+          <span class="cfg-sec-title">Sobre</span>
+          <span class="cfg-sec-arr" id="cfgArr_sobre">▾</span>
+        </button>
+        <div class="cfg-sec-body" id="cfgSec_sobre">
+          <div class="cfg-row" style="gap:12px">
+            <img id="settingsLogoImg2" src="https://deciofranchini-oss.github.io/fintrack/logo.png" alt="Family FinTrack" style="height:32px;object-fit:contain">
+            <div>
+              <div style="font-weight:700;font-size:.9rem">Family FinTrack</div>
+              <div style="font-size:.72rem;color:var(--muted)">Família inteligente, finanças sob controle</div>
+            </div>
+          </div>
+        </div>
+      </div>
 
     </div>
+
 
 
     <!-- ══ PRICES PAGE ══════════════════════════════════════════════════════ -->
