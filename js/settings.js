@@ -13,8 +13,6 @@ async function loadAppSettings() {
 
     // Apply menu visibility (if configured)
     try { applyMenuVisibility(_getMenuVisibilityFromCache()); } catch {}
-    // Apply school link config
-    try { applySchoolLink(); } catch {}
     // Apply settings visibility for non-admin users (runs after currentUser is set)
     // Will be re-applied in loadSettings() once page is open
 
@@ -456,7 +454,7 @@ function loadSettings() {
   if (typeof initAiSettings === 'function') initAiSettings();
 
   // Seções admin-only
-  const adminSections = ['settingsVisibilitySection', 'schoolLinkSection', 'userMgmtSection', 'normalizeNamesSection'];
+  const adminSections = ['settingsVisibilitySection', 'userMgmtSection', 'normalizeNamesSection'];
   adminSections.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = isAdmin ? '' : 'none';
@@ -465,7 +463,6 @@ function loadSettings() {
   if (isAdmin) {
     // Admin: inicializar formulários das novas seções
     initSettingsVisibilityForm();
-    initSchoolLinkForm();
     initServiceRoleKeySection();
     try { _loadNormalizeNamesInfo().catch(()=>{}); } catch {}
     // Mostrar menuVisibilitySection para admin sempre
@@ -760,7 +757,6 @@ const DEFAULT_SETTINGS_VISIBILITY = {
   autoCheck:     false,  // Automação programados
   appLogo:       false,  // Logo do app
   dbBackup:      false,  // Backup do banco
-  schoolLink:    false,  // Link da escola
 };
 
 // IDs das sections no HTML indexadas pela chave
@@ -774,7 +770,6 @@ const SETTINGS_SECTION_IDS = {
   autoCheck:    null,   // seção de automação — identificada pelo grupo
   appLogo:      'logoSettingsSection',
   dbBackup:     'dbBackupSection',
-  schoolLink:   'schoolLinkSection',
 };
 
 const SETTINGS_VIS_LABELS = {
@@ -787,7 +782,6 @@ const SETTINGS_VIS_LABELS = {
   autoCheck:    { label: 'Automação de transações programadas'       },
   appLogo:      { label: 'Logo do aplicativo'                        },
   dbBackup:     { label: 'Backup do banco de dados'                  },
-  schoolLink:   { label: 'Link da escola (topbar)'                   },
 };
 
 function _getSettingsVisibility() {
@@ -854,7 +848,6 @@ function applySettingsVisibility(vis) {
     menuItems: 'menuVisibilitySection',
     appLogo:   'logoSettingsSection',
     dbBackup:  'dbBackupSection',
-    schoolLink: 'schoolLinkSection',
   };
   Object.entries(direct).forEach(([key, id]) => {
     const el = document.getElementById(id);
@@ -887,17 +880,10 @@ function applySettingsVisibility(vis) {
 // ═══════════════════════════════════════════════════════════════════
 
 function currentUserFeatureEnabled(featureKey, fallback = true) {
-  if (typeof currentUser === 'undefined' || currentUser === null) return fallback;
-  switch (featureKey) {
-    case 'schoolLink':
-      return currentUser.show_school_link !== false;
-    default:
-      return fallback;
-  }
+  return fallback;
 }
 
 async function applyUserFeatureFlags() {
-  try { applySchoolLink?.(); } catch {}
   try { await applyPricesFeature?.(); } catch {}
   try { await applyGroceryFeature?.(); } catch {}
 }
@@ -905,66 +891,6 @@ async function applyUserFeatureFlags() {
 // ═══════════════════════════════════════════════════════════════════
 // LINK DA ESCOLA — configuração e aplicação
 // ═══════════════════════════════════════════════════════════════════
-
-function _getSchoolLinkConfig() {
-  const stored = _appSettingsCache?.['school_link'];
-  if (stored && typeof stored === 'object') return stored;
-  try {
-    const ls = localStorage.getItem('school_link');
-    if (ls) return JSON.parse(ls);
-  } catch {}
-  return { enabled: true, url: 'https://deciofranchini-oss.github.io/objetivo', title: 'Gerenciamento Escola', icon: '🎓' };
-}
-
-function initSchoolLinkForm() {
-  const cfg = _getSchoolLinkConfig();
-  const chk = document.getElementById('schoolLinkEnabled');
-  const urlEl = document.getElementById('schoolLinkUrl');
-  const titleEl = document.getElementById('schoolLinkTitle');
-  const iconEl = document.getElementById('schoolLinkIcon');
-  const toggle = document.getElementById('schoolLinkToggle');
-
-  if (chk) chk.checked = cfg.enabled !== false;
-  if (urlEl) urlEl.value = cfg.url || '';
-  if (titleEl) titleEl.value = cfg.title || 'Gerenciamento Escola';
-  if (iconEl) iconEl.value = cfg.icon || '🎓';
-  if (toggle) toggle.style.background = (cfg.enabled !== false) ? 'var(--accent)' : '#ccc';
-  applyUserFeatureFlags();
-}
-
-async function saveSchoolLinkConfig() {
-  const cfg = {
-    enabled: document.getElementById('schoolLinkEnabled')?.checked ?? true,
-    url:     document.getElementById('schoolLinkUrl')?.value?.trim() || '',
-    title:   document.getElementById('schoolLinkTitle')?.value?.trim() || 'Gerenciamento Escola',
-    icon:    document.getElementById('schoolLinkIcon')?.value?.trim() || '🎓',
-  };
-  const toggle = document.getElementById('schoolLinkToggle');
-  if (toggle) toggle.style.background = cfg.enabled ? 'var(--accent)' : '#ccc';
-  await saveAppSetting('school_link', cfg);
-  if (!_appSettingsCache) _appSettingsCache = {};
-  _appSettingsCache['school_link'] = cfg;
-  applyUserFeatureFlags();
-}
-
-function applySchoolLink(cfg) {
-  cfg = cfg || _getSchoolLinkConfig();
-  const btn = document.getElementById('schoolPaymentsBtn');
-  if (!btn) return;
-
-  // Verificar permissão do usuário logado (show_school_link, default true)
-  const userAllowed = currentUserFeatureEnabled('schoolLink', true);
-
-  if (!cfg.enabled || !cfg.url || !userAllowed) {
-    btn.style.display = 'none';
-    return;
-  }
-  btn.style.display = 'flex';
-  btn.href = cfg.url;
-  btn.title = cfg.title || 'Gerenciamento Escola';
-  const iconEl = btn.querySelector('span[aria-hidden]');
-  if (iconEl) iconEl.textContent = cfg.icon || '🎓';
-}
 
 /* ══════════════════════════════════════════════════════════════════
    SERVICE ROLE KEY — armazenada só em localStorage, nunca no banco

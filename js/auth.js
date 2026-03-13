@@ -145,7 +145,7 @@ async function _loadCurrentUserContext() {
   // app_users: fonte de verdade para dados pessoais e role global
   const { data: appUserRow } = await sb
     .from('app_users')
-    .select('id, family_id, avatar_url, role, name, preferred_family_id, show_school_link')
+    .select('id, family_id, avatar_url, role, name, preferred_family_id')
     .eq('email', user.email)
     .maybeSingle();
 
@@ -248,7 +248,6 @@ async function _loadCurrentUserContext() {
     families:             userFamilies,
     avatar_url:           appUserRow?.avatar_url || null,
     preferred_family_id:  appUserRow?.preferred_family_id || null,
-    show_school_link:     appUserRow?.show_school_link !== false, // default true
     ...caps
   };
 
@@ -664,8 +663,6 @@ function updateUserUI() {
   // Apply permission restrictions
   applyPermissions();
 
-  // Reapply school shortcut visibility immediately after any user/UI refresh
-  try { applySchoolLink?.(); } catch(_) {}
 }
 
 function applyPermissions() {
@@ -2000,11 +1997,7 @@ function showNewUserForm() {
   document.getElementById('pExport').checked = true;
   document.getElementById('pImport').checked = false;
   document.getElementById('pwdHint').textContent = '(mín. 8 chars)';
-  const pSchoolNew = document.getElementById('pSchoolLink');
   if (pSchoolNew) pSchoolNew.checked = true;
-  const schoolCfgN = _getSchoolLinkConfig?.();
-  const schoolRowN = document.getElementById('schoolLinkPermRow');
-  if (schoolRowN) schoolRowN.style.display = (schoolCfgN?.enabled && schoolCfgN?.url) ? '' : 'none';
   document.getElementById('userFormArea').style.display = '';
 }
 
@@ -2033,11 +2026,6 @@ async function editUser(userId) {
   document.getElementById('pwdHint').textContent = '(deixe em branco para manter)';
 
   // Ícone da escola
-  const schoolCfg = _getSchoolLinkConfig?.();
-  const schoolRow = document.getElementById('schoolLinkPermRow');
-  if (schoolRow) schoolRow.style.display = (schoolCfg?.enabled && schoolCfg?.url) ? '' : 'none';
-  const pSchool = document.getElementById('pSchoolLink');
-  if (pSchool) pSchool.checked = u.show_school_link !== false; // default true
 
   // Show current avatar in form
   const avatarPreview = document.getElementById('uAvatarPreview');
@@ -2132,7 +2120,6 @@ async function saveUser() {
     can_export:      document.getElementById('pExport').checked,
     can_import:      document.getElementById('pImport').checked,
     can_admin:         role === 'admin',
-    show_school_link: document.getElementById('pSchoolLink')?.checked ?? true,
   };
   if (avatarUrl !== undefined) record.avatar_url = avatarUrl;
   if (pwd) record.password_hash = await sha256(pwd);
@@ -2174,10 +2161,8 @@ async function saveUser() {
     document.getElementById('userFormArea').style.display = 'none';
     if (userId === currentUser?.id) {
       if (record.avatar_url !== undefined) currentUser.avatar_url = record.avatar_url;
-      currentUser.show_school_link = record.show_school_link !== false;
       _applyCurrentUserAvatar();
       try { updateUserUI(); } catch(_) {}
-      try { applySchoolLink?.(); } catch(_) {}
     }
     await loadUsersList();
     await loadFamiliesList();
