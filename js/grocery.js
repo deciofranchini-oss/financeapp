@@ -36,7 +36,7 @@ async function _loadGroceryLists() {
 
 async function _loadGroceryItems(listId) {
   const { data, error } = await sb.from('grocery_items')
-    .select('id, list_id, name, qty, unit, checked, price_item_id, suggested_price, suggested_store, price_items(name), price_stores(name)')
+    .select('id, list_id, name, qty, unit, checked, price_item_id, suggested_price, suggested_store, price_items(name)')
     .eq('list_id', listId)
     .order('checked')
     .order('name');
