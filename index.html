@@ -312,7 +312,7 @@
   </div>
 </div>
 
-<!-- ══════ EDIT USER MODAL ══════ -->
+<!-- ══════ EDIT USER MODAL (legacy — kept for compatibility) ══════ -->
 <div class="modal-overlay" id="editUserModal">
   <div class="modal" style="max-width:420px"><div class="modal-handle"></div>
     <div class="modal-header">
@@ -320,7 +320,7 @@
       <button class="modal-close" onclick="closeModal('editUserModal')">✕</button>
     </div>
     <div class="modal-body">
-      <input type="hidden" id="editUserId">
+      <input type="hidden" id="editUserIdLegacy">
       <div class="form-group"><label>Nome</label><input type="text" id="editUserName"></div>
       <div class="form-group"><label>Perfil</label>
         <select id="editUserRole">
@@ -2166,6 +2166,16 @@
               <label style="display:flex;align-items:center;gap:5px;font-size:.8rem;cursor:pointer"><input type="checkbox" id="pImport"> Importar</label>
             </div>
 
+            <!-- Avatar -->
+            <div style="display:flex;align-items:center;gap:12px;margin:10px 0 12px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm)">
+              <div id="uAvatarPreview" style="width:52px;height:52px;border-radius:50%;overflow:hidden;flex-shrink:0;border:2px solid var(--border)"></div>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:.78rem;font-weight:600;color:var(--text2);margin-bottom:5px">Foto de perfil</div>
+                <input type="file" id="uAvatarFile" accept="image/*" style="font-size:.75rem;max-width:200px" onchange="previewUserAvatar(this)">
+                <button class="btn btn-ghost btn-sm" id="uAvatarRemoveBtn" onclick="removeUserAvatar()" style="font-size:.72rem;color:var(--muted);margin-top:4px;display:none">✕ Remover</button>
+              </div>
+            </div>
+            <input type="hidden" id="uAvatarRemoveFlag" value="">
             <div style="display:flex;gap:8px">
               <button class="btn btn-primary btn-sm" onclick="saveUser()">💾 Salvar</button>
               <button class="btn btn-ghost btn-sm" onclick="document.getElementById('userFormArea').style.display='none'">Cancelar</button>
