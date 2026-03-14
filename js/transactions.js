@@ -855,75 +855,69 @@ async function fetchTxCurrencyRate() {
 }
 
 
-function _ensureTxFocusStyles(){
-  if(document.getElementById('txFocusStyles')) return;
-  const st = document.createElement('style');
-  st.id = 'txFocusStyles';
-  st.textContent = `
-    .tx-row-target{
-      outline:2px solid var(--accent);
-      box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent);
-      background:color-mix(in srgb, var(--accent) 10%, transparent) !important;
-      transition:box-shadow .25s ease, background .25s ease;
-    }
-  `;
-  document.head.appendChild(st);
-}
+// tx-row-target and tx-row-new styles live in style.css
+function _ensureTxFocusStyles(){ /* styles in CSS */ }
 
 async function _goToSavedTransaction(txId, txData = {}) {
   if (!txId) return;
-  _ensureTxFocusStyles();
 
+  // Navigate to transactions page
   try {
-    if (typeof navigate === 'function') {
-      navigate('transactions');
-    } else {
-      state.currentPage = 'transactions';
-    }
+    if (typeof navigate === 'function') navigate('transactions');
+    else state.currentPage = 'transactions';
   } catch (_) {}
 
   try { setTxView('flat'); } catch (_) {}
 
+  // Set filters to show the month of the saved transaction with no other filters
   state.txFilter = state.txFilter || {};
-  state.txFilter.search = '';
+  state.txFilter.search  = '';
   state.txFilter.account = '';
-  state.txFilter.type = '';
-  state.txFilter.month = txData?.date ? String(txData.date).slice(0, 7) : (state.txFilter.month || '');
-  state.txFilter.status = (txData?.status || 'confirmed') === 'pending' ? 'pending' : '';
-
-  const monthEl = document.getElementById('txMonth');
-  const accEl   = document.getElementById('txAccount');
-  const typeEl  = document.getElementById('txType');
-  const statEl  = document.getElementById('txStatusFilter');
-  const searchEl= document.getElementById('txSearch');
-  if (monthEl) monthEl.value = state.txFilter.month || '';
-  if (accEl)   accEl.value   = '';
-  if (typeEl)  typeEl.value  = '';
-  if (statEl)  statEl.value  = state.txFilter.status || '';
-  if (searchEl)searchEl.value= '';
-
+  state.txFilter.type    = '';
+  state.txFilter.month   = txData?.date ? String(txData.date).slice(0, 7) : (state.txFilter.month || '');
+  state.txFilter.status  = (txData?.status || 'confirmed') === 'pending' ? 'pending' : '';
   state.txSortField = 'date';
-  state.txSortAsc = false;
-  state.txPage = 0;
+  state.txSortAsc   = false;
+  state.txPage      = 0;
 
-  try {
-    await loadTransactions();
-  } catch (_) {}
+  // Sync filter UI
+  const monthEl  = document.getElementById('txMonth');
+  const accEl    = document.getElementById('txAccount');
+  const typeEl   = document.getElementById('txType');
+  const statEl   = document.getElementById('txStatusFilter');
+  const searchEl = document.getElementById('txSearch');
+  if (monthEl)  monthEl.value  = state.txFilter.month || '';
+  if (accEl)    accEl.value    = '';
+  if (typeEl)   typeEl.value   = '';
+  if (statEl)   statEl.value   = state.txFilter.status || '';
+  if (searchEl) searchEl.value = '';
 
-  const focusRow = () => {
+  // Load the page — row will now be in the DOM
+  try { await loadTransactions(); } catch (_) {}
+
+  // Highlight and scroll to the saved row
+  _highlightNewTxRow(txId);
+}
+
+function _highlightNewTxRow(txId) {
+  const attempt = (tries) => {
     const row = document.querySelector(`[data-tx-id="${txId}"]`);
-    if (!row) return false;
-    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    row.classList.add('tx-row-target');
-    setTimeout(() => row.classList.remove('tx-row-target'), 2600);
-    return true;
+    if (row) {
+      // Scroll into view with some breathing room at top
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Add entrance animation class
+      row.classList.remove('tx-row-new'); // reset if already there
+      void row.offsetWidth;               // force reflow to restart animation
+      row.classList.add('tx-row-new');
+      // Remove after animation completes
+      setTimeout(() => row.classList.remove('tx-row-new'), 3000);
+      return true;
+    }
+    if (tries > 0) setTimeout(() => attempt(tries - 1), 150);
+    return false;
   };
-
-  if (focusRow()) return;
-  requestAnimationFrame(() => {
-    if (focusRow()) return;
-    setTimeout(focusRow, 220);
-  });
+  // Try immediately, then retry a few times in case render is async
+  requestAnimationFrame(() => attempt(4));
 }
 
 async function fetchSuggestedFxRate() {
