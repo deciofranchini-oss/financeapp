@@ -301,10 +301,12 @@ async function bootApp(){
   const budEl=document.getElementById('budgetMonth');if(budEl)budEl.value=ym;
   const budInEl=document.getElementById('budgetMonthInput');if(budInEl)budInEl.value=ym;
   state.txFilter.month=ym;
-  // Navegar para dashboard
-  navigate('dashboard');
-  initEmailJSStatus();
+  // Atualiza UI do usuário antes de navegar
   updateUserUI();
+  initEmailJSStatus();
+  // Navegar para dashboard e aguardar carregamento
+  navigate('dashboard');
+  await loadDashboard().catch(e => console.warn('[boot] loadDashboard:', e.message));
   // Aplica visibilidade do módulo de preços conforme feature flag da família
   if (typeof applyPricesFeature === 'function') applyPricesFeature().catch(() => {});
   if (typeof applyGroceryFeature === 'function') applyGroceryFeature().catch(() => {});
