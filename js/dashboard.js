@@ -125,17 +125,70 @@ async function loadDashboard(){
     const el = document.getElementById('accountBalancesList');
     const accs = state.accounts;
     const groups = state.groups || [];
-    const rowHtml = a => `<div onclick="goToAccountTransactions('${a.id}')" style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s;border-radius:4px;margin:0 -4px;padding-left:4px;padding-right:4px" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''">
-      <div style="display:flex;align-items:center;gap:9px">${renderIconEl(a.icon,a.color,20)}<span style="font-size:.875rem;color:var(--text2)">${esc(a.name)}</span></div>
-      <span class="${a.balance<0?'text-red':'text-accent'}" style="font-size:.875rem;font-weight:500">${fmt(a.balance,a.currency)}</span>
-    </div>`;
+    const favs = accs.filter(a => a.is_favorite);
+
+    // ── Row renderers ────────────────────────────────────────────────────
+    const rowHtml = a => {
+      const isFav = !!a.is_favorite;
+      const balColor = a.balance < 0 ? 'var(--red)' : 'var(--accent)';
+      if (isFav) {
+        // Highlighted card for favorites
+        return `<div onclick="goToAccountTransactions('${a.id}')"
+          class="dash-acc-fav-row"
+          onmouseover="this.classList.add('dash-acc-fav-row--hover')"
+          onmouseout="this.classList.remove('dash-acc-fav-row--hover')">
+          <div style="display:flex;align-items:center;gap:9px;min-width:0;flex:1">
+            <div style="position:relative;flex-shrink:0">
+              ${renderIconEl(a.icon,a.color,22)}
+              <span style="position:absolute;top:-4px;right:-5px;font-size:.55rem;line-height:1">⭐</span>
+            </div>
+            <div style="min-width:0">
+              <div style="font-size:.85rem;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.name)}</div>
+              <div style="font-size:.68rem;color:var(--muted)">${a.currency !== 'BRL' ? a.currency : accountTypeLabel(a.type)||''}</div>
+            </div>
+          </div>
+          <div style="text-align:right;flex-shrink:0">
+            <div style="font-size:.95rem;font-weight:700;color:${balColor};font-family:var(--font-serif)">${fmt(a.balance,a.currency)}</div>
+            ${a.currency !== 'BRL' ? `<div style="font-size:.68rem;color:var(--muted)">${dashFmt(toBRL(a.balance,a.currency),'BRL')}</div>` : ''}
+          </div>
+        </div>`;
+      }
+      // Standard row for non-favorites
+      return `<div onclick="goToAccountTransactions('${a.id}')" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s;border-radius:4px;margin:0 -4px;padding-left:4px;padding-right:4px" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''">
+        <div style="display:flex;align-items:center;gap:9px">${renderIconEl(a.icon,a.color,18)}<span style="font-size:.83rem;color:var(--text2)">${esc(a.name)}</span></div>
+        <span class="${a.balance<0?'text-red':'text-accent'}" style="font-size:.83rem;font-weight:500">${fmt(a.balance,a.currency)}</span>
+      </div>`;
+    };
+
+    // ── Build HTML ────────────────────────────────────────────────────────
+    let html = '';
+
+    // Favorites section — always at top if any exist
+    if (favs.length) {
+      html += `<div style="margin-bottom:8px">
+        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:6px 0 4px">⭐ Favoritas</div>
+        <div class="dash-acc-favs-grid">${favs.map(rowHtml).join('')}</div>
+      </div>`;
+
+      // Non-favorites below, as a compact collapsed section if many accounts
+      const nonFavs = accs.filter(a => !a.is_favorite);
+      if (nonFavs.length) {
+        html += `<div>
+          <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:4px 0 2px;border-top:1px solid var(--border);margin-top:4px">Outras</div>
+          ${nonFavs.map(rowHtml).join('')}
+        </div>`;
+      }
+      el.innerHTML = html;
+      return;
+    }
+
+    // No favorites — use original group/flat layout
     if (!groups.length) {
       el.innerHTML = accs.map(rowHtml).join('');
       return;
     }
     const grouped = {};
     accs.forEach(a => { const gid = a.group_id || '__none__'; if (!grouped[gid]) grouped[gid] = []; grouped[gid].push(a); });
-    let html = '';
     const buildGroup = (key, label, gAccs) => {
       const collapsed = _dashGroupCollapsed[key] === true;
       const gTotal = gAccs.reduce((s,a) => s + toBRL(parseFloat(a.balance)||0, a.currency||'BRL'), 0);
@@ -187,28 +240,144 @@ async function renderCashflowChart(){
     {label:'Saldo',data:balances,type:'line',borderColor:'#1e5ba8',backgroundColor:'rgba(30,91,168,.12)',borderWidth:2.5,pointRadius:4,pointBackgroundColor:'#1e5ba8',fill:true,tension:0.35,order:1},
   ]);
 }
+// ─── Category chart: rich palette + click-to-drill ───────────────────────
+// Stores raw transaction data so click handler can filter without re-fetching
+let _catChartRawData = [];  // [{name, color, brl, t}]
+let _catChartEntries = [];  // [{name, total, color, txs}]
+
+// Diverse 16-color palette that works on both light and dark backgrounds
+const CAT_PALETTE = [
+  '#2a6049','#1e5ba8','#b45309','#c0392b','#7c3aed',
+  '#0891b2','#be185d','#15803d','#c2410c','#4338ca',
+  '#0f766e','#9333ea','#b91c1c','#1d4ed8','#92400e',
+  '#166534',
+];
+
+// Assign a palette color if the category has no custom color or uses a generic gray
+function _catColor(color, idx) {
+  if (color && color !== '#94a3b8' && color !== '#888' && color !== '#999') return color;
+  return CAT_PALETTE[idx % CAT_PALETTE.length];
+}
+
 async function renderCategoryChart(){
   const now=new Date(),y=now.getFullYear(),m=String(now.getMonth()+1).padStart(2,'0');
-  const{data}=await famQ(sb.from('transactions').select('amount,brl_amount,currency,categories(name,color)')).gte('date',`${y}-${m}-01`).lte('date',`${y}-${m}-31`).lt('amount',0).not('category_id','is',null);
+  const{data}=await famQ(
+    sb.from('transactions')
+      .select('id,date,description,amount,brl_amount,currency,account_id,categories(name,color),payees(name),accounts!transactions_account_id_fkey(name)')
+  ).gte('date',`${y}-${m}-01`).lte('date',`${y}-${m}-31`).lt('amount',0).not('category_id','is',null);
+
   const catMap={};
   (data||[]).forEach(t=>{
     const n=t.categories?.name||'Outros';
-    const c=t.categories?.color||'#94a3b8';
-    if(!catMap[n]) catMap[n]={total:0,color:c};
+    const rawColor=t.categories?.color||'';
+    if(!catMap[n]) catMap[n]={rawColor, txs:[], total:0};
     const brl = t.brl_amount != null ? Math.abs(t.brl_amount) : toBRL(Math.abs(t.amount), t.currency||'BRL');
     catMap[n].total+=brl;
+    catMap[n].txs.push({...t, _brl: brl});
   });
-  const FALLBACK_COLORS=['#2a6049','#1e5ba8','#b45309','#c0392b','#7c3aed','#2a7a4a','#3d7a5e'];
-  const entries=Object.entries(catMap).sort((a,b)=>b[1].total-a[1].total).slice(0,8);
-  if(!entries.length){
+
+  _catChartEntries=Object.entries(catMap)
+    .sort((a,b)=>b[1].total-a[1].total)
+    .slice(0,8)
+    .map(([name,v],i)=>({
+      name,
+      total: v.total,
+      color: _catColor(v.rawColor, i),
+      txs: v.txs.sort((a,b)=>b._brl-a._brl),
+    }));
+
+  if(!_catChartEntries.length){
     const el=document.getElementById('categoryChart');
     if(el){const ctx=el.getContext('2d');ctx.clearRect(0,0,el.width,el.height);ctx.fillStyle='#8c8278';ctx.textAlign='center';ctx.font='13px Outfit';ctx.fillText('Sem despesas no mês',el.width/2,el.height/2);}
     return;
   }
+
+  closeCatDetail(); // reset any open detail
+
   renderChart('categoryChart','doughnut',
-    entries.map(e=>e[0]),
-    [{data:entries.map(e=>e[1].total),backgroundColor:entries.map((e,i)=>e[1].color||FALLBACK_COLORS[i%FALLBACK_COLORS.length]),borderWidth:2,borderColor:'#fff',hoverOffset:6}]
+    _catChartEntries.map(e=>e.name),
+    [{
+      data: _catChartEntries.map(e=>e.total),
+      backgroundColor: _catChartEntries.map(e=>e.color),
+      borderWidth: 2,
+      borderColor: '#fff',
+      hoverOffset: 8,
+      hoverBorderWidth: 3,
+    }],
+    {
+      onClick(event, elements) {
+        if (!elements.length) return;
+        const idx = elements[0].index;
+        openCatDetail(idx);
+      },
+      onHover(event, elements) {
+        const canvas = event.native?.target;
+        if (canvas) canvas.style.cursor = elements.length ? 'pointer' : 'default';
+      },
+    }
   );
+}
+
+function openCatDetail(idx) {
+  const entry = _catChartEntries[idx];
+  if (!entry) return;
+
+  const detailEl   = document.getElementById('catChartDetail');
+  const titleEl    = document.getElementById('catChartDetailTitle');
+  const listEl     = document.getElementById('catChartDetailList');
+  const backBtn    = document.getElementById('catDetailBackBtn');
+  const canvas     = document.getElementById('categoryChart');
+
+  if (!detailEl || !titleEl || !listEl) return;
+
+  // Shrink chart, show detail
+  if (canvas) canvas.height = 140;
+  if (backBtn) backBtn.style.display = 'flex';
+  detailEl.style.display = '';
+
+  const dot = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${entry.color};flex-shrink:0"></span>`;
+  titleEl.innerHTML = `${dot}<strong>${esc(entry.name)}</strong><span style="color:var(--muted);font-weight:400;font-size:.72rem;margin-left:4px">${fmt(entry.total)}</span><span style="color:var(--muted);font-weight:400;font-size:.72rem;margin-left:4px">· ${entry.txs.length} lançamento${entry.txs.length!==1?'s':''}`;
+
+  const MON=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  listEl.innerHTML = entry.txs.map(t => {
+    const d = t.date ? new Date(t.date+'T12:00:00') : new Date();
+    const dateStr = `${d.getDate()} ${MON[d.getMonth()]}`;
+    const acctName = t.accounts?.name || '';
+    const payeeName = t.payees?.name || '';
+    const meta = [acctName, payeeName].filter(Boolean).join(' · ');
+    return `<div onclick="openTxDetail('${t.id}')" style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);cursor:pointer;transition:background .12s;border-radius:3px" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''">
+      <div style="min-width:0;flex:1">
+        <div style="font-size:.82rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.description||'—')}</div>
+        <div style="font-size:.7rem;color:var(--muted)">${dateStr}${meta?' · '+esc(meta):''}</div>
+      </div>
+      <span style="font-size:.85rem;font-weight:700;color:var(--red);flex-shrink:0;margin-left:10px">${fmt(t._brl)}</span>
+    </div>`;
+  }).join('');
+
+  // Highlight the selected arc
+  const chart = state.chartInstances['categoryChart'];
+  if (chart) {
+    chart.data.datasets[0].backgroundColor = _catChartEntries.map((e,i) =>
+      i === idx ? e.color : e.color + '44'
+    );
+    chart.update();
+  }
+}
+
+function closeCatDetail() {
+  const detailEl = document.getElementById('catChartDetail');
+  const backBtn  = document.getElementById('catDetailBackBtn');
+  const canvas   = document.getElementById('categoryChart');
+  if (detailEl) detailEl.style.display = 'none';
+  if (backBtn)  backBtn.style.display  = 'none';
+  if (canvas)   canvas.height = 200;
+
+  // Restore chart colors
+  const chart = state.chartInstances['categoryChart'];
+  if (chart && _catChartEntries.length) {
+    chart.data.datasets[0].backgroundColor = _catChartEntries.map(e => e.color);
+    chart.update();
+  }
 }
 /* ═══════════════════════════════════════════════════════════════
    REPORTS — state, filters, data, export
