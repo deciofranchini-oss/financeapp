@@ -5825,3 +5825,176 @@ tr.tx-row-new td:first-child {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: var(--accent);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SETUP WIZARD
+════════════════════════════════════════════════════════════════════════ */
+.wz-modal {
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  width: 100%;
+  max-width: 540px;
+  max-height: 92dvh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 80px rgba(0,0,0,.35);
+  overflow: hidden;
+}
+.wz-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px 12px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.wz-close-btn {
+  background: rgba(255,255,255,.15); border: none; color: #fff;
+  width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+  font-size: .85rem; display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.wz-close-btn:hover { background: rgba(255,255,255,.3); }
+.wz-progress-wrap { padding: 12px 20px 0; flex-shrink: 0; }
+.wz-progress-bar { height: 4px; background: var(--border); border-radius: 4px; overflow: hidden; margin-bottom: 8px; }
+.wz-progress-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s ease; }
+.wz-dots { display: flex; justify-content: center; gap: 8px; }
+.wz-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--border); transition: all .25s;
+}
+.wz-dot--active { background: var(--accent); transform: scale(1.3); }
+.wz-dot--done   { background: var(--green); }
+.wz-title-area { padding: 16px 20px 4px; flex-shrink: 0; }
+.wz-title   { font-family: var(--font-serif); font-size: 1.25rem; font-weight: 600; color: var(--text); margin: 0 0 4px; }
+.wz-subtitle{ font-size: .83rem; color: var(--muted); margin: 0; }
+.wz-body { flex: 1; overflow-y: auto; padding: 12px 20px; }
+.wz-error { margin: 0 20px; padding: 8px 12px; background: var(--red-lt); border: 1px solid var(--red); border-radius: var(--r-sm); color: var(--red); font-size: .8rem; font-weight: 600; }
+.wz-footer {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.wz-footer .btn-primary { margin-left: auto; }
+.wz-skip-btn { font-size: .78rem; color: var(--muted); }
+
+/* Fields */
+.wz-field { margin-bottom: 14px; }
+.wz-label { display: block; font-size: .82rem; font-weight: 600; color: var(--text2); margin-bottom: 6px; }
+.wz-hint  { font-size: .73rem; color: var(--muted); margin-top: 4px; }
+.wz-input { width: 100%; padding: 9px 12px; border: 1.5px solid var(--border); border-radius: var(--r-sm); font-size: .88rem; font-family: var(--font-sans); color: var(--text); background: var(--surface); transition: border-color .15s; box-sizing: border-box; }
+.wz-input:focus { border-color: var(--accent); outline: none; }
+.wz-select { width: 100%; padding: 8px 10px; border: 1.5px solid var(--border); border-radius: var(--r-sm); font-size: .85rem; font-family: var(--font-sans); background: var(--surface); color: var(--text); }
+
+/* Members */
+.wz-section-label { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 8px; }
+.wz-member-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; min-height: 40px; }
+.wz-empty-list { font-size: .78rem; color: var(--muted); padding: 8px; text-align: center; border: 1px dashed var(--border); border-radius: var(--r-sm); }
+.wz-member-chip { display: flex; align-items: center; gap: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; }
+.wz-member-emoji { font-size: 1rem; flex-shrink: 0; }
+.wz-member-info { flex: 1; min-width: 0; font-size: .8rem; }
+.wz-member-info strong { display: block; color: var(--text); }
+.wz-member-info span   { color: var(--muted); font-size: .72rem; }
+.wz-remove-btn { background: none; border: none; cursor: pointer; color: var(--muted); font-size: .9rem; padding: 2px 4px; border-radius: 4px; transition: color .12s; }
+.wz-remove-btn:hover { color: var(--red); }
+.wz-add-btn { background: none; border: 1px dashed var(--border); border-radius: 8px; padding: 6px 12px; font-size: .78rem; font-family: var(--font-sans); color: var(--accent); cursor: pointer; width: 100%; transition: background .12s; }
+.wz-add-btn:hover { background: var(--accent-lt); }
+.wz-member-form { margin-top: 8px; padding: 10px; background: var(--accent-lt); border-radius: 8px; border: 1px solid var(--border); }
+
+/* Invites */
+.wz-invite-list { display: flex; flex-direction: column; gap: 10px; }
+.wz-invite-row  { padding: 10px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; }
+.wz-invite-toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.wz-invite-toggle input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+.wz-invite-name { font-size: .875rem; font-weight: 600; color: var(--text); flex: 1; }
+.wz-invite-rel  { font-size: .72rem; color: var(--muted); }
+.wz-invite-email { margin-top: 8px; font-size: .82rem; }
+
+/* Expenses */
+.wz-expense-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.wz-expense-card {
+  border: 1.5px solid var(--border); border-radius: 12px;
+  padding: 12px 10px; text-align: center; cursor: pointer;
+  transition: all .15s; background: var(--surface2);
+}
+.wz-expense-card:hover { border-color: var(--accent); background: var(--accent-lt); }
+.wz-expense-card--selected { border-color: var(--accent); background: var(--accent-lt); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+.wz-expense-emoji { font-size: 1.6rem; margin-bottom: 4px; }
+.wz-expense-label { font-size: .72rem; font-weight: 600; color: var(--text2); line-height: 1.3; margin-bottom: 6px; }
+.wz-expense-amt { width: 100%; padding: 5px 6px; border: 1px solid var(--accent); border-radius: 6px; font-size: .78rem; text-align: center; background: var(--surface); font-family: var(--font-sans); color: var(--text); }
+
+/* Status list (step 5) */
+.wz-status-list { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
+.wz-status-row { font-size: .88rem; color: var(--text2); padding: 10px 14px; background: var(--surface2); border-radius: 8px; border-left: 3px solid var(--border); }
+
+@media (max-width: 540px) {
+  .wz-modal { max-height: 100dvh; border-radius: var(--r-lg) var(--r-lg) 0 0; align-self: flex-end; }
+  .wz-expense-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Wizard guide cards (steps 5–7) ─────────────────────────────────── */
+.wz-guide-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 16px;
+}
+.wz-guide-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.wz-guide-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: .85rem;
+  color: var(--text2);
+  line-height: 1.45;
+}
+.wz-guide-num {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: .72rem; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.wz-guide-tip {
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
+  border-radius: var(--r-sm);
+  padding: 9px 12px;
+  font-size: .78rem;
+  color: var(--amber);
+  line-height: 1.5;
+}
+.wz-guide-warn {
+  background: var(--red-lt);
+  border: 1px solid var(--red);
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
+  font-size: .78rem;
+  color: var(--red);
+  margin-top: 10px;
+}
+.wz-guide-sections { }
+.wz-guide-section-block {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+}
+.wz-guide-section-title {
+  font-size: .8rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+/* Shrink dots on 8-step wizard for mobile */
+@media (max-width: 400px) {
+  .wz-dot { width: 6px; height: 6px; }
+  .wz-dots { gap: 5px; }
+}
