@@ -307,8 +307,8 @@ async function buildAccountRunningBalanceMap(accountId) {
 
   const { data, error } = await famQ(
     sb.from('transactions')
-      .select('id,amount,date,created_at,status')
-      .eq('account_id', accountId)
+      .select('id,amount,date,created_at,status,is_transfer,linked_transfer_id,transfer_to_account_id,account_id')
+      .or(`account_id.eq.${accountId},and(is_transfer.eq.true,linked_transfer_id.is.null,transfer_to_account_id.eq.${accountId})`)
       .eq('status', 'confirmed')
       .order('date', { ascending: true })
       .order('created_at', { ascending: true })
@@ -317,12 +317,24 @@ async function buildAccountRunningBalanceMap(accountId) {
   if (error) throw error;
 
   const map = {};
-  // Store the opening balance for each transaction row.
-  // This guarantees that the first historical transaction of the account
-  // starts from the account initial balance configured in the master data.
   (data || []).forEach(t => {
     map[t.id] = running;
-    running += parseFloat(t.amount || 0) || 0;
+
+    let delta = parseFloat(t.amount || 0) || 0;
+
+    // Legacy single-leg inbound transfer:
+    // row belongs to source account but credits the selected destination account.
+    // In that case, invert to positive credit for the selected account running balance.
+    if (
+      t.is_transfer === true &&
+      !t.linked_transfer_id &&
+      t.transfer_to_account_id === accountId &&
+      t.account_id !== accountId
+    ) {
+      delta = Math.abs(delta);
+    }
+
+    running += delta;
   });
   return map;
 }

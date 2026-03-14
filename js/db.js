@@ -54,13 +54,12 @@ const _accounts = {
       const cols = 'id,name,type,currency,color,icon,initial_balance,group_id,family_id,' +
                    'active,is_favorite,best_purchase_day,due_day,iof_rate,is_brazilian';
       const [ar, gr] = await Promise.all([
-        famQ(sb.from('accounts').select(cols).or('active.is.null,active.eq.true')).order('name'),
+        famQ(sb.from('accounts').select(cols).eq('active', true)).order('name'),
         famQ(sb.from('account_groups').select('id,name,emoji,color,currency,sort_order')).order('name'),
       ]);
       if (ar.error) throw ar.error;
       state.accounts = ar.data || [];
       state.groups   = gr.data || [];
-      state.accountGroups = state.groups;
       _touch('accounts');
       await _accounts.recalcBalances();
     }));
@@ -178,7 +177,11 @@ const _transactions = {
           q = q.gte('date', `${y}-${m}-01`).lte('date', `${y}-${m}-${String(last).padStart(2,'0')}`);
         }
       }
-      if (filter.account)                q = q.eq('account_id', filter.account);
+      if (filter.account) {
+        q = q.or(
+          `account_id.eq.${filter.account},and(is_transfer.eq.true,linked_transfer_id.is.null,transfer_to_account_id.eq.${filter.account})`
+        );
+      }
       if (filter.search)                 q = q.ilike('description', `%${filter.search}%`);
       if (filter.type === 'income')      q = q.gt('amount', 0).eq('is_transfer', false);
       else if (filter.type === 'expense')q = q.lt('amount', 0).eq('is_transfer', false);
