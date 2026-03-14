@@ -6,10 +6,37 @@ async function openUserAdmin() {
 }
 
 function switchUATab(tab) {
-  document.getElementById('uaUsers').style.display    = tab === 'users'    ? '' : 'none';
-  document.getElementById('uaFamilies').style.display = tab === 'families' ? '' : 'none';
-  document.getElementById('uaTabUsers').classList.toggle('active',    tab === 'users');
-  document.getElementById('uaTabFamilies').classList.toggle('active', tab === 'families');
+  const tabs = ['users', 'families', 'pending'];
+  tabs.forEach(t => {
+    const panel = document.getElementById('ua' + t.charAt(0).toUpperCase() + t.slice(1));
+    const btn   = document.getElementById('uaTab' + t.charAt(0).toUpperCase() + t.slice(1));
+    if (panel) panel.style.display = (t === tab) ? '' : 'none';
+    if (btn)   btn.classList.toggle('active', t === tab);
+  });
+  // Load pending content on demand
+  if (tab === 'pending') _loadPendingTab();
+}
+
+async function _loadPendingTab() {
+  const el = document.getElementById('uaPendingContent');
+  if (!el) return;
+  const { data: pending } = await sb.from('app_users')
+    .select('id,name,email,created_at').eq('approved', false).order('created_at');
+  if (!pending?.length) {
+    el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">Nenhuma solicitação pendente.</div>';
+    return;
+  }
+  el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Solicitado</th><th>Ações</th></tr></thead><tbody>' +
+    pending.map(u => `<tr style="background:#fffbeb">
+      <td><strong>${esc(u.name||'—')}</strong></td>
+      <td style="font-size:.82rem">${esc(u.email)}</td>
+      <td style="font-size:.75rem;color:var(--muted)">${new Date(u.created_at).toLocaleDateString('pt-BR')}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-primary btn-sm" onclick="approveUser('${u.id}','${esc(u.name||u.email)}')" style="padding:3px 10px;font-size:.73rem;background:#16a34a">✅ Aprovar</button>
+        <button class="btn btn-ghost btn-sm" onclick="rejectUser('${u.id}','${esc(u.name||u.email)}')" style="padding:3px 10px;font-size:.73rem;color:#dc2626">🗑 Rejeitar</button>
+      </td>
+    </tr>`).join('') +
+    '</tbody></table></div>';
 }
 
 // ── FAMILIES ──────────────────────────────────────────────────────
@@ -79,7 +106,7 @@ async function loadFamiliesList() {
   await _loadFamilyFeatures(_families);
 
   // Populate family select in user form
-  const sel = document.getElementById('uFamilyId');
+  const sel = document.getElementById('uInitFamilyId');
   if (sel) {
     const cur = sel.value;
     sel.innerHTML = '<option value="">— Nenhuma (admin global) —</option>' +
@@ -213,6 +240,7 @@ async function saveFamily() {
   const desc = document.getElementById('fDesc').value.trim();
   if (!name) { toast('Informe o nome da família','error'); return; }
   let error = null;
+  let newFamilyId = null;
   try {
     if (id) {
       const rpc = await sb.rpc('update_family_as_owner', {
@@ -227,14 +255,62 @@ async function saveFamily() {
         p_description: desc || null
       });
       if (rpc.error) throw rpc.error;
+      // RPC may return the new family id
+      newFamilyId = rpc.data?.id || rpc.data || null;
     }
   } catch (e) {
     error = e;
   }
   if (error) { toast('Erro: '+error.message,'error'); return; }
-  toast(id ? '✓ Família atualizada!' : '✓ Família criada!','success');
+  toast(id ? '✓ Família atualizada!' : '✓ Família criada! Iniciando configuração…','success');
   document.getElementById('familyFormArea').style.display = 'none';
   await loadFamiliesList();
+
+  // For new families: ask if user wants to run the setup wizard
+  if (!id) {
+    _offerFamilyWizard(name, newFamilyId);
+  }
+}
+
+function _offerFamilyWizard(familyName, familyId) {
+  // Small inline prompt inside the modal instead of a blocking dialog
+  const el = document.getElementById('familiesList');
+  if (!el) return;
+  const banner = document.createElement('div');
+  banner.id = 'wizardOfferBanner';
+  banner.style.cssText = 'background:var(--green-lt,#dcfce7);border:1px solid var(--green,#16a34a);border-radius:8px;padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap';
+  banner.innerHTML = `
+    <div style="font-size:.85rem;color:#15803d">
+      🎉 <strong>Família "${esc(familyName)}" criada!</strong><br>
+      <span style="font-size:.78rem;color:#166534">Deseja configurá-la agora com o assistente de configuração?</span>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-primary btn-sm" onclick="_launchWizardForFamily('${familyId||''}','${esc(familyName)}')" style="background:#16a34a">🚀 Configurar agora</button>
+      <button class="btn btn-ghost btn-sm" onclick="document.getElementById('wizardOfferBanner')?.remove()">Depois</button>
+    </div>`;
+  el.insertBefore(banner, el.firstChild);
+}
+
+async function _launchWizardForFamily(familyId, familyName) {
+  document.getElementById('wizardOfferBanner')?.remove();
+  closeModal('userAdminModal');
+  // Switch to the new family if possible
+  if (familyId && typeof switchFamily === 'function') {
+    try { await switchFamily(familyId); } catch(_) {}
+  }
+  // Clear wizard dismissed flag so it can run fresh
+  if (typeof saveAppSetting === 'function') {
+    await saveAppSetting('wizard_dismissed', false).catch(()=>{});
+  }
+  // Open wizard directly — bypass _wizardShouldShow() guards
+  if (typeof _wzReset === 'function' && typeof _wzOpen === 'function') {
+    _wzReset();
+    // Pre-fill family name
+    _wz.familyName = familyName || '';
+    _wzOpen();
+  } else if (typeof initWizard === 'function') {
+    await initWizard();
+  }
 }
 
 async function deleteFamily(id, name) {
@@ -334,7 +410,7 @@ function showNewUserForm() {
   document.getElementById('uEmail').value = '';
   document.getElementById('uPassword').value = '';
   document.getElementById('uRole').value = 'user';
-  document.getElementById('uFamilyId').value = '';
+  document.getElementById('uInitFamilyId').value = '';
   document.getElementById('pView').checked = true;
   document.getElementById('pCreate').checked = true;
   document.getElementById('pEdit').checked = true;
@@ -343,6 +419,7 @@ function showNewUserForm() {
   document.getElementById('pImport').checked = false;
   document.getElementById('pwdHint').textContent = '(mín. 8 chars)';
   document.getElementById('userFormArea').style.display = '';
+  document.getElementById('userFormArea').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function editUser(userId) {
@@ -354,7 +431,7 @@ async function editUser(userId) {
   document.getElementById('uEmail').value = u.email;
   document.getElementById('uPassword').value = '';
   document.getElementById('uRole').value = u.role;
-  document.getElementById('uFamilyId').value = u.family_id||'';
+  document.getElementById('uInitFamilyId').value = u.family_id||'';
   document.getElementById('pView').checked = u.can_view;
   document.getElementById('pCreate').checked = u.can_create;
   document.getElementById('pEdit').checked = u.can_edit;
@@ -363,6 +440,7 @@ async function editUser(userId) {
   document.getElementById('pImport').checked = u.can_import;
   document.getElementById('pwdHint').textContent = '(deixe em branco para manter)';
   document.getElementById('userFormArea').style.display = '';
+  document.getElementById('userFormArea').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function saveUser() {
@@ -371,7 +449,7 @@ async function saveUser() {
   const email     = document.getElementById('uEmail').value.trim().toLowerCase();
   const pwd       = document.getElementById('uPassword').value;
   const role      = document.getElementById('uRole').value;
-  const newFamId  = document.getElementById('uFamilyId').value || null;
+  const newFamId  = document.getElementById('uInitFamilyId').value || null;
   if (!name || !email) { toast('Preencha nome e e-mail','error'); return; }
   if (!userId && pwd.length < 8) { toast('Senha deve ter pelo menos 8 caracteres','error'); return; }
   if (userId && pwd && pwd.length < 8) { toast('Senha deve ter pelo menos 8 caracteres','error'); return; }
@@ -391,9 +469,26 @@ async function saveUser() {
   if (!userId) { record.must_change_pwd = false; record.active = true; record.approved = true; record.created_by = currentUser?.id; }
 
   try {
+    let savedUserId = userId;
     let error;
-    if (userId) { ({ error } = await sb.from('app_users').update(record).eq('id', userId)); }
-    else        { ({ error } = await sb.from('app_users').insert(record)); }
+    if (userId) {
+      ({ error } = await sb.from('app_users').update(record).eq('id', userId));
+    } else {
+      const { data: inserted, error: insErr } = await sb.from('app_users').insert(record).select('id').single();
+      error = insErr;
+      if (!error && inserted) {
+        savedUserId = inserted.id;
+        // Also create family_members entry if a family was selected
+        if (newFamId && savedUserId) {
+          const famRole = document.getElementById('uInitFamilyRole')?.value || 'user';
+          await sb.from('family_members').upsert(
+            { user_id: savedUserId, family_id: newFamId, role: famRole },
+            { onConflict: 'user_id,family_id' }
+          ).catch(() => {});
+          await sb.from('app_users').update({ preferred_family_id: newFamId }).eq('id', savedUserId).catch(() => {});
+        }
+      }
+    }
     if (error) throw error;
     toast(userId ? '✓ Usuário atualizado!' : '✓ Usuário criado!', 'success');
     document.getElementById('userFormArea').style.display = 'none';

@@ -250,7 +250,8 @@ async function loadTransactions(){
     renderTransactions();
   } catch(e) { toast(e.message,'error'); }
 }
-function filterTransactions(){
+let _filterTxDebounceTimer = null;
+function filterTransactions(immediate = false){
   state.txFilter.search=document.getElementById('txSearch').value;
   state.txFilter.month=document.getElementById('txMonth').value;
   state.txFilter.account=document.getElementById('txAccount').value;
@@ -258,12 +259,13 @@ function filterTransactions(){
   state.txFilter.status=(document.getElementById('txStatusFilter')?.value)||'';
   state.txPage=0;
   if(state.txView==='flat') document.getElementById('txSummaryBar').style.display='none';
-  // Mark active chip-selects with visual indicator
   ['txMonth','txAccount','txType','txStatusFilter'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('is-active', !!el.value);
   });
-  loadTransactions();
+  // Debounce: typing waits 280ms; selects/chips pass immediate=true
+  clearTimeout(_filterTxDebounceTimer);
+  _filterTxDebounceTimer = setTimeout(() => loadTransactions(), immediate ? 0 : 280);
 }
 
 function populateTxMonthFilter() {
@@ -761,8 +763,10 @@ function _updateTxCurrencyPanel(accountId, forceCur) {
   const panel  = document.getElementById('txCurrencyPanel');
   if (!panel) return;
 
-  // Show panel whenever transaction currency differs from account currency
-  const needsConversion = (txCur !== accountCur) && !!accountId;
+  // Show panel when:
+  //   (a) tx currency differs from account currency  (e.g. USD tx on BRL account)
+  //   (b) account itself is non-BRL                  (e.g. USD tx on USD account → still need BRL rate for reports/patrimony)
+  const needsConversion = !!accountId && (txCur !== accountCur || accountCur !== 'BRL');
   if (!needsConversion) {
     panel.style.display = 'none';
   } else {
@@ -770,9 +774,12 @@ function _updateTxCurrencyPanel(accountId, forceCur) {
     const title     = document.getElementById('txCurrencyPanelTitle');
     const fromLabel = document.getElementById('txCurrencyRateFromLabel');
     const toLabel   = document.getElementById('txCurrencyRateToLabel');
-    if (title)     title.textContent = `Conversão: ${txCur} → ${accountCur}`;
-    if (fromLabel) fromLabel.textContent = txCur;
-    if (toLabel)   toLabel.textContent = accountCur;
+    // Determine "from" currency for display: if tx cur !== account cur, show tx→account; else show account→BRL
+    const dispFrom = (txCur !== accountCur) ? txCur : accountCur;
+    const dispTo   = (txCur !== accountCur) ? accountCur : 'BRL';
+    if (title)     title.textContent = `Conversão: ${dispFrom} → ${dispTo}`;
+    if (fromLabel) fromLabel.textContent = dispFrom;
+    if (toLabel)   toLabel.textContent   = dispTo;
     const sugg = document.getElementById('txCurrencySuggestion');
     if (sugg) sugg.style.display = 'none';
     const preview = document.getElementById('txCurrencyPreview');
@@ -800,7 +807,9 @@ function updateTxCurrencyPreview() {
   const txCur      = _getTxSelectedCurrency();
   const panel      = document.getElementById('txCurrencyPanel');
   if (!panel || panel.style.display === 'none') return;
-  if (txCur === accountCur) return;
+
+  // Determine target currency for display: if currencies differ → accountCur; else → BRL
+  const targetCur = (txCur !== accountCur) ? accountCur : 'BRL';
 
   const rateVal = parseFloat(document.getElementById('txCurrencyRate')?.value?.replace(',', '.'));
   const amtVal  = Math.abs(getAmtField('txAmount') || 0);
@@ -812,14 +821,17 @@ function updateTxCurrencyPreview() {
     return;
   }
   const converted = amtVal * rateVal;
-  if (preview) preview.textContent = `= ${fmt(converted, accountCur)}`;
-  if (hint) hint.textContent = fmt(converted, accountCur);
+  if (preview) preview.textContent = `= ${fmt(converted, targetCur)}`;
+  if (hint) hint.textContent = fmt(converted, targetCur);
 }
 
 async function fetchTxCurrencyRate() {
   const accountCur = _getTxAccountCurrency();
   const txCur      = _getTxSelectedCurrency();
-  if (!txCur || txCur === accountCur) return;
+  // For same-currency non-BRL accounts we need to fetch accountCur→BRL
+  const fetchFrom = (txCur !== accountCur) ? txCur : accountCur;
+  const fetchTo   = (txCur !== accountCur) ? accountCur : 'BRL';
+  if (!fetchFrom || fetchFrom === fetchTo) return;
 
   const btn  = document.getElementById('txCurrencyFetchBtn');
   const icon = document.getElementById('txCurrencyFetchIcon');
@@ -833,11 +845,11 @@ async function fetchTxCurrencyRate() {
     const todayStr = new Date().toISOString().slice(0,10);
     if (txDate > todayStr) txDate = todayStr;
 
-    const url = `${FX_API_BASE}/${txDate}?base=${txCur}&to=${accountCur}`;
+    const url = `${FX_API_BASE}/${txDate}?base=${fetchFrom}&to=${fetchTo}`;
     const res  = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    const rate = json?.rates?.[accountCur];
+    const rate = json?.rates?.[fetchTo];
     if (!rate) throw new Error('Taxa não encontrada');
 
     const usedDate = json.date || txDate;
@@ -845,7 +857,7 @@ async function fetchTxCurrencyRate() {
     const rateInput = document.getElementById('txCurrencyRate');
     if (rateInput) rateInput.value = rateStr;
     if (sugg) {
-      sugg.textContent = `📡 Cotação de ${usedDate} (BCE): 1 ${txCur} = ${rateStr} ${accountCur}`;
+      sugg.textContent = `📡 Cotação de ${usedDate} (BCE): 1 ${fetchFrom} = ${rateStr} ${fetchTo}`;
       sugg.style.display = '';
       sugg.style.background = '';
       sugg.style.color = '';
@@ -1042,15 +1054,22 @@ async function saveTransaction(){
   const accountCurrency = _txSrcAcc?.currency || 'BRL';
   const txCurrency  = _getTxSelectedCurrency?.() || accountCurrency;
 
-  // Compute brl_amount when tx currency differs from account currency
+  // Compute brl_amount:
+  //   Case A: tx currency differs from account currency  → rate converts txCur → accountCur
+  //   Case B: non-BRL account, same currency             → rate converts accountCur → BRL
   let brlAmount = null;
-  if (!isTransfer && txCurrency !== accountCurrency) {
+  if (!isTransfer) {
     const fxRate = parseFloat(document.getElementById('txCurrencyRate')?.value?.replace(',', '.'));
-    if (fxRate > 0) brlAmount = Math.abs(amount) * fxRate;
-  } else if (!isTransfer && accountCurrency !== 'BRL') {
-    // Non-BRL account, same currency — still compute BRL equivalent if rate present
-    const fxRate = parseFloat(document.getElementById('txCurrencyRate')?.value?.replace(',', '.'));
-    if (fxRate > 0) brlAmount = Math.abs(amount) * fxRate;
+    if (fxRate > 0) {
+      if (txCurrency !== accountCurrency) {
+        // Case A: amount in txCurrency → accountCurrency; then if accountCurrency is also non-BRL we'd need another step,
+        // but for now store the converted value (accountCur equivalent)
+        brlAmount = Math.abs(amount) * fxRate;
+      } else if (accountCurrency !== 'BRL') {
+        // Case B: amount is in accountCurrency → multiply by rate to get BRL
+        brlAmount = Math.abs(amount) * fxRate;
+      }
+    }
   }
 
   const data={
