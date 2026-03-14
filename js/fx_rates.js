@@ -114,19 +114,38 @@ async function _loadCached() {
   return false;
 }
 
+async function _fetchOneCurrency(cur) {
+  // Timeout de 4 segundos por moeda para não bloquear a UI
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const res  = await fetch(`${_FX_API}/latest?base=${cur}&symbols=BRL`,
+                              { signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return data?.rates?.BRL || null;
+  } catch(e) {
+    console.warn(`[FX] ${cur}→BRL falhou:`, e.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function _fetchRates(currencies) {
   const newRates = { BRL: 1 };
-  for (const cur of currencies) {
-    try {
-      const res  = await fetch(`${_FX_API}/latest?base=${cur}&symbols=BRL`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (data?.rates?.BRL) newRates[cur] = data.rates.BRL;
-    } catch(e) {
-      console.warn(`[FX] ${cur}→BRL falhou:`, e.message);
-      if (window._fxRates[cur]) newRates[cur] = window._fxRates[cur]; // mantém anterior
+  // Busca em paralelo (antes era sequencial — cada moeda bloqueava a anterior)
+  const results = await Promise.all(currencies.map(async cur => {
+    const rate = await _fetchOneCurrency(cur);
+    return { cur, rate };
+  }));
+  results.forEach(({ cur, rate }) => {
+    if (rate) {
+      newRates[cur] = rate;
+    } else if (window._fxRates?.[cur]) {
+      newRates[cur] = window._fxRates[cur]; // mantém cache anterior
     }
-  }
+  });
   window._fxRates   = newRates;
   window._fxRatesTs = new Date().toISOString();
   try {
