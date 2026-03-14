@@ -569,17 +569,11 @@ function navigate(page){
   _scrollActivePageToTop(page);
   if(page==='dashboard')loadDashboard();
   else if(page==='transactions'){populateTxMonthFilter();loadTransactions();}
-  else if(page==='accounts'){
-    DB.ensure?.(['accounts']).catch(()=>{}).finally(()=>renderAccounts());
-  }
+  else if(page==='accounts')renderAccounts();
   else if(page==='reports'){populateReportFilters();loadCurrentReport();}
   else if(page==='budgets')initBudgetsPage();
-  else if(page==='categories'){
-    DB.ensure?.(['categories']).catch(()=>{}).finally(()=>initCategoriesPage());
-  }
-  else if(page==='payees'){
-    DB.ensure?.(['payees']).catch(()=>{}).finally(()=>_loadPayeeTxCounts().then(()=>renderPayees()));
-  }
+  else if(page==='categories')initCategoriesPage();
+  else if(page==='payees'){_loadPayeeTxCounts().then(()=>renderPayees());}
   else if(page==='scheduled')loadScheduled();
   else if(page==='import')initImportPage();
   else if(page==='settings')loadSettings();

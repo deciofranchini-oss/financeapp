@@ -117,8 +117,6 @@ async function _updatePricesGroceryBanner() {
   if (bannerOn)  bannerOn.style.display  = groceryOn ? 'flex' : 'none';
   if (bannerOff) bannerOff.style.display = groceryOn ? 'none' : 'flex';
 }
-
-async function _pricesPageActivateGrocery() {
   const btn = document.querySelector('#pricesGroceryActivateBanner button');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Ativando…'; }
   const famId = currentUser?.family_id;
