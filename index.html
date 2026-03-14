@@ -3233,6 +3233,46 @@
   </div>
 </div>
 
+<!-- ── Category History Modal ─────────────────────────────────────────── -->
+<div class="modal-overlay" id="categoryHistoryModal">
+  <div class="modal" style="max-width:680px"><div class="modal-handle"></div>
+    <div class="modal-header">
+      <span class="modal-title" id="catHistoryTitle">Histórico de Categoria</span>
+      <button class="modal-close" onclick="closeModal('categoryHistoryModal')">✕</button>
+    </div>
+    <div class="modal-body" style="padding:0">
+      <div style="padding:10px 16px 8px;background:var(--surface2);border-bottom:1px solid var(--border);font-size:.78rem;color:var(--muted)" id="catHistoryTotal"></div>
+      <div class="table-wrap" style="margin:0;max-height:60vh;overflow-y:auto">
+        <table>
+          <thead><tr><th style="width:72px">Data</th><th>Descrição</th><th style="text-align:right">Valor</th><th style="width:40px"></th></tr></thead>
+          <tbody id="catHistoryBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('categoryHistoryModal')">Fechar</button></div>
+  </div>
+</div>
+
+<!-- ── Budget Drilldown Modal ──────────────────────────────────────────── -->
+<div class="modal-overlay" id="budgetDrilldownModal">
+  <div class="modal" style="max-width:680px"><div class="modal-handle"></div>
+    <div class="modal-header">
+      <span class="modal-title" id="budgetDrillTitle">Transações do Orçamento</span>
+      <button class="modal-close" onclick="closeModal('budgetDrilldownModal')">✕</button>
+    </div>
+    <div class="modal-body" style="padding:0">
+      <div style="padding:10px 16px 8px;background:var(--surface2);border-bottom:1px solid var(--border);font-size:.78rem;color:var(--muted)" id="budgetDrillTotal"></div>
+      <div class="table-wrap" style="margin:0;max-height:60vh;overflow-y:auto">
+        <table>
+          <thead><tr><th style="width:72px">Data</th><th>Descrição</th><th style="text-align:right">Valor</th><th style="width:40px"></th></tr></thead>
+          <tbody id="budgetDrillBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('budgetDrilldownModal')">Fechar</button></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="payeeModal">
   <div class="modal" style="max-width:440px"><div class="modal-handle"></div>
     <div class="modal-header"><span class="modal-title" id="payeeModalTitle">Novo Beneficiário</span><button class="modal-close" onclick="closeModal('payeeModal')">✕</button></div>
