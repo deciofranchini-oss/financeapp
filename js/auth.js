@@ -2076,42 +2076,77 @@ function showNewUserForm() {
 }
 
 async function editUser(userId) {
-  const { data: u } = await sb.from('app_users').select('*').eq('id', userId).single();
-  if (!u) return;
+  // Fetch user — use RPC if available to bypass RLS
+  let u;
+  try {
+    const { data: rpcUsers } = await sb.rpc('get_all_users');
+    u = (rpcUsers || []).find(x => x.id === userId);
+  } catch(_) {}
+  if (!u) {
+    const { data: direct } = await sb.from('app_users').select('*').eq('id', userId).single();
+    u = direct;
+  }
+  if (!u) { toast('Usuário não encontrado ou sem permissão', 'error'); return; }
 
-  // Scroll form into view
   const formArea = document.getElementById('userFormArea');
+  if (!formArea) return;
+
+  // Switch to Users tab to ensure form is visible
+  switchUATab('users');
+
   document.getElementById('userFormTitle').textContent = 'Editar Usuário';
-  document.getElementById('editUserId').value = u.id;
-  document.getElementById('uName').value = u.name||'';
-  document.getElementById('uEmail').value = u.email;
+  // Set the correct hidden field (inside userFormArea — second occurrence has id="editUserId")
+  // We use querySelectorAll to target specifically the one inside userFormArea
+  const hiddenId = formArea.querySelector('#editUserId') ||
+                   formArea.querySelector('input[type="hidden"]');
+  if (hiddenId) hiddenId.value = u.id;
+  // Also set the first-in-DOM occurrence as fallback for saveUser()
+  const firstHidden = document.getElementById('editUserId');
+  if (firstHidden) firstHidden.value = u.id;
+
+  document.getElementById('uName').value     = u.name  || '';
+  document.getElementById('uEmail').value    = u.email || '';
   document.getElementById('uPassword').value = '';
-  document.getElementById('uRole').value = u.role;
-  // Multi-família: o vínculo é gerenciado na aba Famílias; campo inicial só aparece em novos usuários
-  const initFamSelE = document.getElementById('uInitFamilyId'); if (initFamSelE) initFamSelE.style.display = 'none';
+  const roleEl = document.getElementById('uRole');
+  if (roleEl) roleEl.value = u.role || 'user';
+
+  // Hide family/role selectors — family links managed in Families tab
+  const initFamSelE  = document.getElementById('uInitFamilyId');   if (initFamSelE)  initFamSelE.style.display  = 'none';
   const initRoleSelE = document.getElementById('uInitFamilyRole'); if (initRoleSelE) initRoleSelE.style.display = 'none';
-  const initFamLabel = document.querySelector('label[for="uInitFamilyId"]');
-  document.getElementById('pView').checked   = u.can_view;
-  document.getElementById('pCreate').checked = u.can_create;
-  document.getElementById('pEdit').checked   = u.can_edit;
-  document.getElementById('pDelete').checked = u.can_delete;
-  document.getElementById('pExport').checked = u.can_export;
-  document.getElementById('pImport').checked = u.can_import;
-  document.getElementById('pwdHint').textContent = '(deixe em branco para manter)';
+  const initFamLabel = formArea.querySelector('label[for="uInitFamilyId"]');
+  if (initFamLabel) initFamLabel.style.display = 'none';
 
-  // Ícone da escola
+  // Permissions
+  const _chk = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
+  _chk('pView',   u.can_view);
+  _chk('pCreate', u.can_create);
+  _chk('pEdit',   u.can_edit);
+  _chk('pDelete', u.can_delete);
+  _chk('pExport', u.can_export);
+  _chk('pImport', u.can_import);
 
-  // Show current avatar in form
+  const pwdHint = document.getElementById('pwdHint');
+  if (pwdHint) pwdHint.textContent = '(deixe em branco para manter)';
+
+  // Avatar
   const avatarPreview = document.getElementById('uAvatarPreview');
   if (avatarPreview) {
-    avatarPreview.innerHTML = _userAvatarHtml(u, 56);
+    avatarPreview.innerHTML = _userAvatarHtml(u, 52);
     avatarPreview.dataset.currentUrl = u.avatar_url || '';
   }
   const removeBtn = document.getElementById('uAvatarRemoveBtn');
   if (removeBtn) removeBtn.style.display = u.avatar_url ? '' : 'none';
+  const removeFlag = document.getElementById('uAvatarRemoveFlag');
+  if (removeFlag) removeFlag.value = '';
 
+  // Show form and scroll modal to top so form is visible
   formArea.style.display = '';
-  setTimeout(() => formArea.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+  const modal = document.getElementById('userAdminModal')?.querySelector('.modal');
+  if (modal) {
+    modal.scrollTop = 0;
+  } else {
+    setTimeout(() => formArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
+  }
 }
 
 // ── Avatar upload ─────────────────────────────────────────────────────────
@@ -2164,7 +2199,10 @@ async function removeUserAvatar() {
 }
 
 async function saveUser() {
-  const userId = document.getElementById('editUserId').value;
+  // Read userId from userFormArea's hidden field (editUserModal's was renamed to editUserIdLegacy)
+  const formArea = document.getElementById('userFormArea');
+  const hiddenEl = formArea?.querySelector('input[type="hidden"]') || document.getElementById('editUserId');
+  const userId = hiddenEl?.value || '';
   const name   = document.getElementById('uName').value.trim();
   const email  = document.getElementById('uEmail').value.trim().toLowerCase();
   const pwd    = document.getElementById('uPassword').value;
