@@ -36,19 +36,31 @@ async function isPricesEnabled() {
 
 async function applyPricesFeature() {
   const on = await isPricesEnabled();
-  // Controla SOMENTE via feature flag — não deixa applyMenuVisibility sobrescrever depois
   const navEl = document.getElementById('pricesNav');
-  if (navEl) navEl.style.display = on ? '' : 'none';
+  if (navEl) {
+    navEl.style.display = on ? '' : 'none';
+    navEl.dataset.featureControlled = '1';
+  }
   const txBtn = document.getElementById('txRegisterPricesBtn');
   if (txBtn) txBtn.style.display = on ? '' : 'none';
-  // Marcar no elemento para que applyMenuVisibility o respeite
-  if (navEl) navEl.dataset.featureControlled = '1';
+  _syncModulesSection();
 }
 
 async function toggleFamilyPrices(familyId, enabled) {
   await saveAppSetting('prices_enabled_' + familyId, enabled);
   if (typeof applyPricesFeature === 'function') applyPricesFeature().catch(() => {});
   toast(enabled ? '✓ Gestão de Preços ativada' : 'Gestão de Preços desativada', 'success');
+}
+
+// Mostra a seção "Módulos" na sidebar se pelo menos um módulo estiver ativo
+function _syncModulesSection() {
+  const sec = document.getElementById('modulesNavSection');
+  if (!sec) return;
+  const anyVisible = ['groceryNav', 'pricesNav'].some(id => {
+    const el = document.getElementById(id);
+    return el && el.style.display !== 'none';
+  });
+  sec.style.display = anyVisible ? '' : 'none';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,6 +76,7 @@ async function applyGroceryFeature() {
     navEl.style.display = on ? '' : 'none';
     navEl.dataset.featureControlled = '1';
   }
+  _syncModulesSection();
 }
 
 async function isGroceryEnabled() {
