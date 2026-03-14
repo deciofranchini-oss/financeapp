@@ -5860,3 +5860,53 @@ tr.tx-pending { background: rgba(251,191,36,.05); }
     font-size: .71rem;
   }
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   PATCH 2026-03-14 v4 — transaction category flush + forecast cleanup
+═══════════════════════════════════════════════════════════════════ */
+
+/* Transactions: category sits immediately under description with no gap */
+.tx-v2-category {
+  margin: 0;
+  padding: 0;
+  font-size: .72rem;
+  line-height: 1.08;
+  color: var(--text2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tx-v2-title {
+  margin: 0;
+}
+.tx-v2-meta {
+  margin-top: 1px !important;
+}
+.tx-v2-catline,
+.tx-v2-catline .tx-cat-chip {
+  display: none !important;
+}
+
+/* Forecast: single scheduled marker and category tucked right below description */
+.forecast-category {
+  margin: 0;
+  padding: 0;
+  line-height: 1.08;
+  color: var(--text2);
+}
+.forecast-desc-line {
+  margin-bottom: 0;
+}
+.forecast-payee {
+  margin-top: 1px;
+}
+
+@media (max-width: 640px) {
+  .tx-v2-category {
+    font-size: .7rem;
+  }
+  .forecast-category {
+    font-size: .7rem;
+  }
+}
