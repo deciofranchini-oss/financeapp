@@ -2790,7 +2790,10 @@ async function switchFamily(familyId) {
   const fam = (currentUser.families || []).find(f => f.id === familyId);
   if (!fam) return;
 
-  // (loading state handled by menu closing on click)
+  const targetPage = state.currentPage || 'dashboard';
+
+  // Limpa imediatamente qualquer resíduo visual/estado da família anterior
+  try { clearFamilyScopedUI?.(); } catch(e) {}
 
   currentUser.family_id = familyId;
   // Atualiza role para o perfil do usuário NESSA família
@@ -2812,10 +2815,13 @@ async function switchFamily(familyId) {
       loadAccounts().catch(()=>{}),
       loadCategories().catch(()=>{}),
       loadPayees().catch(()=>{}),
+      loadScheduled().catch(()=>{}),
       loadAppSettings().catch(()=>{})
     ]);
     populateSelects();
-    navigate(state.currentPage || 'dashboard');
+    try { if (typeof applyPricesFeature === 'function') await applyPricesFeature(); } catch(e) {}
+    try { if (typeof applyGroceryFeature === 'function') await applyGroceryFeature(); } catch(e) {}
+    navigate(targetPage);
   } finally {
     // nothing to restore
   }

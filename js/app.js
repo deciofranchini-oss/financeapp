@@ -397,6 +397,137 @@ function _syncBackBtn() {
   if (btn) btn.style.display = _navHistory.length >= 2 ? 'flex' : 'none';
 }
 
+
+function _clearFamilySwitchNode(id, html='') {
+  try {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  } catch(e) {}
+}
+
+function _resetFamilyScopedForms() {
+  try {
+    document.querySelectorAll('form').forEach(f => {
+      try { f.reset(); } catch(e) {}
+    });
+  } catch(e) {}
+}
+
+function clearFamilyScopedUI() {
+  try { closeSidebar?.(); } catch(e) {}
+  try { closeUserMenu?.(); } catch(e) {}
+  try {
+    document.querySelectorAll('.modal-overlay.open').forEach(el => el.classList.remove('open'));
+  } catch(e) {}
+
+  _resetFamilyScopedForms();
+
+  try {
+    state.accounts = [];
+    state.categories = [];
+    state.payees = [];
+    state.transactions = [];
+    state.scheduled = [];
+    state.budgets = [];
+    state.accountGroups = [];
+    state.txTotal = 0;
+    state.txPage = 0;
+    state.txRunningBalanceMap = {};
+    state.lastCategoryByPayee = {};
+    state.cache = {};
+  } catch(e) {}
+
+  try { DB?.bustAll?.(); } catch(e) {}
+  try { _destroyForecastChart?.(); } catch(e) {}
+  try {
+    if (typeof _grocery !== 'undefined') {
+      _grocery.lists = [];
+      _grocery.items = [];
+      _grocery.currentList = null;
+    }
+  } catch(e) {}
+  try {
+    if (typeof _px !== 'undefined') {
+      _px.items = [];
+      _px.stores = [];
+      _px.activeItemId = null;
+      _px.pidStoreFilter = '';
+    }
+  } catch(e) {}
+
+  _clearFamilySwitchNode('txBody', '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:24px;font-size:.83rem">Carregando dados da família…</td></tr>');
+  _clearFamilySwitchNode('txGroupContainer', '');
+  _clearFamilySwitchNode('txPagination', '');
+  _clearFamilySwitchNode('txSummaryBar', '');
+  _clearFamilySwitchNode('forecastAccountsContainer', '<div style="text-align:center;padding:24px;color:var(--muted)">Carregando dados da família…</div>');
+  _clearFamilySwitchNode('groceryListsContainer', '');
+  _clearFamilySwitchNode('groceryItemsContainer', '');
+  _clearFamilySwitchNode('groceryTotals', '');
+  _clearFamilySwitchNode('pricesItemList', '');
+  _clearFamilySwitchNode('pricesCount', '');
+  _clearFamilySwitchNode('accountsList', '');
+  _clearFamilySwitchNode('groupsList', '');
+  _clearFamilySwitchNode('categoriesList', '');
+  _clearFamilySwitchNode('payeesList', '');
+  _clearFamilySwitchNode('scheduledList', '');
+  _clearFamilySwitchNode('budgetList', '');
+  _clearFamilySwitchNode('reportResult', '');
+
+  ['groceryDetailPanel','txBestCardSuggestion','txCurrencyPanel','txFxPanel','txCardPaymentBadge','pricesReceiptZone'].forEach(id => {
+    try {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    } catch(e) {}
+  });
+
+  ['txCount','txTotalIncome','txTotalExpense','pricesCount','groceryDetailTitle'].forEach(id => {
+    try {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '';
+    } catch(e) {}
+  });
+
+  ['txSearch','pricesSearch','groceryItemSearch','groceryNewListName','groceryNewItemName','groceryNewItemPrice','groceryNewItemStore','txDesc','txMemo','txTags','txPayeeName','txAttachName','txAttachLabel','pricesReceiptFileName','pricesAiStatus'].forEach(id => {
+    try {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if ('value' in el) el.value = '';
+      else el.textContent = '';
+    } catch(e) {}
+  });
+
+  ['txPayeeId','txCategoryId','txId','txAttachUrl','txAttachNameHidden','groceryNewItemPriceItemId'].forEach(id => {
+    try {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    } catch(e) {}
+  });
+
+  ['txPayeeDropdown','txPayeeSimilarBanner','groceryItemSuggestions','groceryItemForm','txAttachPreview'].forEach(id => {
+    try {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    } catch(e) {}
+  });
+
+  ['txMonth','txAccount','txType','txStatusFilter','forecastAccountFilter','pricesCatFilter','pricesStoreFilter'].forEach(id => {
+    try {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    } catch(e) {}
+  });
+
+  try {
+    const on = document.getElementById('forecastIncludeScheduled');
+    if (on) on.checked = true;
+  } catch(e) {}
+
+  try {
+    const detailBody = document.getElementById('txDetailBody');
+    if (detailBody) detailBody.innerHTML = '';
+  } catch(e) {}
+}
+
 function navigate(page){
   // Guard: settings/audit são admin-only
   if((page==='settings'||page==='audit') && currentUser?.role !== 'admin'){
