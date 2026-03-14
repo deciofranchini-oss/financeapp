@@ -1265,3 +1265,311 @@ async function showAutoRegisterNotification(items){
     try{ new Notification(title, { body }); }catch(e){}
   }
 }
+
+
+/* ══════════════════════════════════════════════════════════════════
+   SCHEDULED CALENDAR VIEW
+   Renders a monthly calendar showing future occurrences of all
+   active scheduled transactions with semantic color coding:
+     🔴 red dot    = expense / card_payment
+     🟡 amber dot  = transfer
+     🟢 green dot  = income
+   Clicking a day opens a detail panel with full breakdown.
+══════════════════════════════════════════════════════════════════ */
+
+// ── State ─────────────────────────────────────────────────────────
+let _scView       = 'list';           // 'list' | 'calendar'
+let _scCalYear    = new Date().getFullYear();
+let _scCalMonth   = new Date().getMonth(); // 0-indexed
+let _scCalSelDay  = null;             // 'YYYY-MM-DD' | null
+
+const SC_MONTHS = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
+                   'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+
+// ── View switch ───────────────────────────────────────────────────
+function setScView(view) {
+  _scView = view;
+
+  const listBtn = document.getElementById('scViewList');
+  const calBtn  = document.getElementById('scViewCal');
+  if (listBtn) listBtn.classList.toggle('active', view === 'list');
+  if (calBtn)  calBtn.classList.toggle('active',  view === 'calendar');
+
+  // Toggle section visibility
+  const filterBar   = document.querySelector('.sc-filter-bar');
+  const summaryBar  = document.getElementById('scheduledSummaryBar');
+  const upcomingCard = document.getElementById('scheduledUpcomingCard');
+  const listEl      = document.getElementById('scheduledList');
+  const calView     = document.getElementById('scCalendarView');
+
+  if (view === 'calendar') {
+    if (filterBar)    filterBar.style.display    = 'none';
+    if (summaryBar)   summaryBar.style.display   = 'none';
+    if (upcomingCard) upcomingCard.style.display = 'none';
+    if (listEl)       listEl.style.display       = 'none';
+    if (calView)      calView.style.display      = '';
+    renderScCalendar();
+  } else {
+    if (filterBar)    filterBar.style.display    = '';
+    if (summaryBar)   summaryBar.style.display   = '';
+    if (listEl)       listEl.style.display       = '';
+    if (calView)      calView.style.display      = 'none';
+    filterScheduled();
+  }
+}
+
+// ── Navigation ────────────────────────────────────────────────────
+function scCalMove(delta) {
+  _scCalMonth += delta;
+  if (_scCalMonth > 11) { _scCalMonth = 0;  _scCalYear++; }
+  if (_scCalMonth < 0)  { _scCalMonth = 11; _scCalYear--; }
+  _scCalSelDay = null;
+  renderScCalendar();
+}
+
+function scCalGoToday() {
+  const now = new Date();
+  _scCalYear  = now.getFullYear();
+  _scCalMonth = now.getMonth();
+  _scCalSelDay = null;
+  renderScCalendar();
+}
+
+// ── Build day map: date → { expenses, transfers, incomes, totExp, totInc } ──
+function _scCalBuildDayMap(year, month) {
+  const map = {};     // key = 'YYYY-MM-DD'
+  const today = new Date().toISOString().slice(0,10);
+
+  // Look 3 months ahead from start of displayed month
+  const scanFrom = `${String(year).padStart(4,'0')}-${String(month+1).padStart(2,'0')}-01`;
+  const scanTo   = new Date(year, month + 3, 0).toISOString().slice(0,10);
+
+  (state.scheduled || []).forEach(sc => {
+    if (sc.status === 'finished') return;
+    // Generate enough occurrences to cover the visible month + overflow
+    const occDates = generateOccurrences(sc, 200);
+    const registered = new Set((sc.occurrences||[]).map(o => o.scheduled_date));
+
+    occDates.forEach(dateStr => {
+      if (dateStr < scanFrom || dateStr > scanTo) return;
+      // Don't double-count already-registered occurrences as "upcoming"
+      // but DO show them with a ✓ indicator
+      const isRegistered = registered.has(dateStr);
+
+      if (!map[dateStr]) {
+        map[dateStr] = {
+          items: [], totDebit: 0, totCredit: 0,
+        };
+      }
+
+      const isTransfer = sc.type === 'transfer' || sc.type === 'card_payment';
+      const isIncome   = sc.type === 'income';
+      const isExpense  = !isIncome && !isTransfer;
+
+      // Resolve amount (may have currency — use brl_amount if available)
+      const amt = Math.abs(parseFloat(sc.amount) || 0);
+
+      if (isIncome) {
+        map[dateStr].totCredit += amt;
+      } else if (isExpense) {
+        map[dateStr].totDebit  += amt;
+      }
+      // transfers don't add to debit/credit — they're neutral for net
+
+      map[dateStr].items.push({
+        sc,
+        dateStr,
+        isRegistered,
+        isTransfer,
+        isIncome,
+        isExpense,
+        amt,
+        dotClass: isTransfer ? 'sc-cal-day-dot-transfer'
+                : isIncome   ? 'sc-cal-day-dot-income'
+                             : 'sc-cal-day-dot-expense',
+      });
+    });
+  });
+
+  return map;
+}
+
+// ── Main render ───────────────────────────────────────────────────
+function renderScCalendar() {
+  const labelEl = document.getElementById('scCalMonthLabel');
+  if (labelEl) labelEl.textContent = `${SC_MONTHS[_scCalMonth]} ${_scCalYear}`;
+
+  const grid = document.getElementById('scCalGrid');
+  if (!grid) return;
+
+  const today    = new Date().toISOString().slice(0,10);
+  const dayMap   = _scCalBuildDayMap(_scCalYear, _scCalMonth);
+
+  // First day of the month (0=Sun)
+  const firstDay = new Date(_scCalYear, _scCalMonth, 1).getDay();
+  // Last day of the month
+  const lastDay  = new Date(_scCalYear, _scCalMonth + 1, 0).getDate();
+  // Last day of previous month
+  const prevLast = new Date(_scCalYear, _scCalMonth, 0).getDate();
+
+  const cells = [];
+
+  // Leading cells from previous month
+  for (let i = 0; i < firstDay; i++) {
+    const d = prevLast - firstDay + 1 + i;
+    const m = _scCalMonth === 0 ? 12 : _scCalMonth;
+    const y = _scCalMonth === 0 ? _scCalYear - 1 : _scCalYear;
+    cells.push({ day: d, inMonth: false, dateStr: `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}` });
+  }
+  // Current month
+  for (let d = 1; d <= lastDay; d++) {
+    const dateStr = `${_scCalYear}-${String(_scCalMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    cells.push({ day: d, inMonth: true, dateStr });
+  }
+  // Trailing cells for next month
+  const totalCells = cells.length > 35 ? 42 : 35;
+  let trailing = 1;
+  while (cells.length < totalCells) {
+    const m = _scCalMonth === 11 ? 1 : _scCalMonth + 2;
+    const y = _scCalMonth === 11 ? _scCalYear + 1 : _scCalYear;
+    cells.push({ day: trailing, inMonth: false, dateStr: `${y}-${String(m).padStart(2,'0')}-${String(trailing).padStart(2,'0')}` });
+    trailing++;
+  }
+
+  grid.innerHTML = cells.map(({ day, inMonth, dateStr }) => {
+    const data     = dayMap[dateStr];
+    const isToday  = dateStr === today;
+    const isSel    = dateStr === _scCalSelDay;
+    const hasEvts  = !!(data?.items?.length);
+
+    // CSS classes
+    const cls = [
+      'sc-cal-day',
+      !inMonth            ? 'sc-cal-day--other-month' : '',
+      isToday             ? 'sc-cal-day--today'       : '',
+      hasEvts             ? 'sc-cal-day--has-events'  : '',
+      isSel && hasEvts    ? 'sc-cal-day--selected'    : '',
+    ].filter(Boolean).join(' ');
+
+    // Day number
+    const dayNumHtml = `<div class="sc-cal-day-num">${day}</div>`;
+
+    if (!hasEvts) {
+      return `<div class="${cls}">${dayNumHtml}</div>`;
+    }
+
+    // Dot row — max 5 dots, then "…"
+    const items = data.items;
+    const maxDots = 5;
+    const dots = items.slice(0, maxDots).map(it =>
+      `<span class="sc-cal-day-dot ${it.dotClass}"></span>`
+    ).join('') + (items.length > maxDots ? `<span style="font-size:.55rem;color:var(--muted);align-self:center">+${items.length-maxDots}</span>` : '');
+    const dotsHtml = `<div class="sc-cal-dots">${dots}</div>`;
+
+    // Daily totals
+    const totD = data.totDebit;
+    const totC = data.totCredit;
+    const bal  = totC - totD;
+    const totHtml = `<div class="sc-cal-day-totals">
+      ${totD > 0 ? `<div class="sc-cal-day-total-row debit">−${_scCalFmt(totD)}</div>` : ''}
+      ${totC > 0 ? `<div class="sc-cal-day-total-row credit">+${_scCalFmt(totC)}</div>` : ''}
+      ${(totD>0||totC>0) ? `<div class="sc-cal-day-total-row bal">${bal>=0?'+':''}${_scCalFmt(bal)}</div>` : ''}
+    </div>`;
+
+    const onclick = hasEvts ? `onclick="scCalSelectDay('${dateStr}')"` : '';
+    return `<div class="${cls}" ${onclick}>${dayNumHtml}${dotsHtml}${totHtml}</div>`;
+  }).join('');
+
+  // Re-render detail if a day is selected
+  if (_scCalSelDay && dayMap[_scCalSelDay]) {
+    _scCalRenderDetail(_scCalSelDay, dayMap[_scCalSelDay]);
+  } else {
+    const det = document.getElementById('scCalDetail');
+    if (det) det.style.display = 'none';
+  }
+}
+
+// ── Compact money format for cells (no R$ symbol on mobile) ──────
+function _scCalFmt(v) {
+  if (typeof fmt === 'function') {
+    // Use compact format for small cells
+    const abs = Math.abs(v);
+    if (abs >= 1000) return 'R$' + (abs/1000).toFixed(1).replace('.',',') + 'k';
+    return 'R$' + abs.toLocaleString('pt-BR', {minimumFractionDigits:0, maximumFractionDigits:0});
+  }
+  return String(Math.round(v));
+}
+
+// ── Day click → detail panel ──────────────────────────────────────
+function scCalSelectDay(dateStr) {
+  _scCalSelDay = (_scCalSelDay === dateStr) ? null : dateStr;
+  // Re-render to update selected state
+  renderScCalendar();
+}
+
+function _scCalRenderDetail(dateStr, data) {
+  const det = document.getElementById('scCalDetail');
+  if (!det) return;
+
+  const [y, m, d] = dateStr.split('-');
+  const dateLabel = `${parseInt(d)} de ${SC_MONTHS[parseInt(m)-1]} de ${y}`;
+  const today     = new Date().toISOString().slice(0,10);
+  const isPast    = dateStr < today;
+  const isToday   = dateStr === today;
+
+  const totD = data.totDebit;
+  const totC = data.totCredit;
+  const bal  = totC - totD;
+
+  const summaryHtml = `
+    <div class="sc-cal-detail-summary">
+      ${totD > 0 ? `<span>💸 Débito: <span class="debit">−${typeof fmt==='function'?fmt(totD):totD.toFixed(2)}</span></span>` : ''}
+      ${totC > 0 ? `<span>💰 Crédito: <span class="credit">+${typeof fmt==='function'?fmt(totC):totC.toFixed(2)}</span></span>` : ''}
+      ${(totD>0||totC>0) ? `<span>= Saldo do dia: <span class="bal">${typeof fmt==='function'?fmt(bal):bal.toFixed(2)}</span></span>` : ''}
+    </div>`;
+
+  const itemsHtml = data.items.map(it => {
+    const sc = it.sc;
+    const typeIcon = it.isTransfer ? '🔄' : it.isIncome ? '💰' : '💸';
+    const typeBg   = it.isTransfer ? 'var(--amber-lt)' : it.isIncome ? 'var(--green-lt)' : 'var(--red-lt)';
+    const amtClass = it.isTransfer ? 'transfer' : it.isIncome ? 'credit' : 'debit';
+    const amtPrefix = it.isIncome ? '+' : it.isTransfer ? '⇄' : '−';
+    const amtStr = typeof fmt==='function' ? fmt(it.amt) : it.amt.toFixed(2);
+    const freq  = typeof scFreqLabel==='function' ? scFreqLabel(sc) : '';
+    const acct  = (state.accounts||[]).find(a=>a.id===sc.account_id);
+    const meta  = [freq, acct?.name, sc.payees?.name, sc.categories?.name].filter(Boolean).join(' · ');
+    const regBadge = it.isRegistered
+      ? '<span style="font-size:.65rem;color:var(--green);font-weight:700;margin-left:4px">✓ Registrada</span>'
+      : (isPast && !isToday ? '<span style="font-size:.65rem;color:var(--amber);font-weight:700;margin-left:4px">⚠ Pendente</span>' : '');
+
+    const nextIsThis = !it.isRegistered;
+    const actionBtn = nextIsThis
+      ? `<button class="btn btn-ghost btn-sm"
+           onclick="event.stopPropagation();openRegisterOcc('${sc.id}','${it.dateStr}')"
+           style="font-size:.72rem;padding:4px 10px;white-space:nowrap">
+           ✓ Registrar
+         </button>`
+      : '';
+
+    return `
+      <div class="sc-cal-detail-item">
+        <div class="sc-cal-detail-type-icon" style="background:${typeBg}">${typeIcon}</div>
+        <div class="sc-cal-detail-mid">
+          <div class="sc-cal-detail-desc">${esc(sc.description||'—')}${regBadge}</div>
+          <div class="sc-cal-detail-meta">${esc(meta)}</div>
+        </div>
+        <div class="sc-cal-detail-amt ${amtClass}">${amtPrefix}${amtStr}</div>
+        <div class="sc-cal-detail-action">${actionBtn}</div>
+      </div>`;
+  }).join('');
+
+  det.style.display = '';
+  det.innerHTML = `
+    <div class="sc-cal-detail-header">
+      <div class="sc-cal-detail-date">${dateLabel}${isToday?' <span style="font-size:.75rem;color:var(--accent);font-weight:700">— Hoje</span>':''}</div>
+      <div style="flex:1"></div>
+      ${summaryHtml}
+      <button onclick="scCalSelectDay('${dateStr}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1rem;padding:0 0 0 8px">✕</button>
+    </div>
+    ${itemsHtml}`;
+}
