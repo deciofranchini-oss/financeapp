@@ -5766,3 +5766,23 @@ tr.tx-row-new {
 tr.tx-row-new td:first-child {
   border-left: 3px solid var(--accent) !important;
 }
+
+/* ── Price card: Add to grocery list button ─────────────────────── */
+.price-card-add-btn {
+  flex-shrink: 0;
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--accent);
+  font-size: .95rem;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .15s;
+  margin-left: 2px;
+}
+.price-card-add-btn:hover {
+  background: var(--accent-lt);
+  border-color: var(--accent);
+  transform: scale(1.08);
+}
