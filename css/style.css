@@ -5500,3 +5500,248 @@ tr.tx-pending { background: rgba(251,191,36,.05); }
   .topbar-page-icon { display: flex; }   /* show icon on mobile */
   .topbar-title     { display: none; }   /* hide text on mobile */
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   SCHEDULED CALENDAR VIEW
+   Design: clean card-grid, semantically colored dots, responsive
+════════════════════════════════════════════════════════════════════ */
+
+/* ── View toggle (List / Calendar) ─────────────────────────────── */
+.sc-view-toggle {
+  display: flex;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 2px;
+  gap: 2px;
+}
+.sc-view-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 10px;
+  border: none; border-radius: 6px;
+  background: transparent; color: var(--muted);
+  font-size: .8rem; font-weight: 500;
+  cursor: pointer; transition: all .15s;
+  font-family: var(--font-sans);
+}
+.sc-view-btn:hover { color: var(--text2); background: var(--surface); }
+.sc-view-btn.active {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(0,0,0,.08);
+}
+@media (max-width: 480px) {
+  .sc-view-lbl { display: none; }
+  .sc-view-btn { padding: 6px 8px; }
+}
+
+/* ── Calendar navigation bar ───────────────────────────────────── */
+.sc-cal-nav {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 10px;
+}
+.sc-cal-nav-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text2);
+  cursor: pointer; transition: all .15s; flex-shrink: 0;
+}
+.sc-cal-nav-btn:hover { border-color: var(--accent); color: var(--accent); }
+.sc-cal-month-label {
+  flex: 1; text-align: center;
+  font-family: var(--font-serif); font-size: 1.1rem;
+  font-weight: 500; color: var(--text); letter-spacing: -.01em;
+}
+.sc-cal-today-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--muted);
+  font-size: .8rem; font-weight: 600; cursor: pointer;
+  transition: all .15s; font-family: var(--font-sans);
+}
+.sc-cal-today-btn:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-lt);
+}
+
+/* ── Legend ─────────────────────────────────────────────────────── */
+.sc-cal-legend {
+  display: flex; align-items: center; gap: 14px;
+  margin-bottom: 10px; flex-wrap: wrap;
+}
+.sc-cal-leg-item {
+  display: flex; align-items: center; gap: 5px;
+  font-size: .75rem; color: var(--muted); font-weight: 500;
+}
+.sc-cal-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+}
+.sc-cal-dot-expense  { background: var(--red); }
+.sc-cal-dot-transfer { background: var(--amber); }
+.sc-cal-dot-income   { background: var(--green); }
+
+/* ── Calendar outer container ───────────────────────────────────── */
+.sc-cal-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── Shared grid layout ─────────────────────────────────────────── */
+.sc-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+/* ── Day-of-week header ─────────────────────────────────────────── */
+.sc-cal-header-grid {
+  background: var(--accent);
+}
+.sc-cal-dow {
+  text-align: center;
+  padding: 10px 0;
+  font-size: .72rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em;
+  color: rgba(255,255,255,.85);
+}
+
+/* ── Day cells ──────────────────────────────────────────────────── */
+.sc-cal-day {
+  position: relative;
+  min-height: 90px;
+  padding: 6px 6px 4px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  cursor: default;
+  transition: background .12s;
+  overflow: hidden;
+}
+.sc-cal-day:nth-child(7n) { border-right: none; }
+.sc-cal-days-grid .sc-cal-day:nth-last-child(-n+7) { border-bottom: none; }
+
+.sc-cal-day--other-month {
+  background: var(--bg);
+  opacity: .55;
+}
+.sc-cal-day--today {
+  background: var(--accent-lt);
+}
+.sc-cal-day--today .sc-cal-day-num {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 50%;
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700;
+}
+.sc-cal-day--has-events { cursor: pointer; }
+.sc-cal-day--has-events:hover { background: var(--bg2); }
+.sc-cal-day--selected { background: color-mix(in srgb, var(--accent) 8%, transparent) !important; }
+
+.sc-cal-day-num {
+  font-size: .78rem; font-weight: 600; color: var(--text2);
+  line-height: 1; margin-bottom: 4px;
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* ── Dot row ────────────────────────────────────────────────────── */
+.sc-cal-dots {
+  display: flex; gap: 3px; flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.sc-cal-day-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.sc-cal-day-dot-expense  { background: var(--red); }
+.sc-cal-day-dot-transfer { background: var(--amber); }
+.sc-cal-day-dot-income   { background: var(--green); }
+
+/* ── Daily totals inside cell ───────────────────────────────────── */
+.sc-cal-day-totals {
+  display: flex; flex-direction: column; gap: 1px;
+}
+.sc-cal-day-total-row {
+  font-size: .65rem; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sc-cal-day-total-row.debit  { color: var(--red); }
+.sc-cal-day-total-row.credit { color: var(--green); }
+.sc-cal-day-total-row.bal    { color: var(--muted); font-weight: 700; border-top: 1px dashed var(--border); padding-top: 1px; margin-top: 1px; }
+
+/* ── Day detail panel ───────────────────────────────────────────── */
+.sc-cal-detail {
+  padding: 16px 20px;
+}
+.sc-cal-detail-header {
+  display: flex; align-items: baseline; gap: 10px;
+  margin-bottom: 12px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.sc-cal-detail-date {
+  font-family: var(--font-serif); font-size: 1.05rem;
+  font-weight: 500; color: var(--text);
+}
+.sc-cal-detail-summary {
+  display: flex; gap: 12px; flex-wrap: wrap;
+  font-size: .78rem;
+}
+.sc-cal-detail-summary .debit  { color: var(--red); font-weight: 700; }
+.sc-cal-detail-summary .credit { color: var(--green); font-weight: 700; }
+.sc-cal-detail-summary .bal    { color: var(--text2); font-weight: 700; }
+.sc-cal-detail-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 0; border-bottom: 1px solid var(--border);
+}
+.sc-cal-detail-item:last-child { border-bottom: none; }
+.sc-cal-detail-type-icon {
+  width: 30px; height: 30px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .9rem; flex-shrink: 0;
+}
+.sc-cal-detail-mid { flex: 1; min-width: 0; }
+.sc-cal-detail-desc {
+  font-size: .85rem; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sc-cal-detail-meta {
+  font-size: .72rem; color: var(--muted); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sc-cal-detail-amt {
+  font-size: .95rem; font-weight: 700; flex-shrink: 0;
+  text-align: right;
+}
+.sc-cal-detail-amt.debit  { color: var(--red); }
+.sc-cal-detail-amt.credit { color: var(--green); }
+.sc-cal-detail-amt.transfer { color: var(--amber); }
+.sc-cal-detail-action {
+  flex-shrink: 0;
+}
+
+/* ── Responsive: mobile ─────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .sc-cal-day {
+    min-height: 64px;
+    padding: 4px 3px 3px;
+  }
+  .sc-cal-day-num {
+    font-size: .72rem;
+    width: 20px; height: 20px;
+  }
+  .sc-cal-day--today .sc-cal-day-num {
+    width: 20px; height: 20px;
+  }
+  .sc-cal-day-dot { width: 6px; height: 6px; }
+  .sc-cal-dots { gap: 2px; margin-bottom: 3px; }
+  .sc-cal-day-totals { display: none; }  /* hide values on tiny screens, show in detail */
+  .sc-cal-month-label { font-size: .95rem; }
+  .sc-cal-dow { font-size: .65rem; padding: 8px 0; }
+}
+@media (max-width: 380px) {
+  .sc-cal-day { min-height: 52px; }
+  .sc-cal-day-dot { width: 5px; height: 5px; }
+}
