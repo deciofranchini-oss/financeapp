@@ -41,26 +41,32 @@ async function loadAppSettings() {
 
 async function saveAppSetting(key, value) {
   // Always persist locally as fallback
-  if (typeof value === 'object') {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
-  } else {
-    localStorage.setItem(key, value);
-  }
+  try {
+    if (typeof value === 'object') {
+      localStorage.setItem(key, JSON.stringify(value));
+    } else {
+      localStorage.setItem(key, String(value));
+    }
+  } catch {}
+  if (!_appSettingsCache) _appSettingsCache = {};
+  _appSettingsCache[key] = value;
   if (!sb) return;
   try {
-    let family_id = null;
     const m = String(key||'').match(/^(prices_enabled_|grocery_enabled_|backup_enabled_|snapshot_enabled_)(.+)$/);
-    if (m) family_id = m[2];
-
-    const payload = { key, value: typeof value === 'object' ? value : value };
-    if (family_id) payload.family_id = family_id;
-
-    // upsert: insert or update by key
+    const family_id = m ? m[2] : null;
+    // Feature flags: try RPC SECURITY DEFINER first (bypasses RLS)
+    if (family_id) {
+      try {
+        const { error: rpcErr } = await sb.rpc('set_family_feature_flag', {
+          p_family_id: family_id, p_key: key, p_value: !!value
+        });
+        if (!rpcErr) return;
+      } catch {}
+    }
+    // Standard upsert — no family_id column in payload for schema compatibility
     const { error } = await sb.from('app_settings')
-      .upsert(payload, { onConflict: 'key' });
+      .upsert({ key, value }, { onConflict: 'key' });
     if (error) throw error;
-    if (!_appSettingsCache) _appSettingsCache = {};
-    _appSettingsCache[key] = value;
   } catch(e) {
     console.warn('saveAppSetting DB error (saved locally):', e.message);
   }
@@ -657,7 +663,7 @@ function applyMenuVisibility(vis) {
     const show = vis[key] !== false; // default true when not explicitly set
     document.querySelectorAll('[data-nav="' + key + '"]').forEach(el => {
       // grocery/prices são controlados por feature flag — não sobrescrever
-      if (el.dataset && el.dataset.featureControlled === '1') return;
+      if (el.dataset && (el.dataset.featureControlled === '1' || el.dataset.featureControlled === 'true')) return;
       el.style.display = show ? '' : 'none';
     });
   });
