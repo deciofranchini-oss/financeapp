@@ -1684,11 +1684,11 @@ async function _famToggleModule(famId, keyPrefix, cbId, btnId, applyFn) {
       }
     } catch(e) { lastErr = e.message; }
 
-    // B) Upsert direto (funciona para admin global com RLS permissiva)
+    // B) Upsert direto — sem family_id para máxima compatibilidade de schema
     if (!saved) {
       try {
         const { error: e } = await sb.from('app_settings')
-          .upsert({ key, value: nowOn, family_id: famId }, { onConflict: 'key' });
+          .upsert({ key, value: nowOn }, { onConflict: 'key' });
         if (!e) { saved = true; } else { lastErr = e.message; }
       } catch(e) { lastErr = e.message; }
     }
@@ -1697,7 +1697,7 @@ async function _famToggleModule(famId, keyPrefix, cbId, btnId, applyFn) {
     if (!saved) {
       try {
         const { error: e } = await sb.from('app_settings')
-          .update({ value: nowOn, family_id: famId }).eq('key', key);
+          .update({ value: nowOn }).eq('key', key);
         if (!e) { saved = true; } else { lastErr = e.message; }
       } catch(e) { lastErr = e.message; }
     }
@@ -1706,7 +1706,7 @@ async function _famToggleModule(famId, keyPrefix, cbId, btnId, applyFn) {
     if (!saved) {
       try {
         const { error: e } = await sb.from('app_settings')
-          .insert({ key, value: nowOn, family_id: famId });
+          .insert({ key, value: nowOn });
         if (!e) { saved = true; } else { lastErr = e.message; }
       } catch(e) { lastErr = e.message; }
     }

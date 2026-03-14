@@ -130,14 +130,15 @@ async function _pricesPageActivateGrocery() {
   try { if (typeof _appSettingsCache !== 'undefined' && _appSettingsCache) _appSettingsCache[key] = true; } catch {}
   let saved = false;
   if (sb) {
-    // Tenta RPC SECURITY DEFINER primeiro
+    // Tenta RPC SECURITY DEFINER primeiro (requer migration_family_feature_flags.sql)
     try {
       const { error: rpcErr } = await sb.rpc('set_family_feature_flag', { p_family_id: famId, p_key: key, p_value: true });
       if (!rpcErr) saved = true;
     } catch {}
-    // Fallbacks diretos
-    if (!saved) { try { await sb.from('app_settings').update({ value: true, family_id: famId }).eq('key', key); saved = true; } catch {} }
-    if (!saved) { try { await sb.from('app_settings').insert({ key, value: true, family_id: famId }); saved = true; } catch {} }
+    // Fallbacks diretos — sem family_id para compatibilidade máxima de schema
+    if (!saved) { try { const { error: e } = await sb.from('app_settings').update({ value: true }).eq('key', key); if (!e) saved = true; } catch {} }
+    if (!saved) { try { const { error: e } = await sb.from('app_settings').insert({ key, value: true }); if (!e) saved = true; } catch {} }
+    if (!saved) { try { await sb.from('app_settings').upsert({ key, value: true }, { onConflict: 'key' }); saved = true; } catch {} }
   }
   try { await applyGroceryFeature(); } catch {}
   toast('🛒 Módulo Mercado ativado!', 'success');

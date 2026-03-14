@@ -3,7 +3,7 @@ let _appSettingsCache = null; // in-memory cache after first load
 async function loadAppSettings() {
   if (!sb) return;
   try {
-    const { data, error } = await sb.from('app_settings').select('key, value, family_id').limit(500);
+    const { data, error } = await sb.from('app_settings').select('key, value').limit(200);
     if (error) throw error;
     _appSettingsCache = {};
     (data || []).forEach(row => { _appSettingsCache[row.key] = row.value; });
@@ -59,30 +59,29 @@ async function saveAppSetting(key, value) {
   try {
     const m = String(key || '').match(/^(prices_enabled_|grocery_enabled_|backup_enabled_|snapshot_enabled_)(.+)$/);
     const family_id = m ? m[2] : null;
-    const payload = { key, value };
-    if (family_id) payload.family_id = family_id;
 
-    // Usa RPC SECURITY DEFINER para feature flags de família (bypassa RLS)
+    // Para feature flags de família: tenta RPC SECURITY DEFINER primeiro
+    // A RPC só existe após aplicar migration_family_feature_flags.sql
     if (family_id) {
-      const { error: rpcErr } = await sb.rpc('set_family_feature_flag', {
-        p_family_id: family_id,
-        p_key:       key,
-        p_value:     !!value,
-      });
-      if (!rpcErr) return; // sucesso via RPC
-      // RPC não existe → fallback para upsert direto
-      if (!rpcErr.message?.includes('exist')) {
-        console.warn('[saveAppSetting] RPC error:', rpcErr.message);
-      }
+      try {
+        const { error: rpcErr } = await sb.rpc('set_family_feature_flag', {
+          p_family_id: family_id,
+          p_key:       key,
+          p_value:     !!value,
+        });
+        if (!rpcErr) return; // gravou via RPC — fim
+      } catch {}
+      // RPC não existe ou falhou — cai no upsert padrão abaixo
     }
 
-    // Upsert direto (funciona para admin global ou quando RPC não existe)
+    // Upsert padrão — NÃO inclui family_id para compatibilidade máxima
+    // (family_id pode não existir na tabela app_settings de alguns deploys)
     const { error } = await sb.from('app_settings')
-      .upsert(payload, { onConflict: 'key' });
+      .upsert({ key, value }, { onConflict: 'key' });
     if (error) throw error;
 
   } catch(e) {
-    console.warn('[saveAppSetting] DB error (localStorage ok):', e.message);
+    console.warn('saveAppSetting DB error (saved locally):', e.message);
   }
 }
 async function getAppSetting(key, defaultValue = null) {
