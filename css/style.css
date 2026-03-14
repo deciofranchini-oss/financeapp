@@ -5405,13 +5405,36 @@ tr.tx-pending { background: rgba(251,191,36,.05); }
   color:var(--muted);
 }
 @media (max-width: 640px) {
+  /* Colapsar completamente a coluna de saldo — sem espaço residual */
   .forecast-balance-head,
   .forecast-balance-cell {
-    display:none;
+    display:none !important;
+    width:0 !important;
+    min-width:0 !important;
+    max-width:0 !important;
+    padding:0 !important;
+    overflow:hidden !important;
+    white-space:nowrap !important;
   }
+  /* A tabela volta a layout automático para as 3 colunas restantes
+     ocuparem 100% da largura sem coluna "fantasma" */
+  .forecast-table-wrap table {
+    table-layout: auto !important;
+  }
+  /* Coluna de valor expande para absorver o espaço liberado */
   .forecast-amount-cell {
-    width:104px !important;
+    width: auto !important;
+    min-width: 96px;
   }
+  /* Coluna de data mantém tamanho fixo pequeno */
+  .forecast-date-cell {
+    width: 70px !important;
+  }
+  /* Coluna de descrição ocupa todo o resto */
+  .forecast-desc-cell {
+    width: auto !important;
+  }
+  /* Mostrar saldo inline sob o valor */
   .forecast-balance-mobile {
     display:block;
   }
