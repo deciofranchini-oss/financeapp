@@ -302,27 +302,48 @@ function sortTx(field){if(state.txSortField===field)state.txSortAsc=!state.txSor
 
 async function buildAccountRunningBalanceMap(accountId) {
   if (!accountId || !sb) return {};
+
   const acct = (state.accounts || []).find(a => a.id === accountId);
   let running = parseFloat(acct?.initial_balance || 0) || 0;
 
-  const { data, error } = await famQ(
+  const filter = state.txFilter || {};
+  let q = famQ(
     sb.from('transactions')
-      .select('id,amount,date,created_at,status')
+      .select('id,amount,date,created_at,status,is_transfer,is_card_payment,description')
       .eq('account_id', accountId)
       .eq('status', 'confirmed')
-      .order('date', { ascending: true })
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
   );
+
+  if (filter.month) {
+    if (filter.month.startsWith('year:')) {
+      const y = filter.month.split(':')[1];
+      q = q.gte('date', `${y}-01-01`).lte('date', `${y}-12-31`);
+    } else {
+      const [y, m] = filter.month.split('-');
+      const last = new Date(+y, +m, 0).getDate();
+      q = q.gte('date', `${y}-${m}-01`).lte('date', `${y}-${m}-${String(last).padStart(2,'0')}`);
+    }
+  }
+  if (filter.search) q = q.ilike('description', `%${filter.search}%`);
+  if (filter.type === 'income')      q = q.gt('amount', 0).eq('is_transfer', false);
+  else if (filter.type === 'expense')q = q.lt('amount', 0).eq('is_transfer', false);
+  else if (filter.type === 'transfer')     q = q.eq('is_transfer', true).eq('is_card_payment', false);
+  else if (filter.type === 'card_payment') q = q.eq('is_card_payment', true);
+
+  q = q.order('date', { ascending: true })
+       .order('created_at', { ascending: true })
+       .order('id', { ascending: true });
+
+  const { data, error } = await q;
   if (error) throw error;
 
   const map = {};
-  // Store the opening balance for each transaction row.
-  // This guarantees that the first historical transaction of the account
-  // starts from the account initial balance configured in the master data.
+  // Store the resulting balance for each row.
+  // The oldest visible confirmed transaction starts from the account initial balance,
+  // then each following line adds or subtracts its own amount from the previous older line.
   (data || []).forEach(t => {
-    map[t.id] = running;
     running += parseFloat(t.amount || 0) || 0;
+    map[t.id] = running;
   });
   return map;
 }
