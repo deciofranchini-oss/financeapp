@@ -1476,12 +1476,37 @@ async function loadFamiliesList() {
     return;
   }
 
+  // ── Pré-carregar feature flags de todas as famílias visíveis ─────────────
+  // Garante que grocery_enabled_ e prices_enabled_ estejam no cache
+  // antes de renderizar os checkboxes — evita estado incorreto.
+  if (typeof _loadFamilyFeatures === 'function') {
+    try { await _loadFamilyFeatures(visibleFamilies); } catch(_) {}
+  } else {
+    // Fallback: carregar direto do banco se _loadFamilyFeatures não disponível
+    try {
+      const flagKeys = visibleFamilies.flatMap(f => [
+        'grocery_enabled_' + f.id,
+        'prices_enabled_'  + f.id,
+      ]);
+      const { data: flagRows } = await sb.from('app_settings')
+        .select('key,value').in('key', flagKeys);
+      if (!window._familyFeaturesCache) window._familyFeaturesCache = {};
+      (flagRows || []).forEach(r => {
+        window._familyFeaturesCache[r.key] = (r.value === true || r.value === 'true');
+      });
+    } catch(_) {}
+  }
+  const _fc = window._familyFeaturesCache || {};
+
   // Show "+ Nova Família" button only to global admins and family owners
   const newFamBtn = document.querySelector('#uaFamilies .btn-primary');
   if (newFamBtn) newFamBtn.style.display = '';
 
   el.innerHTML = visibleFamilies.map(f => {
     const members = membersByFamily[f.id] || [];
+    // Feature flags para esta família
+    const _pricesOn  = !!_fc['prices_enabled_'  + f.id];
+    const _groceryOn = !!_fc['grocery_enabled_' + f.id];
 
     const membersHtml = members.length
       ? members.map(m => `
@@ -1519,9 +1544,17 @@ async function loadFamiliesList() {
           </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <label style="display:flex;align-items:center;gap:5px;font-size:.75rem;cursor:pointer;user-select:none;padding:3px 8px;border:1px solid var(--border);border-radius:6px" title="Módulo de Gestão de Preços">
+          <label style="display:inline-flex;align-items:center;gap:5px;font-size:.75rem;cursor:pointer;user-select:none;padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:${_groceryOn?'var(--accent-lt)':''}" title="Módulo Lista de Mercado">
+            <input type="checkbox" id="groceryFamToggle-${f.id}"
+                   ${_groceryOn ? 'checked' : ''}
+                   onchange="toggleFamilyFeature('${f.id}','grocery_enabled_${f.id}',this.checked)"
+                   style="width:13px;height:13px;accent-color:var(--accent);cursor:pointer">
+            🛒 Mercado
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:5px;font-size:.75rem;cursor:pointer;user-select:none;padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:${_pricesOn?'var(--accent-lt)':''}" title="Módulo de Gestão de Preços">
             <input type="checkbox" id="pricesFamToggle-${f.id}"
-                   onchange="toggleFamilyPrices('${f.id}', this.checked)"
+                   ${_pricesOn ? 'checked' : ''}
+                   onchange="toggleFamilyFeature('${f.id}','prices_enabled_${f.id}',this.checked)"
                    style="width:13px;height:13px;accent-color:var(--accent);cursor:pointer">
             🏷️ Preços
           </label>
@@ -1571,17 +1604,18 @@ async function loadFamiliesList() {
     </div>`;
   }).join('');
 
-  // Set prices toggle state for each visible family
-  setTimeout(async () => {
+  // O estado dos checkboxes já foi injetado no HTML via _pricesOn/_groceryOn.
+  // Este bloco apenas garante sincronia caso o cache tenha sido atualizado
+  // depois da renderização (ex.: toggle concorrente).
+  setTimeout(() => {
+    const fc = window._familyFeaturesCache || {};
     for (const f of visibleFamilies) {
-      const cb = document.getElementById('pricesFamToggle-' + f.id);
-      if (!cb) continue;
-      try {
-        const val = await getAppSetting('prices_enabled_' + f.id, false);
-        cb.checked = val === true || val === 'true';
-      } catch {}
+      const cbP = document.getElementById('pricesFamToggle-'  + f.id);
+      const cbG = document.getElementById('groceryFamToggle-' + f.id);
+      if (cbP) cbP.checked = !!fc['prices_enabled_'  + f.id];
+      if (cbG) cbG.checked = !!fc['grocery_enabled_' + f.id];
     }
-  }, 50);
+  }, 80);
 }
 
 function showFamilyForm(id='') {
