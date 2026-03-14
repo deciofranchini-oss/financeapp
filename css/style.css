@@ -5392,3 +5392,27 @@ tr.tx-pending { background: rgba(251,191,36,.05); }
 .tx-v2-body .tx-v2-meta:empty {
   display: none !important;
 }
+
+
+/* ── Forecast mobile: show running balance line-by-line under amount ── */
+.forecast-amount-main { display:block; }
+.forecast-balance-mobile {
+  display:none;
+  margin-top:2px;
+  font-size:.68rem;
+  line-height:1.1;
+  white-space:nowrap;
+  color:var(--muted);
+}
+@media (max-width: 640px) {
+  .forecast-balance-head,
+  .forecast-balance-cell {
+    display:none;
+  }
+  .forecast-amount-cell {
+    width:104px !important;
+  }
+  .forecast-balance-mobile {
+    display:block;
+  }
+}
