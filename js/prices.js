@@ -36,10 +36,13 @@ async function isPricesEnabled() {
 
 async function applyPricesFeature() {
   const on = await isPricesEnabled();
+  // Controla SOMENTE via feature flag — não deixa applyMenuVisibility sobrescrever depois
   const navEl = document.getElementById('pricesNav');
   if (navEl) navEl.style.display = on ? '' : 'none';
   const txBtn = document.getElementById('txRegisterPricesBtn');
-  if (txBtn && !on) txBtn.style.display = 'none';
+  if (txBtn) txBtn.style.display = on ? '' : 'none';
+  // Marcar no elemento para que applyMenuVisibility o respeite
+  if (navEl) navEl.dataset.featureControlled = '1';
 }
 
 async function toggleFamilyPrices(familyId, enabled) {
@@ -57,7 +60,10 @@ async function applyGroceryFeature() {
   if (!famId) return;
   const on = await isGroceryEnabled();
   const navEl = document.getElementById('groceryNav');
-  if (navEl) navEl.style.display = on ? '' : 'none';
+  if (navEl) {
+    navEl.style.display = on ? '' : 'none';
+    navEl.dataset.featureControlled = '1';
+  }
 }
 
 async function isGroceryEnabled() {

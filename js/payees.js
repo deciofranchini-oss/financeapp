@@ -158,6 +158,7 @@ async function loadPayees(force=false){
 
 // ── Contagem de transações por payee ──────────────────────────────────────
 let _payeeTxCounts = {};
+window._resetPayeeTxCounts = () => { _payeeTxCounts = {}; };
 
 async function _loadPayeeTxCounts() {
   const { data } = await famQ(

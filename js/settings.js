@@ -626,7 +626,9 @@ const DEFAULT_MENU_VISIBILITY = {
   payees: true,
   import: true,
   audit: true,
-  settings: true
+  settings: true,
+  // grocery e prices são controlados por feature flag por família,
+  // não pela visibilidade do menu — omitidos aqui intencionalmente
 };
 
 function _getMenuVisibilityFromCache() {
@@ -655,6 +657,9 @@ function applyMenuVisibility(vis) {
   STANDARD_KEYS.forEach(key => {
     const show = vis[key] !== false; // default true when not explicitly set
     document.querySelectorAll('[data-nav="' + key + '"]').forEach(el => {
+      // grocery e prices são controlados por feature flag por família —
+      // nunca sobrescrever quando já marcados como feature-controlled
+      if (el.dataset && el.dataset.featureControlled === '1') return;
       el.style.display = show ? '' : 'none';
     });
   });

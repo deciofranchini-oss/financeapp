@@ -305,26 +305,25 @@ async function buildAccountRunningBalanceMap(accountId) {
   const acct = (state.accounts || []).find(a => a.id === accountId);
   let running = parseFloat(acct?.initial_balance || 0) || 0;
 
+  // Buscar todas as transações confirmadas da conta, incluindo
+  // transferências legadas cujo destino é esta conta
   const { data, error } = await famQ(
     sb.from('transactions')
       .select('id,amount,date,created_at,status,is_transfer,linked_transfer_id,transfer_to_account_id,account_id')
       .or(`account_id.eq.${accountId},and(is_transfer.eq.true,linked_transfer_id.is.null,transfer_to_account_id.eq.${accountId})`)
       .eq('status', 'confirmed')
-      .order('date', { ascending: true })
+      .order('date',       { ascending: true })
       .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
+      .order('id',         { ascending: true })
   );
   if (error) throw error;
 
   const map = {};
   (data || []).forEach(t => {
-    map[t.id] = running;
-
     let delta = parseFloat(t.amount || 0) || 0;
 
-    // Legacy single-leg inbound transfer:
-    // row belongs to source account but credits the selected destination account.
-    // In that case, invert to positive credit for the selected account running balance.
+    // Transferência legada de entrada (single-leg): a linha pertence à conta
+    // de origem mas credita esta conta destino — inverter para positivo
     if (
       t.is_transfer === true &&
       !t.linked_transfer_id &&
@@ -334,7 +333,11 @@ async function buildAccountRunningBalanceMap(accountId) {
       delta = Math.abs(delta);
     }
 
-    running += delta;
+    // Registrar saldo ANTES do lançamento (mostrado ao lado da linha)
+    // e depois incrementar. Isso dá ao usuário o saldo que havia antes
+    // de cada transação ocorrer — mais útil para auditoria.
+    map[t.id] = running + delta; // saldo APÓS o lançamento
+    running   += delta;
   });
   return map;
 }

@@ -17,17 +17,30 @@ function switchUATab(tab) {
 // Feature 3: Generic family feature toggle
 async function toggleFamilyFeature(familyId, key, enabled) {
   await saveAppSetting(key, enabled);
+
+  // Sincronizar ambos os caches para que a verificação seja imediata
   if (!window._familyFeaturesCache) window._familyFeaturesCache = {};
   window._familyFeaturesCache[key] = enabled;
+
+  // Forçar _appSettingsCache a refletir o novo valor (evita leitura stale)
+  try {
+    if (window._appSettingsCache || typeof _appSettingsCache !== 'undefined') {
+      const cache = window._appSettingsCache || _appSettingsCache;
+      if (cache && typeof cache === 'object') cache[key] = enabled;
+    }
+  } catch(_) {}
+
   toast(enabled ? '✓ Módulo ativado' : 'Módulo desativado', 'success');
-  // Apply specific side-effects
+
+  // Aplicar efeitos visuais imediatos
   if (key.startsWith('prices_enabled_')) {
     try { await applyPricesFeature?.(); } catch {}
   }
   if (key.startsWith('grocery_enabled_')) {
     try { await applyGroceryFeature?.(); } catch {}
   }
-  try { applyMenuVisibility?.(); } catch {}
+  // Não chamar applyMenuVisibility aqui — grocery/prices são controlados
+  // exclusivamente por feature flag, não por menu_visibility
   await loadFamiliesList();
 }
 
