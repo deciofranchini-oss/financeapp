@@ -694,15 +694,15 @@
         <!-- Selects row -->
         <div class="tx-filter-chips-row">
           <div class="tx-filter-chip-wrap">
-            <select id="txMonth" onchange="filterTransactions()" class="tx-chip-select"></select>
+            <select id="txMonth" onchange="filterTransactions(true)" class="tx-chip-select"></select>
           </div>
           <div class="tx-filter-chip-wrap">
-            <select id="txAccount" onchange="filterTransactions()" class="tx-chip-select">
+            <select id="txAccount" onchange="filterTransactions(true)" class="tx-chip-select">
               <option value="">Todas as contas</option>
             </select>
           </div>
           <div class="tx-filter-chip-wrap">
-            <select id="txType" onchange="filterTransactions()" class="tx-chip-select">
+            <select id="txType" onchange="filterTransactions(true)" class="tx-chip-select">
               <option value="">Tipo</option>
               <option value="income">💰 Receitas</option>
               <option value="expense">💸 Despesas</option>
@@ -711,7 +711,7 @@
             </select>
           </div>
           <div class="tx-filter-chip-wrap">
-            <select id="txStatusFilter" onchange="filterTransactions()" class="tx-chip-select">
+            <select id="txStatusFilter" onchange="filterTransactions(true)" class="tx-chip-select">
               <option value="">Status</option>
               <option value="pending">⏳ Pendentes</option>
               <option value="confirmed">✅ Confirmadas</option>
