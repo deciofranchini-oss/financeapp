@@ -103,19 +103,38 @@ function _fxAgeMin() {
 
 async function _loadCached() {
   try {
-    const rates = await getAppSetting(_FX_CACHE_KEY, null);
-    const ts    = await getAppSetting(_FX_TS_KEY,    null);
-    if (rates && typeof rates === 'object' && Object.keys(rates).length) {
-      window._fxRates   = { BRL: 1, ...rates };
-      window._fxRatesTs = ts || null;
-      return true;
+    // Uma única query para buscar ambas as chaves
+    if (sb) {
+      const { data } = await sb.from('app_settings')
+        .select('key,value')
+        .in('key', [_FX_CACHE_KEY, _FX_TS_KEY]);
+      if (data && data.length) {
+        const ratesRow = data.find(r => r.key === _FX_CACHE_KEY);
+        const tsRow    = data.find(r => r.key === _FX_TS_KEY);
+        const rates = ratesRow?.value;
+        const ts    = tsRow?.value;
+        if (rates && typeof rates === 'object' && Object.keys(rates).length) {
+          window._fxRates   = { BRL: 1, ...rates };
+          window._fxRatesTs = ts || null;
+          return true;
+        }
+      }
     }
+    // Fallback: localStorage
+    try {
+      const rates = JSON.parse(localStorage.getItem(_FX_CACHE_KEY) || 'null');
+      const ts    = localStorage.getItem(_FX_TS_KEY);
+      if (rates && typeof rates === 'object' && Object.keys(rates).length) {
+        window._fxRates   = { BRL: 1, ...rates };
+        window._fxRatesTs = ts || null;
+        return true;
+      }
+    } catch {}
   } catch(e) { console.warn('[FX] erro ao carregar cache:', e.message); }
   return false;
 }
 
 async function _fetchOneCurrency(cur) {
-  // Timeout de 4 segundos por moeda para não bloquear a UI
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 4000);
   try {
@@ -134,24 +153,27 @@ async function _fetchOneCurrency(cur) {
 
 async function _fetchRates(currencies) {
   const newRates = { BRL: 1 };
-  // Busca em paralelo (antes era sequencial — cada moeda bloqueava a anterior)
+  // Busca em paralelo com timeout — não bloqueia mais que 4 segundos no total
   const results = await Promise.all(currencies.map(async cur => {
     const rate = await _fetchOneCurrency(cur);
     return { cur, rate };
   }));
   results.forEach(({ cur, rate }) => {
-    if (rate) {
-      newRates[cur] = rate;
-    } else if (window._fxRates?.[cur]) {
-      newRates[cur] = window._fxRates[cur]; // mantém cache anterior
-    }
+    newRates[cur] = rate || window._fxRates?.[cur] || null;
+    if (!newRates[cur]) delete newRates[cur]; // remove se não obteve taxa
   });
   window._fxRates   = newRates;
   window._fxRatesTs = new Date().toISOString();
+  // Salvar no banco em background — NÃO bloqueia quem chamou _fetchRates
+  Promise.all([
+    saveAppSetting(_FX_CACHE_KEY, newRates),
+    saveAppSetting(_FX_TS_KEY,    window._fxRatesTs),
+  ]).catch(e => console.warn('[FX] erro ao persistir cache:', e.message));
+  // Salvar no localStorage imediatamente como fallback offline
   try {
-    await saveAppSetting(_FX_CACHE_KEY, newRates);
-    await saveAppSetting(_FX_TS_KEY,    window._fxRatesTs);
-  } catch(e) { console.warn('[FX] erro ao persistir cache:', e.message); }
+    localStorage.setItem(_FX_CACHE_KEY, JSON.stringify(newRates));
+    localStorage.setItem(_FX_TS_KEY, window._fxRatesTs);
+  } catch {}
 }
 
 function _renderFxBadge() {
