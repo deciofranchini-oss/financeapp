@@ -2055,8 +2055,6 @@ async function loadUsersList() {
 }
 
 function showNewUserForm() {
-  switchUATab('users'); // ensure we're on the users tab
-
   const formArea = document.getElementById('userFormArea');
   document.getElementById('userFormTitle').textContent = 'Novo Usuário';
 
@@ -2099,11 +2097,12 @@ function showNewUserForm() {
 
   formArea.style.display = '';
 
-  // Scroll modal to top so the form is visible
-  const modal = document.getElementById('userAdminModal')?.querySelector('.modal');
-  if (modal) modal.scrollTop = 0;
-
-  setTimeout(() => document.getElementById('uName')?.focus(), 120);
+  // rAF: scroll after browser paints the form
+  requestAnimationFrame(() => {
+    const modal = document.getElementById('userAdminModal')?.querySelector('.modal');
+    if (modal) modal.scrollTop = 0;
+    setTimeout(() => document.getElementById('uName')?.focus(), 80);
+  });
 }
 
 async function editUser(userId) {
@@ -2122,9 +2121,7 @@ async function editUser(userId) {
   const formArea = document.getElementById('userFormArea');
   if (!formArea) return;
 
-  // Switch to Users tab to ensure form is visible
-  switchUATab('users');
-
+  // NOTE: no switchUATab here — it fires loadUsersList async which races with form display
   document.getElementById('userFormTitle').textContent = 'Editar Usuário';
   // Set the correct hidden field (inside userFormArea — second occurrence has id="editUserId")
   // We use querySelectorAll to target specifically the one inside userFormArea
@@ -2172,12 +2169,11 @@ async function editUser(userId) {
 
   // Show form and scroll modal to top so form is visible
   formArea.style.display = '';
-  const modal = document.getElementById('userAdminModal')?.querySelector('.modal');
-  if (modal) {
-    modal.scrollTop = 0;
-  } else {
-    setTimeout(() => formArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
-  }
+  requestAnimationFrame(() => {
+    const modal = document.getElementById('userAdminModal')?.querySelector('.modal');
+    if (modal) modal.scrollTop = 0;
+    else formArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
 }
 
 // ── Avatar upload ─────────────────────────────────────────────────────────
