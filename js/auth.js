@@ -3734,6 +3734,39 @@ function mfmSwitchFamily(famId) {
   _mfmRender();
 }
 
+
+// ── Add-member panel: switch between tabs ──────────────────────────────────
+function mfmSwitchAddTab(tab) {
+  const paneExist  = document.getElementById('mfmPaneExist');
+  const paneInvite = document.getElementById('mfmPaneInvite');
+  const tabExist   = document.getElementById('mfmTabExist');
+  const tabInvite  = document.getElementById('mfmTabInvite');
+  if (!paneExist || !paneInvite) return;
+
+  const isExist = tab === 'exist';
+  paneExist.style.display  = isExist ? '' : 'none';
+  paneInvite.style.display = isExist ? 'none' : '';
+
+  if (tabExist) {
+    tabExist.style.background = isExist ? 'var(--accent)' : 'var(--surface2)';
+    tabExist.style.color      = isExist ? '#fff' : 'var(--muted)';
+  }
+  if (tabInvite) {
+    tabInvite.style.background = isExist ? 'var(--surface2)' : 'var(--accent)';
+    tabInvite.style.color      = isExist ? 'var(--muted)' : '#fff';
+  }
+}
+
+// ── Toggle add-member panel ─────────────────────────────────────────────────
+function mfmToggleAddPanel() {
+  const panel = document.getElementById('mfmAddPanel');
+  const arrow = document.getElementById('mfmAddArr');
+  if (!panel) return;
+  const open = panel.style.display === 'none' || panel.style.display === '';
+  panel.style.display = open ? 'block' : 'none';
+  if (arrow) arrow.style.transform = open ? 'rotate(180deg)' : '';
+}
+
 async function _mfmRender() {
   const famId = _mfmActiveFamilyId;
   if (!famId) return;
