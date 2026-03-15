@@ -737,11 +737,12 @@
               <option value="confirmed">✅ Confirmadas</option>
             </select>
           </div>
-          <!-- Member filter chip picker -->
+          <!-- Member filter select (compact, hidden when family has no members) -->
           <div class="tx-filter-chip-wrap" id="txMemberFilterWrap" style="display:none">
-            <div id="txMemberPicker" class="fmc-picker-container" style="min-width:180px">
-              <div class="fmc-picker-empty">👨‍👩‍👧 Família (geral)</div>
-            </div>
+            <select id="txMemberPicker" class="tx-chip-select" onchange="filterTransactions(true)"
+              style="max-width:140px" title="Filtrar por membro">
+              <option value="">👤 Todos</option>
+            </select>
           </div>
           <!-- View toggle -->
           <div class="tx-view-btns">
