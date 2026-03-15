@@ -1906,12 +1906,13 @@ async function _sendInviteEmail(toEmail, familyName, inviterName) {
     const appUrl     = window.location.origin + window.location.pathname;
 
     await emailjs.send(serviceId, templateId, {
-      to_email:    toEmail,
-      subject:     `Convite para a família "${familyName}" no FinTrack`,
-      message:     `Você foi convidado por ${inviterName} para participar da família "${familyName}" no FinTrack.\n\nAcesse ${appUrl} e solicite acesso com este e-mail (${toEmail}).\n\nSeu acesso será aprovado automaticamente após o login.`,
-      family_name: familyName,
-      inviter:     inviterName,
-      app_url:     appUrl,
+      to_email:       toEmail,
+      report_subject: `[Family FinTrack] Convite para a família "${familyName}"`,
+      subject:        `[Family FinTrack] Convite para a família "${familyName}"`,
+      message:        `Você foi convidado por ${inviterName} para participar da família "${familyName}" no FinTrack.\n\nAcesse ${appUrl} e solicite acesso com este e-mail (${toEmail}).\n\nSeu acesso será aprovado automaticamente após o login.`,
+      family_name:    familyName,
+      inviter:        inviterName,
+      app_url:        appUrl,
     }, publicKey);
   } catch(e) {
     console.warn('[InviteEmail]', e.message);
@@ -2606,9 +2607,10 @@ async function _notifyAdminNewRegistration(userName, userEmail) {
   try {
     emailjs.init(EMAILJS_CONFIG.publicKey);
     await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
-      to_email:     adminEmail,
-      Subject:      'FinTrack: Nova solicitacao de acesso — ' + (userName || userEmail),
-      month_year:   now,
+      to_email:       adminEmail,
+      report_subject: '[Family FinTrack] Nova solicitação de acesso — ' + (userName || userEmail),
+      Subject:        '[Family FinTrack] Nova solicitação de acesso — ' + (userName || userEmail),
+      month_year:     now,
       report_content: body,
     });
     console.log('[approval] Email enviado para admin:', adminEmail);
@@ -2680,9 +2682,10 @@ async function _sendApprovalEmail(email, name, familyName) {
   try {
     emailjs.init(EMAILJS_CONFIG.publicKey);
     await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
-      to_email:     email,
-      Subject:      'FinTrack — Acesso aprovado! Bem-vindo(a)',
-      month_year:   new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
+      to_email:       email,
+      report_subject: '[Family FinTrack] Acesso aprovado — Bem-vindo(a)!',
+      Subject:        '[Family FinTrack] Acesso aprovado — Bem-vindo(a)!',
+      month_year:     new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
       report_content: body,
     });
   } catch(e) { console.warn('[approval] _sendApprovalEmail:', e.message); }
@@ -2743,7 +2746,8 @@ async function _sendNewUserWelcomeEmail(email, name, familyName, tempPassword) {
     emailjs.init(EMAILJS_CONFIG.publicKey);
     await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
       to_email:       email,
-      Subject:        'Family FinTrack — Sua conta foi criada!',
+      report_subject: '[Family FinTrack] Sua conta foi criada!',
+      Subject:        '[Family FinTrack] Sua conta foi criada!',
       month_year:     new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
       report_content: body,
     });

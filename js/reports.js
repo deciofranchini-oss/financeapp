@@ -1534,11 +1534,14 @@ async function sendReportByEmail() {
     // {{message}} remains as plain-text fallback for simpler template configurations.
     const reportHtml = _buildReportEmailHTML(txs, from, to, viewLabel, filters, pdfUrl);
 
+    // Build standardised subject
+    const reportSubject = `[Family FinTrack] Relatório ${viewLabel} — ${fmtDate(from)} a ${fmtDate(to)}`;
     const templateParams = {
       to_email: toAddr, to: toAddr, email: toAddr, recipient: toAddr,
       dest_email: toAddr, reply_to: toAddr,
-      from_name:      'JF Family FinTrack',
-      subject,
+      from_name:      'Family FinTrack',
+      report_subject: reportSubject,
+      subject:        reportSubject,
       // Plain-text fallback (used by other template functions)
       message:        userMessage || `Relatório ${viewLabel} — ${fmtDate(from)} a ${fmtDate(to)}`,
       // Rich HTML body — {{report_content}} in the EmailJS template Body

@@ -381,8 +381,9 @@ async function sendScheduledNotification(sc, date, amount, emailTo) {
     emailjs.init(EMAILJS_CONFIG.publicKey);
     const month_year = _ejMonthYear(date);
     await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
-      to_email: emailTo,
-      Subject: sc.description || 'Transação programada',
+      to_email:       emailTo,
+      report_subject: `[Family FinTrack] Transação executada: ${sc.description || 'Transação programada'}`,
+      Subject:        `[Family FinTrack] Transação executada: ${sc.description || 'Transação programada'}`,
       month_year,
       report_content: buildScheduledEmailReportContent(sc, date, amount, 'processed', 0),
     });
@@ -399,8 +400,9 @@ async function sendUpcomingNotification(sc, date, emailTo, daysBefore) {
     emailjs.init(EMAILJS_CONFIG.publicKey);
     const month_year = _ejMonthYear(date);
     await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
-      to_email: emailTo,
-      Subject: sc.description || 'Transação programada',
+      to_email:       emailTo,
+      report_subject: `[Family FinTrack] Lembrete: ${sc.description || 'Transação programada'}`,
+      Subject:        `[Family FinTrack] Lembrete: ${sc.description || 'Transação programada'}`,
       month_year,
       report_content: buildScheduledEmailReportContent(sc, date, sc.amount, 'upcoming', daysBefore || 0),
     });
