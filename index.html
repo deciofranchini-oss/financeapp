@@ -635,6 +635,12 @@
         <div class="stat-card"><div class="stat-accent" style="background:var(--red)"></div><div class="stat-label">Despesas do Mês</div><div class="stat-value text-red" id="statExpenses">—</div><div class="stat-sub">Mês atual</div></div>
         <div class="stat-card"><div class="stat-accent" style="background:var(--amber)"></div><div class="stat-label">Saldo do Mês</div><div class="stat-value" id="statBalance">—</div><div class="stat-sub">Receitas − Despesas</div></div>
       </div>
+      <!-- Saldo por Conta -->
+      <div class="card mb-4">
+        <div class="card-header"><span class="card-title">Saldo por Conta</span></div>
+        <div id="accountBalancesList"></div>
+      </div>
+
       <div class="grid-2 mb-6">
         <div class="card">
           <div class="card-header">
@@ -683,7 +689,6 @@
 </div>
           <div class="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Valor</th></tr></thead><tbody id="recentTxBody"><tr><td colspan="4" class="text-muted" style="text-align:center;padding:24px;font-size:.83rem">Carregando...</td></tr></tbody></table></div>
         </div>
-        <div class="card"><div class="card-header"><span class="card-title">Saldo por Conta</span></div><div id="accountBalancesList"></div></div>
       </div>
     </div>
 
