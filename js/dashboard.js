@@ -223,13 +223,15 @@ async function loadDashboard(){
     if (ungrouped && ungrouped.length) html += buildGroup('__none__', 'Sem grupo', ungrouped);
     el.innerHTML = html || accs.map(rowHtml).join('');
   })();
-  // Populate member filter for category chart
-  const dashMemSel = document.getElementById('dashMemberFilter');
-  if (dashMemSel && typeof populateFamilyMemberSelect === 'function') {
-    const prevMember = dashMemSel.value;
-    populateFamilyMemberSelect('dashMemberFilter', { placeholder: 'Família (todos)' });
-    dashMemSel.style.display = dashMemSel.options.length > 1 ? '' : 'none';
-    if (prevMember) dashMemSel.value = prevMember;
+  // Populate member and relationship filters for category chart
+  if (typeof refreshAllFamilyMemberSelects === 'function') {
+    refreshAllFamilyMemberSelects();
+  } else {
+    const dashMemSel = document.getElementById('dashMemberFilter');
+    if (dashMemSel && typeof populateFamilyMemberSelect === 'function') {
+      populateFamilyMemberSelect('dashMemberFilter', { placeholder: 'Família (todos)' });
+      dashMemSel.style.display = dashMemSel.options.length > 1 ? '' : 'none';
+    }
   }
 
   await Promise.all([renderCashflowChart(),renderCategoryChart()]);
@@ -313,12 +315,30 @@ function _catColor(color, idx, usedSet) {
 
 async function renderCategoryChart(){
   const now=new Date(),y=now.getFullYear(),m=String(now.getMonth()+1).padStart(2,'0');
-  const memberId = document.getElementById('dashMemberFilter')?.value || '';
+  const memberId  = document.getElementById('dashMemberFilter')?.value || '';
+  const relGroup  = document.getElementById('dashRelGroup')?.value || '';
+
+  // Resolve member IDs from relationship group filter
+  let memberIds = null;
+  if (relGroup && typeof getMemberIdsByRelGroup === 'function') {
+    memberIds = getMemberIdsByRelGroup(relGroup);
+  }
+  if (memberId) memberIds = [memberId]; // specific member overrides group
+
   let q = famQ(
     sb.from('transactions')
       .select('id,date,description,amount,brl_amount,currency,account_id,categories(name,color),payees(name),accounts!transactions_account_id_fkey(name)')
   ).gte('date',`${y}-${m}-01`).lte('date',`${y}-${m}-31`).lt('amount',0).not('category_id','is',null);
-  if (memberId) q = q.eq('family_member_id', memberId);
+
+  if (memberIds && memberIds.length > 0) {
+    q = q.in('family_member_id', memberIds);
+  } else if (memberIds && memberIds.length === 0) {
+    // Group exists but has no members — return empty
+    const catChartEl = document.getElementById('catChartCard');
+    if (catChartEl) catChartEl.style.display = 'none';
+    return;
+  }
+
   const{data}=await q;
 
   const catMap={};

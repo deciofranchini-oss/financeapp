@@ -124,23 +124,115 @@ function getFamilyMemberById(id) {
 function fmcBust() { _fmc.loaded = false; _fmc.members = []; }
 
 // ── Populate selects ────────────────────────────────────────────────────────
+/**
+ * Populate a <select> with family members, grouped by Adultos / Crianças.
+ * opts.placeholder  — text for the empty first option
+ * opts.showGroups   — boolean (default true): use <optgroup> grouping
+ */
 function populateFamilyMemberSelect(selectId, opts = {}) {
   const el = document.getElementById(selectId);
   if (!el) return;
-  const cur = el.value;
+  const cur         = el.value;
   const placeholder = opts.placeholder || 'Família (geral)';
-  el.innerHTML = `<option value="">${esc(placeholder)}</option>` +
-    _fmc.members.map(m => {
-      const mtype = m.member_type || m.type;
-      const mrel  = m.family_relationship || m.relation;
-      const rel   = FMC_RELATIONS.find(r => r.value === mrel);
-      const age   = _fmcCalcAge(m.birth_date);
-      const ageSuffix = (mtype === 'child' && age !== null) ? ` (${age})` : '';
-      const emoji = m.avatar_emoji || FMC_DEFAULT_EMOJI[mtype] || '👤';
-      const label = `${emoji} ${esc(m.name)}${ageSuffix}${rel ? ' · ' + rel.label : ''}`;
-      return `<option value="${m.id}">${label}</option>`;
-    }).join('');
+  const showGroups  = opts.showGroups !== false;
+
+  const adults   = _fmc.members.filter(m => (m.member_type || m.type) === 'adult');
+  const children = _fmc.members.filter(m => (m.member_type || m.type) === 'child');
+
+  function memberOption(m) {
+    const mtype = m.member_type || m.type;
+    const mrel  = m.family_relationship || m.relation;
+    const rel   = FMC_RELATIONS.find(r => r.value === mrel);
+    const age   = _fmcCalcAge(m.birth_date);
+    const ageSuffix = age !== null ? ` (${age})` : '';
+    const emoji = m.avatar_emoji || FMC_DEFAULT_EMOJI[mtype] || '👤';
+    const label = `${emoji} ${esc(m.name)}${ageSuffix}${rel ? ' · ' + rel.label : ''}`;
+    return `<option value="${m.id}">${label}</option>`;
+  }
+
+  let html = `<option value="">${esc(placeholder)}</option>`;
+
+  if (!showGroups || (!adults.length && !children.length)) {
+    html += _fmc.members.map(memberOption).join('');
+  } else {
+    if (adults.length) {
+      html += `<optgroup label="🧑 Adultos">${adults.map(memberOption).join('')}</optgroup>`;
+    }
+    if (children.length) {
+      html += `<optgroup label="👶 Crianças">${children.map(memberOption).join('')}</optgroup>`;
+    }
+  }
+
+  el.innerHTML = html;
   if (cur && _fmc.members.find(m => m.id === cur)) el.value = cur;
+}
+
+// ── Relationship type filter ──────────────────────────────────────────────────
+// Maps relation value → display group label
+const FMC_REL_GROUPS = {
+  pai:      '👨 Pais',
+  mae:      '👨 Pais',
+  conjuge:  '💑 Cônjuges',
+  irmao:    '🤝 Irmãos',
+  irma:     '🤝 Irmãos',
+  filho:    '👶 Filhos',
+  filha:    '👶 Filhos',
+  enteado:  '👶 Filhos',
+  enteada:  '👶 Filhos',
+  neto:     '🌱 Netos',
+  neta:     '🌱 Netos',
+  sobrinho: '🌱 Netos',
+  sobrinha: '🌱 Netos',
+  avo:      '👴 Avós',
+  avo_f:    '👴 Avós',
+  tio:      '🎩 Tios',
+  tia:      '🎩 Tios',
+  outro:    '➕ Outros',
+};
+
+/**
+ * Get the unique relationship groups present in the loaded members.
+ * Returns array of { group, members } sorted logically.
+ */
+function getFmcRelationGroups() {
+  const groupMap = {};
+  for (const m of _fmc.members) {
+    const mrel  = m.family_relationship || m.relation || 'outro';
+    const group = FMC_REL_GROUPS[mrel] || '➕ Outros';
+    if (!groupMap[group]) groupMap[group] = [];
+    groupMap[group].push(m);
+  }
+  return Object.entries(groupMap).map(([group, members]) => ({ group, members }));
+}
+
+/**
+ * Populate a relationship-type <select> filter.
+ * Shows distinct groups present in the loaded members.
+ */
+function populateRelationshipFilter(selectId, placeholder = 'Todos os membros') {
+  const el = document.getElementById(selectId);
+  if (!el) return;
+  const cur = el.value;
+  const groups = getFmcRelationGroups();
+  el.innerHTML = `<option value="">${esc(placeholder)}</option>` +
+    groups.map(g =>
+      `<option value="${esc(g.group)}">${esc(g.group)} (${g.members.length})</option>`
+    ).join('');
+  if (cur) el.value = cur;
+}
+
+/**
+ * Get member IDs that match a relationship group filter value.
+ * If filter is empty, returns all member IDs.
+ */
+function getMemberIdsByRelGroup(relGroup) {
+  if (!relGroup) return null; // null = no filter
+  return _fmc.members
+    .filter(m => {
+      const mrel  = m.family_relationship || m.relation || 'outro';
+      return (FMC_REL_GROUPS[mrel] || '➕ Outros') === relGroup;
+    })
+    .map(m => m.id);
 }
 
 // Refresh all member selects on the page
@@ -148,9 +240,16 @@ function refreshAllFamilyMemberSelects() {
   ['txFamilyMember', 'budgetFamilyMember', 'rptMember', 'dashMemberFilter'].forEach(id => {
     populateFamilyMemberSelect(id);
   });
-  // Show/hide dashMemberFilter based on whether there are members
+  // Relationship filter selects
+  ['rptRelGroup', 'dashRelGroup'].forEach(id => {
+    populateRelationshipFilter(id);
+  });
+  // Show/hide dashMemberFilter and dashRelGroup based on whether there are members
+  const hasMem = _fmc.members.length > 0;
   const dash = document.getElementById('dashMemberFilter');
-  if (dash) dash.style.display = dash.options.length > 1 ? '' : 'none';
+  if (dash) dash.style.display = hasMem ? '' : 'none';
+  const dashRel = document.getElementById('dashRelGroup');
+  if (dashRel) dashRel.style.display = hasMem ? '' : 'none';
 }
 
 // ── Summary ─────────────────────────────────────────────────────────────────

@@ -71,6 +71,18 @@ function populateReportFilters() {
   if (typeof populateFamilyMemberSelect === 'function') {
     populateFamilyMemberSelect('rptMember', { placeholder: 'Todos' });
   }
+  // Relationship group filter
+  if (typeof populateRelationshipFilter === 'function') {
+    populateRelationshipFilter('rptRelGroup', 'Todos');
+  }
+}
+
+/** When relationship group filter changes, reset the specific member filter */
+function _onRptRelGroupChange() {
+  // Clear specific member selection when a group is chosen
+  const rptMem = document.getElementById('rptMember');
+  if (rptMem) rptMem.value = '';
+  loadCurrentReport(true);
 }
 
 /** Rebuild the tag filter dropdown from the current rptState.txData (or state.transactions). */
@@ -102,7 +114,8 @@ async function fetchRptTransactions() {
   const catId  = document.getElementById('rptCategory')?.value  || '';
   const payId  = document.getElementById('rptPayee')?.value     || '';
   const tagV    = document.getElementById('rptTag')?.value       || '';
-  const memberV = document.getElementById('rptMember')?.value    || '';
+  const memberV   = document.getElementById('rptMember')?.value    || '';
+  const relGroupV = document.getElementById('rptRelGroup')?.value  || '';
 
   let q = famQ(sb.from('transactions')
     .select('*, accounts!transactions_account_id_fkey(name,color,currency), categories(name,color,type), payees(name)'))
@@ -115,7 +128,17 @@ async function fetchRptTransactions() {
   if(typeV==='income')  q = q.gt('amount',0);
   // Tag filter: PostgREST array-contains operator
   if(tagV)    q = q.contains('tags', [tagV]);
-  if(memberV) q = q.eq('family_member_id', memberV);
+  // Apply specific member filter OR relationship group filter
+  if (memberV) {
+    q = q.eq('family_member_id', memberV);
+  } else if (relGroupV && typeof getMemberIdsByRelGroup === 'function') {
+    const groupIds = getMemberIdsByRelGroup(relGroupV);
+    if (groupIds && groupIds.length > 0) {
+      q = q.in('family_member_id', groupIds);
+    } else if (groupIds && groupIds.length === 0) {
+      return []; // group exists but empty → no results
+    }
+  }
 
   const {data, error} = await q;
   if(error) { toast(error.message,'error'); return []; }
@@ -124,10 +147,13 @@ async function fetchRptTransactions() {
   // Refresh tag dropdown with tags found in this period/filters
   // (do it after filter so we show tags relevant to current context)
   setTimeout(_refreshRptTagFilter, 0);
-  // Refresh member select with current family members
+  // Refresh member and relationship selects
   setTimeout(() => {
     if (typeof populateFamilyMemberSelect === 'function') {
       populateFamilyMemberSelect('rptMember', { placeholder: 'Todos' });
+    }
+    if (typeof populateRelationshipFilter === 'function') {
+      populateRelationshipFilter('rptRelGroup', 'Todos');
     }
   }, 0);
 
@@ -419,6 +445,8 @@ function _getActiveFiltersLabel() {
     const memName = mem.options[mem.selectedIndex]?.text?.replace(/^[^\s]+\s/, '') || mem.value;
     parts.push('Membro: ' + memName);
   }
+  const relGrp = document.getElementById('rptRelGroup');
+  if (relGrp?.value) parts.push('Grupo: ' + relGrp.value);
   return parts.length ? parts.join(' · ') : 'Todos os dados';
 }
 
