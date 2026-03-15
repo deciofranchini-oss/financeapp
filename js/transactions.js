@@ -257,12 +257,19 @@ function filterTransactions(immediate = false){
   state.txFilter.account=document.getElementById('txAccount').value;
   state.txFilter.type=document.getElementById('txType').value;
   state.txFilter.status=(document.getElementById('txStatusFilter')?.value)||'';
+  // Member filter: read selected IDs from multi-picker
+  state.txFilter.memberIds = typeof getFmcMultiPickerSelected === 'function'
+    ? getFmcMultiPickerSelected('txMemberPicker')
+    : [];
   state.txPage=0;
   if(state.txView==='flat') document.getElementById('txSummaryBar').style.display='none';
   ['txMonth','txAccount','txType','txStatusFilter'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('is-active', !!el.value);
   });
+  // Highlight member filter wrap when active
+  const wrap = document.getElementById('txMemberFilterWrap');
+  if (wrap) wrap.classList.toggle('is-active', (state.txFilter.memberIds?.length || 0) > 0);
   // Debounce: typing waits 280ms; selects/chips pass immediate=true
   clearTimeout(_filterTxDebounceTimer);
   _filterTxDebounceTimer = setTimeout(() => loadTransactions(), immediate ? 0 : 280);
@@ -550,7 +557,16 @@ function toggleTxGroup(k) {
 }
 
 function changePage(dir){state.txPage+=dir;loadTransactions();}
-function openTransactionModal(id=''){resetTxModal();document.getElementById('txDate').value=new Date().toISOString().slice(0,10);document.getElementById('txModalTitle').textContent='Nova Transação';if(id)editTransaction(id);else openModal('txModal');}
+async function openTransactionModal(id=''){
+  // Ensure family composition is loaded so the member picker renders with actual members
+  if (typeof loadFamilyComposition === 'function' && typeof _fmc !== 'undefined' && !_fmc.loaded) {
+    await loadFamilyComposition().catch(() => {});
+  }
+  resetTxModal();
+  document.getElementById('txDate').value=new Date().toISOString().slice(0,10);
+  document.getElementById('txModalTitle').textContent='Nova Transação';
+  if(id) editTransaction(id); else openModal('txModal');
+}
 function resetTxModal(){
   ['txId','txDesc','txMemo','txTags'].forEach(f=>document.getElementById(f).value='');
   const stEl=document.getElementById('txStatus'); if(stEl) stEl.value='confirmed';

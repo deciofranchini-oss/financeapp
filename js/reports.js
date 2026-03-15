@@ -100,10 +100,17 @@ function _refreshRptTagFilter() {
   if (cur && tagSet.has(cur)) tagEl.value = cur;
 }
 
-function loadCurrentReport() {
-  if(rptState.view==='regular')      loadReports();
-  else if(rptState.view==='transactions') loadReportTx();
-  else if(rptState.view==='forecast')     loadForecast();
+let _rptLoading = false;
+async function loadCurrentReport(resetPage = false) {
+  if (_rptLoading) return; // prevent concurrent fetches
+  _rptLoading = true;
+  try {
+    if (rptState.view === 'regular')           await loadReports();
+    else if (rptState.view === 'transactions') await loadReportTx();
+    else if (rptState.view === 'forecast')     await loadForecast();
+  } finally {
+    _rptLoading = false;
+  }
 }
 
 /* ── Fetch filtered transactions ── */

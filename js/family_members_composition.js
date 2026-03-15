@@ -235,12 +235,28 @@ function refreshAllFamilyMemberSelects() {
   ['rptRelGroup', 'dashRelGroup'].forEach(id => {
     populateRelationshipFilter(id);
   });
-  // Show/hide dashMemberFilter and dashRelGroup based on whether there are members
   const hasMem = _fmc.members.length > 0;
+
+  // Show/hide dashboard filters
   const dash = document.getElementById('dashMemberFilter');
   if (dash) dash.style.display = hasMem ? '' : 'none';
   const dashRel = document.getElementById('dashRelGroup');
   if (dashRel) dashRel.style.display = hasMem ? '' : 'none';
+
+  // Render txMemberPicker in the transactions filter bar
+  if (typeof renderFmcMultiPicker === 'function') {
+    // Keep current selection when refreshing
+    const curSel = typeof getFmcMultiPickerSelected === 'function'
+      ? getFmcMultiPickerSelected('txMemberPicker') : [];
+    renderFmcMultiPicker('txMemberPicker', {
+      selected: curSel,
+      placeholder: '👨‍👩‍👧 Membros',
+      onChange: 'filterTransactions',   // auto-filter on chip click
+    });
+  }
+  // Show/hide the txMemberPicker wrap
+  const txWrap = document.getElementById('txMemberFilterWrap');
+  if (txWrap) txWrap.style.display = hasMem ? '' : 'none';
 }
 
 // ── Summary ─────────────────────────────────────────────────────────────────
@@ -257,6 +273,9 @@ function renderFmcMultiPicker(containerId, opts = {}) {
   if (!el) return;
   const selected   = new Set(opts.selected || []);
   const placeholder = opts.placeholder || '👨‍👩‍👧 Família (geral)';
+  // Register onChange callback (function name as string, called on chip toggle/clear)
+  if (opts.onChange) _fmcPickerCallbacks[containerId] = opts.onChange;
+  else delete _fmcPickerCallbacks[containerId];
   const adults   = _fmc.members.filter(m => (m.member_type || m.type) === 'adult');
   const children = _fmc.members.filter(m => (m.member_type || m.type) === 'child');
   function memberChip(m) {
@@ -272,18 +291,27 @@ function renderFmcMultiPicker(containerId, opts = {}) {
       onclick="_fmcChipToggle(this,'${containerId}')"
       >${emoji} ${esc(m.name)}${ageTxt}</button>`;
   }
+  let html = `<div class="fmc-picker">`;
+  const allSel = !selected.size;
+  // Always render the "Família (geral)" chip so the field is always interactive
+  html += `<button type="button" class="fmc-chip fmc-chip-all${allSel ? ' selected' : ''}"
+    data-member-id="" onclick="_fmcChipClearAll('${containerId}')">${esc(placeholder)}</button>`;
+
   if (!_fmc.members.length) {
-    el.innerHTML = `<div class="fmc-picker-empty">${esc(placeholder)}</div>`;
+    // No members configured — show hint but keep the "geral" chip interactive
+    html += `<span class="fmc-picker-hint">Nenhum membro cadastrado</span>`;
+    html += '</div>';
+    el.innerHTML = html;
     return;
   }
-  let html = `<div class="fmc-picker">`;
-  html += `<button type="button" class="fmc-chip fmc-chip-all${!selected.size ? ' selected' : ''}"
-    data-member-id="" onclick="_fmcChipClearAll('${containerId}')">${esc(placeholder)}</button>`;
   if (adults.length)   html += `<span class="fmc-group-label">🧑 Adultos</span>` + adults.map(memberChip).join('');
   if (children.length) html += `<span class="fmc-group-label">👶 Crianças</span>` + children.map(memberChip).join('');
   html += '</div>';
   el.innerHTML = html;
 }
+// Map of containerId → callback function name (string, called globally after toggle)
+const _fmcPickerCallbacks = {};
+
 function _fmcChipToggle(btn, containerId) {
   if (!btn.dataset.memberId) { _fmcChipClearAll(containerId); return; }
   btn.classList.toggle('selected');
@@ -292,12 +320,18 @@ function _fmcChipToggle(btn, containerId) {
   if (all) all.classList.remove('selected');
   if (!c?.querySelector('.fmc-chip:not(.fmc-chip-all).selected') && all)
     all.classList.add('selected');
+  _fmcFireCallback(containerId);
 }
 function _fmcChipClearAll(containerId) {
   const c = document.getElementById(containerId);
   c?.querySelectorAll('.fmc-chip').forEach(x => x.classList.remove('selected'));
   const all = c?.querySelector('.fmc-chip-all');
   if (all) all.classList.add('selected');
+  _fmcFireCallback(containerId);
+}
+function _fmcFireCallback(containerId) {
+  const cb = _fmcPickerCallbacks[containerId];
+  if (cb && typeof window[cb] === 'function') window[cb](true);
 }
 function getFmcMultiPickerSelected(containerId) {
   return Array.from(document.getElementById(containerId)

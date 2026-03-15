@@ -193,6 +193,15 @@ const _transactions = {
       else if (filter.type === 'card_payment') q = q.eq('is_card_payment', true);
       if (filter.status === 'pending')         q = q.eq('status', 'pending');
       else if (filter.status === 'confirmed')  q = q.eq('status', 'confirmed');
+      // Member filter: array of selected member IDs
+      if (filter.memberIds && filter.memberIds.length > 0) {
+        // Match transactions where any of the selected members appears
+        // in either family_member_id (single) or family_member_ids (array)
+        const orClauses = filter.memberIds.map(id =>
+          `family_member_id.eq.${id},family_member_ids.cs.{${id}}`
+        ).join(',');
+        q = q.or(orClauses);
+      }
 
       const { data, count, error } = await q;
       if (error) throw error;
