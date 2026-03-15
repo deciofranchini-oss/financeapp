@@ -1951,17 +1951,17 @@ async function loadFamiliesList() {
           <button id="famGroceryBtn-${fid}"
             class="fam-mod-chip${_groceryOn?' active':''}"
             onclick="_famToggleModule('${fid}','grocery_enabled_','famGroceryBtn-${fid}','applyGroceryFeature')">
-            🛒 Mercado <span>${_groceryOn?'●':'○'}</span>
+            🛒 Mercado <span class="fam-mod-dot">${_groceryOn?'●':'○'}</span>
           </button>
           <button id="famPricesBtn-${fid}"
             class="fam-mod-chip${_pricesOn?' active':''}"
             onclick="_famToggleModule('${fid}','prices_enabled_','famPricesBtn-${fid}','applyPricesFeature')">
-            🏷️ Preços <span>${_pricesOn?'●':'○'}</span>
+            🏷️ Preços <span class="fam-mod-dot">${_pricesOn?'●':'○'}</span>
           </button>
           <button id="famInvestBtn-${fid}"
             class="fam-mod-chip${_investmentsOn?' active':''}"
             onclick="_famToggleModule('${fid}','investments_enabled_','famInvestBtn-${fid}','applyInvestmentsFeature')">
-            📈 Investimentos <span>${_investmentsOn?'●':'○'}</span>
+            📈 Investimentos <span class="fam-mod-dot">${_investmentsOn?'●':'○'}</span>
           </button>
         </div>
       </div>`;
@@ -2088,7 +2088,7 @@ async function _famToggleModule(famId, keyPrefix, btnId, applyFn) {
 
   // UI imediato
   btn.classList.toggle('active', nowOn);
-  btn.querySelector('.fam-mod-dot').textContent = nowOn ? '●' : '○';
+  const _dotEl = btn.querySelector('.fam-mod-dot'); if (_dotEl) _dotEl.textContent = nowOn ? '●' : '○';
   btn.disabled = true;
 
   // Caches locais
