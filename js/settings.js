@@ -859,6 +859,7 @@ async function resetSettingsVisibility() {
 function applySettingsVisibility(vis) {
   const isAdmin = (currentUser?.role === 'admin');
   initFamModulesRow();
+  initFamModulesStandalone();
   if (isAdmin) return; // admins veem tudo — não aplica restrição
 
   vis = vis || _getSettingsVisibility();
@@ -914,6 +915,70 @@ async function applyUserFeatureFlags() {
 // ═══════════════════════════════════════════════════════════════════
 
 
+// ── Standalone Funcionalidades section (cfg-section dedicated to feature toggles) ──
+function initFamModulesStandalone() {
+  const wrap    = document.getElementById('cfgSec_features_wrap');
+  const pills   = document.getElementById('famModulesPillsStandalone');
+  const msgEl   = document.getElementById('famModulesMsg');
+  if (!wrap || !pills) return;
+
+  const isOwnerOrAdmin = currentUser?.can_admin || currentUser?.can_manage_family ||
+                         currentUser?.role === 'owner' || currentUser?.role === 'admin';
+  // Hide section entirely for non-owners/non-admins
+  wrap.style.display = isOwnerOrAdmin ? '' : 'none';
+  if (!isOwnerOrAdmin) return;
+
+  const famId = currentUser?.family_id;
+  if (!famId) { wrap.style.display = 'none'; return; }
+
+  const keys = [
+    { key: 'prices_enabled_'      + famId, label: 'Preços',          emoji: '🏷️', applyFn: 'applyPricesFeature',       desc: 'Gestão de preços e lista de compras' },
+    { key: 'grocery_enabled_'     + famId, label: 'Mercado',          emoji: '🛒', applyFn: 'applyGroceryFeature',      desc: 'Lista de mercado e compras' },
+    { key: 'investments_enabled_' + famId, label: 'Investimentos',    emoji: '📈', applyFn: 'applyInvestmentsFeature',  desc: 'Carteira de investimentos (requer conta do tipo Investimentos)' },
+    { key: 'backup_enabled_'      + famId, label: 'Backup',           emoji: '☁️', applyFn: null,                       desc: 'Backup automático de dados' },
+    { key: 'snapshot_enabled_'    + famId, label: 'Snapshot',         emoji: '📸', applyFn: null,                       desc: 'Snapshots periódicos do estado financeiro' },
+  ];
+
+  function renderCards() {
+    const fc = window._familyFeaturesCache || {};
+    pills.innerHTML = keys.map(({ key, label, emoji, applyFn, desc }) => {
+      const on = fc[key] !== undefined ? !!fc[key] : (key.includes('backup') || key.includes('snapshot'));
+      return `
+        <div class="inv-kpi-card" style="cursor:pointer;transition:box-shadow .15s;${on ? 'border-color:var(--accent);background:var(--accent-lt)' : ''}"
+             onclick="_cfgToggleModule('${key}','${famId}','${label}','${applyFn||''}')"
+             title="${on ? 'Clique para desativar' : 'Clique para ativar'} ${label}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <span style="font-size:1.3rem">${emoji}</span>
+            <span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:20px;
+              background:${on ? 'var(--accent)' : 'var(--surface2)'};
+              color:${on ? '#fff' : 'var(--muted)'}">
+              ${on ? '● Ativo' : '○ Inativo'}
+            </span>
+          </div>
+          <div style="font-size:.85rem;font-weight:700;color:var(--text);margin-bottom:3px">${label}</div>
+          <div style="font-size:.72rem;color:var(--muted);line-height:1.4">${desc}</div>
+        </div>`;
+    }).join('');
+  }
+
+  // Load cache and render
+  (async () => {
+    if (!window._familyFeaturesCache || !Object.keys(window._familyFeaturesCache).length) {
+      try {
+        const { data } = await sb.from('app_settings')
+          .select('key,value')
+          .in('key', keys.map(k => k.key));
+        if (!window._familyFeaturesCache) window._familyFeaturesCache = {};
+        (data || []).forEach(r => {
+          window._familyFeaturesCache[r.key] = (r.value === true || r.value === 'true');
+        });
+      } catch(_) {}
+    }
+    renderCards();
+  })();
+}
+
+
 // ── Módulos da família na página de Configurações ──────────────────
 function initFamModulesRow() {
   const row = document.getElementById('famModulesRow');
@@ -967,7 +1032,7 @@ function initFamModulesRow() {
   })();
 }
 
-async function _cfgToggleModule(key, famId, label, applyFn) {
+async async function _cfgToggleModule(key, famId, label, applyFn) {
   if (!window._familyFeaturesCache) window._familyFeaturesCache = {};
   const wasOn = !!window._familyFeaturesCache[key];
   const nowOn = !wasOn;
@@ -981,6 +1046,7 @@ async function _cfgToggleModule(key, famId, label, applyFn) {
     toast('Erro: ' + e.message, 'error');
   }
   initFamModulesRow(); // re-render pills
+  initFamModulesStandalone(); // re-render standalone cards
 }
 /* ══════════════════════════════════════════════════════════════════
    SERVICE ROLE KEY — armazenada só em localStorage, nunca no banco
