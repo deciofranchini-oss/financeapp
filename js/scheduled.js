@@ -582,51 +582,53 @@ function renderUpcoming() {
 
     const gid = 'upg_' + date.replace(/-/g,'');
     const rows = items.map(({sc}) => {
-      const isExp = sc.type==='expense'||sc.type==='card_payment'||sc.type==='transfer';
-      const icon  = sc.type==='card_payment'?'💳':sc.type==='transfer'?'🔄':isExp?'💸':'💰';
-      const dest  = (sc.type==='transfer'||sc.type==='card_payment')
-                    ? state.accounts.find(a=>a.id===sc.transfer_to_account_id) : null;
-      // Feature 9: badge for non-auto-register
-      const autoRegBadge = !sc.auto_register
-        ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.65rem;font-weight:600;
-                        color:var(--amber,#b45309);background:var(--amber-lt,#fef3c7);
-                        border:1px solid rgba(180,83,9,.2);border-radius:10px;padding:1px 6px;
-                        white-space:nowrap" title="Precisa de registro manual">⚠ Manual</span>`
-        : '';
-      // Feature 7: ignore button
-      const ignoreBtn = `<button class="btn btn-ghost btn-sm sc-upcoming-btn"
-        style="font-size:.68rem;padding:3px 7px;color:var(--muted)"
-        title="Ignorar esta ocorrência"
-        onclick="event.stopPropagation();ignoreOccurrence('${sc.id}','${date}')">🚫</button>`;
-      return `<div class="sc-upcoming-item${isToday?' sc-upcoming-today':''}">
-        <div class="sc-upcoming-left">
-          <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
-            <span class="sc-upcoming-desc">${icon} ${esc(sc.description)}</span>
-            ${autoRegBadge}
-          </div>
-          <span class="sc-upcoming-acct" style="font-size:.68rem;color:var(--muted)">
-            ${esc(sc.accounts?.name||'—')}${dest?` → ${esc(dest.name)}`:''}</span>
+      const isExp    = sc.type==='expense'||sc.type==='card_payment'||sc.type==='transfer';
+      const typeIcon = sc.type==='card_payment'?'💳':sc.type==='transfer'?'↔':isExp?'↑':'↓';
+      const dest     = (sc.type==='transfer'||sc.type==='card_payment')
+                       ? state.accounts.find(a=>a.id===sc.transfer_to_account_id) : null;
+      const catColor = sc.categories?.color || (isExp ? 'var(--red)' : 'var(--green)');
+      const manualBadge = !sc.auto_register
+        ? `<span class="sup-manual-badge">Manual</span>` : '';
+      return `<div class="sup-item${isToday?' sup-item--today':''}">
+        <div class="sup-icon" style="background:color-mix(in srgb,${catColor} 14%,transparent);color:${catColor}">${typeIcon}</div>
+        <div class="sup-body">
+          <div class="sup-desc">${esc(sc.description)}${manualBadge}</div>
+          <div class="sup-acct">${esc(sc.accounts?.name||'—')}${dest?` <span class="sup-arrow">→</span> ${esc(dest.name)}`:''}</div>
         </div>
-        <div class="sc-upcoming-right" style="flex-direction:row;align-items:center;gap:5px">
-          <span class="${isExp?'amount-neg':'amount-pos'} sc-upcoming-amt" style="font-size:.88rem">${isExp?'−':'+'}${fmt(Math.abs(sc.amount))}</span>
-          ${ignoreBtn}
-          <button class="btn btn-primary btn-sm sc-upcoming-btn" onclick="openRegisterOcc('${sc.id}','${date}')">✓</button>
+        <div class="sup-right">
+          <span class="sup-amt ${isExp?'neg':'pos'}">${isExp?'−':'+'}${fmt(Math.abs(sc.amount))}</span>
+          <div class="sup-actions">
+            <button class="sup-ignore-btn" title="Ignorar"
+              onclick="event.stopPropagation();ignoreOccurrence('${sc.id}','${date}')">✕</button>
+            <button class="sup-register-btn" onclick="openRegisterOcc('${sc.id}','${date}')">✓</button>
+          </div>
         </div>
       </div>`;
     }).join('');
 
-    return `<div class="sc-upcoming-group">
-      <div class="sc-upcoming-day-hdr" onclick="toggleUpcomingGroup('${gid}')">
-        <span class="sc-upcoming-day-name${isToday?' today-lbl':''}">${dayLabel}</span>
-        <div class="sc-upcoming-day-meta">
-          <span class="badge ${dayTot>=0?'badge-green':'badge-red'}" style="font-size:.7rem">${dayTot>=0?'+':''}${fmt(dayTot)}</span>
-          <span style="font-size:.72rem;color:var(--muted)">${items.length} item${items.length>1?'s':''}</span>
-          <svg class="sc-upcoming-day-arrow open" id="${gid}_arr" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+    const dayNum = new Date(date+'T12:00:00').getDate();
+    const dayMon = new Date(date+'T12:00:00').toLocaleString('pt-BR',{month:'short'}).replace('.','');
+    const dayPill = isToday
+      ? `<div class="sup-day-pill sup-day-pill--today"><span>Hoje</span></div>`
+      : isTomorrow
+      ? `<div class="sup-day-pill sup-day-pill--tmrw"><span>Amanhã</span></div>`
+      : `<div class="sup-day-pill"><span class="sup-day-num">${dayNum}</span><span class="sup-day-mon">${dayMon}</span></div>`;
+
+    return `<div class="sup-group">
+      <div class="sup-group-hdr" onclick="toggleUpcomingGroup('${gid}')">
+        <div class="sup-group-left">
+          ${dayPill}
+          <span class="sup-group-dow">${dow}</span>
+        </div>
+        <div class="sup-group-meta">
+          <span class="sup-day-total ${dayTot>=0?'pos':'neg'}">${dayTot>=0?'+':''}${fmt(dayTot)}</span>
+          <span class="sup-day-count">${items.length}</span>
+          <svg class="sc-upcoming-day-arrow open" id="${gid}_arr" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
       </div>
-      <div class="sc-upcoming-group-rows" id="${gid}">${rows}</div>
+      <div class="sup-rows" id="${gid}">${rows}</div>
     </div>`;
-  }).join('');
+  }).join('');;
 }
 
 // Feature 1: toggle entire upcoming panel open/closed
