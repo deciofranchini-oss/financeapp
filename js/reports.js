@@ -164,31 +164,82 @@ async function loadReports() {
   /* Evolução */
   await renderTrendChart(from, to);
 
-  /* Tabela de categorias */
-  const allMap = {};
-  txs.forEach(t=>{
-    const n=t.categories?.name||'Sem categoria', c=t.categories?.color||'#94a3b8';
-    const tp=t.amount<0?'Despesa':'Receita';
-    const k=n+'|'+tp;
-    if(!allMap[k]) allMap[k]={name:n,color:c,type:tp,total:0,count:0};
-    allMap[k].total+=Math.abs(t.amount); allMap[k].count++;
-  });
-  const allE = Object.values(allMap).sort((a,b)=>b.total-a.total);
-  const grand = allE.reduce((s,e)=>s+e.total,0);
-  document.getElementById('reportCatBody').innerHTML = allE.length
-    ? allE.map(v=>`<tr>
-        <td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${v.color};margin-right:6px;flex-shrink:0"></span>${esc(v.name)}</td>
-        <td><span class="badge ${v.type==='Despesa'?'badge-red':'badge-green'}" style="font-size:.7rem">${v.type}</span></td>
-        <td class="text-muted">${v.count}</td>
-        <td class="${v.type==='Despesa'?'amount-neg':'amount-pos'}">${v.type==='Despesa'?'-':''}${fmt(v.total)}</td>
-        <td><div style="display:flex;align-items:center;gap:6px">
-          <div style="flex:1;min-width:50px;background:var(--bg2);border-radius:100px;height:5px">
-            <div style="width:${grand>0?(v.total/grand*100).toFixed(1):0}%;height:100%;background:${v.color};border-radius:100px"></div>
+  /* ─── Tabela de categorias — agrupada por Despesa / Receita / Transferência ─── */
+  (function renderCatTable() {
+    // Inclui transferências (is_transfer=true) como terceiro grupo
+    const allTxs = [...txs];
+    // Fetch transfers separately to show in the third group
+    // (fetchRptTransactions already excluded them, so we only have expense/income here)
+    // Build maps per group
+    const expMap = {}, incMap = {}, trnMap = {};
+    allTxs.forEach(t => {
+      const n = t.categories?.name || 'Sem categoria';
+      const c = t.categories?.color || '#94a3b8';
+      if (t.is_transfer) {
+        if (!trnMap[n]) trnMap[n] = { name: n, color: c, total: 0, count: 0 };
+        trnMap[n].total += Math.abs(t.amount); trnMap[n].count++;
+      } else if (t.amount < 0) {
+        if (!expMap[n]) expMap[n] = { name: n, color: c, total: 0, count: 0 };
+        expMap[n].total += Math.abs(t.amount); expMap[n].count++;
+      } else {
+        if (!incMap[n]) incMap[n] = { name: n, color: c, total: 0, count: 0 };
+        incMap[n].total += t.amount; incMap[n].count++;
+      }
+    });
+
+    const expE = Object.values(expMap).sort((a, b) => b.total - a.total);
+    const incE = Object.values(incMap).sort((a, b) => b.total - a.total);
+    const trnE = Object.values(trnMap).sort((a, b) => b.total - a.total);
+    const totExp = expE.reduce((s, e) => s + e.total, 0);
+    const totInc = incE.reduce((s, e) => s + e.total, 0);
+    const totTrn = trnE.reduce((s, e) => s + e.total, 0);
+
+    function groupRows(entries, groupTotal, amtClass, sign) {
+      return entries.map(v => `<tr>
+        <td style="padding-left:18px">
+          <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${v.color};margin-right:6px;flex-shrink:0;vertical-align:middle"></span>${esc(v.name)}
+        </td>
+        <td class="text-muted" style="text-align:center">${v.count}</td>
+        <td class="${amtClass}">${sign}${fmt(v.total)}</td>
+        <td>
+          <div style="display:flex;align-items:center;gap:5px">
+            <div style="flex:1;min-width:44px;background:var(--bg2);border-radius:100px;height:4px">
+              <div style="width:${groupTotal>0?(v.total/groupTotal*100).toFixed(1):0}%;height:100%;background:${v.color};border-radius:100px"></div>
+            </div>
+            <span style="font-size:.7rem;color:var(--muted);width:36px;text-align:right">${groupTotal>0?(v.total/groupTotal*100).toFixed(1):0}%</span>
           </div>
-          <span style="font-size:.72rem;color:var(--muted);width:38px;text-align:right">${grand>0?(v.total/grand*100).toFixed(1):0}%</span>
-        </div></td>
-      </tr>`).join('')
-    : '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:28px">Nenhuma transação no período</td></tr>';
+        </td>
+      </tr>`).join('');
+    }
+
+    function groupHeader(label, total, colorHex, amtClass, sign, count) {
+      return `<tr style="background:var(--surface2)">
+        <td colspan="4" style="padding:8px 10px 6px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
+            <span style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${colorHex}">${label}</span>
+            <span style="font-size:.82rem;font-weight:700;${amtClass.includes('neg')?'color:var(--red)':amtClass.includes('pos')?'color:var(--green)':'color:var(--text2)'}">${sign}${fmt(total)}<span style="font-size:.7rem;font-weight:400;color:var(--muted);margin-left:6px">${count} categoria${count!==1?'s':''}</span></span>
+          </div>
+        </td>
+      </tr>`;
+    }
+
+    let html = '';
+    if (expE.length) {
+      html += groupHeader('💸 Despesas', totExp, 'var(--red,#c0392b)', 'amount-neg', '-', expE.length);
+      html += groupRows(expE, totExp, 'amount-neg', '-');
+    }
+    if (incE.length) {
+      html += groupHeader('📈 Receitas', totInc, 'var(--green,#2a7a4a)', 'amount-pos', '', incE.length);
+      html += groupRows(incE, totInc, 'amount-pos', '');
+    }
+    if (trnE.length) {
+      html += groupHeader('🔄 Transferências', totTrn, 'var(--accent,#2a6049)', 'amount-transfer', '', trnE.length);
+      html += groupRows(trnE, totTrn, 'text-muted', '');
+    }
+    if (!html) html = '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:28px">Nenhuma transação no período</td></tr>';
+
+    document.getElementById('reportCatBody').innerHTML = html;
+  })();
 }
 
 async function renderTrendChart(from, to) {
@@ -590,41 +641,95 @@ function _pdfCatTable(doc, y, txs) {
   y = _pdfCheckY(doc, y, 30);
   y = _pdfSectionTitle(doc, y, 'Detalhamento por Categoria');
 
-  const allMap = {};
+  // Build separate maps per group
+  const expMap = {}, incMap = {}, trnMap = {};
   txs.forEach(t => {
-    const n  = t.categories?.name || 'Sem categoria';
-    const tp = t.amount < 0 ? 'Despesa' : 'Receita';
-    const k  = n + '|' + tp;
-    if (!allMap[k]) allMap[k] = { name: n, type: tp, total: 0, count: 0 };
-    allMap[k].total += Math.abs(t.amount); allMap[k].count++;
+    const n = t.categories?.name || 'Sem categoria';
+    if (t.is_transfer) {
+      if (!trnMap[n]) trnMap[n] = { name: n, total: 0, count: 0 };
+      trnMap[n].total += Math.abs(t.amount); trnMap[n].count++;
+    } else if (t.amount < 0) {
+      if (!expMap[n]) expMap[n] = { name: n, total: 0, count: 0 };
+      expMap[n].total += Math.abs(t.amount); expMap[n].count++;
+    } else {
+      if (!incMap[n]) incMap[n] = { name: n, total: 0, count: 0 };
+      incMap[n].total += t.amount; incMap[n].count++;
+    }
   });
-  const rows  = Object.values(allMap).sort((a, b) => b.total - a.total);
-  const grand = rows.reduce((s, e) => s + e.total, 0);
+
+  const expE = Object.values(expMap).sort((a, b) => b.total - a.total);
+  const incE = Object.values(incMap).sort((a, b) => b.total - a.total);
+  const trnE = Object.values(trnMap).sort((a, b) => b.total - a.total);
+  const totExp = expE.reduce((s, e) => s + e.total, 0);
+  const totInc = incE.reduce((s, e) => s + e.total, 0);
+  const totTrn = trnE.reduce((s, e) => s + e.total, 0);
+
+  function buildBody(entries, groupTotal, signFn) {
+    return entries.map(v => [
+      v.name, v.count,
+      signFn(v.total),
+      groupTotal > 0 ? (v.total / groupTotal * 100).toFixed(1) + '%' : '0%',
+    ]);
+  }
+
+  // Build grouped rows with section headers
+  const body = [];
+  const rowMeta = []; // {type: 'header'|'expense'|'income'|'transfer', total}
+
+  if (expE.length) {
+    body.push([`→ Despesas`, expE.length + ' categorias', fmt(totExp), '']);
+    rowMeta.push({ type: 'header-exp' });
+    expE.forEach(v => {
+      body.push([v.name, v.count, fmt(v.total), totExp > 0 ? (v.total/totExp*100).toFixed(1)+'%' : '0%']);
+      rowMeta.push({ type: 'expense' });
+    });
+  }
+  if (incE.length) {
+    body.push([`→ Receitas`, incE.length + ' categorias', fmt(totInc), '']);
+    rowMeta.push({ type: 'header-inc' });
+    incE.forEach(v => {
+      body.push([v.name, v.count, fmt(v.total), totInc > 0 ? (v.total/totInc*100).toFixed(1)+'%' : '0%']);
+      rowMeta.push({ type: 'income' });
+    });
+  }
+  if (trnE.length) {
+    body.push([`→ Transferências`, trnE.length + ' categorias', fmt(totTrn), '']);
+    rowMeta.push({ type: 'header-trn' });
+    trnE.forEach(v => {
+      body.push([v.name, v.count, fmt(v.total), totTrn > 0 ? (v.total/totTrn*100).toFixed(1)+'%' : '0%']);
+      rowMeta.push({ type: 'transfer' });
+    });
+  }
+  if (!body.length) return y;
 
   doc.autoTable({
     startY: y,
-    head: [['Categoria', 'Tipo', 'Qtd', 'Total', '% do Total']],
-    body: rows.map(v => [v.name, v.type, v.count, fmt(v.total),
-      grand > 0 ? (v.total / grand * 100).toFixed(1) + '%' : '0%']),
+    head: [['Categoria', 'Qtd', 'Total', '% do Grupo']],
+    body,
     styles: { fontSize: 8, cellPadding: [3, 5] },
     headStyles: { fillColor: PDF_GREEN, textColor: [255,255,255], fontStyle: 'bold', fontSize: 8 },
-    alternateRowStyles: { fillColor: PDF_BG },
     columnStyles: {
       0: { cellWidth: 'auto' },
-      1: { cellWidth: 28, halign: 'center' },
-      2: { cellWidth: 16, halign: 'center' },
-      3: { cellWidth: 40, halign: 'right' },
-      4: { cellWidth: 25, halign: 'right' },
+      1: { cellWidth: 16, halign: 'center' },
+      2: { cellWidth: 40, halign: 'right' },
+      3: { cellWidth: 25, halign: 'right' },
     },
     margin: { left: 14, right: 14 },
     didParseCell(data) {
-      if (data.column.index === 1 && data.section === 'body') {
-        data.cell.styles.textColor = data.cell.raw === 'Despesa' ? PDF_RED : PDF_GREEN_LT;
+      if (data.section !== 'body') return;
+      const meta = rowMeta[data.row.index];
+      if (!meta) return;
+      const isHeader = meta.type.startsWith('header');
+      if (isHeader) {
+        data.cell.styles.fillColor = meta.type === 'header-exp' ? [255,235,235]
+          : meta.type === 'header-inc' ? [235,255,240] : [235,240,255];
         data.cell.styles.fontStyle = 'bold';
-      }
-      if (data.column.index === 3 && data.section === 'body') {
-        const row = rows[data.row.index];
-        data.cell.styles.textColor = row?.type === 'Despesa' ? PDF_RED : PDF_GREEN_LT;
+        data.cell.styles.fontSize  = 8.5;
+        data.cell.styles.textColor = meta.type === 'header-exp' ? PDF_RED
+          : meta.type === 'header-inc' ? PDF_GREEN_LT : [30,91,168];
+      } else if (data.column.index === 2) {
+        data.cell.styles.textColor = meta.type === 'expense' ? PDF_RED
+          : meta.type === 'income' ? PDF_GREEN_LT : [30,91,168];
         data.cell.styles.fontStyle = 'bold';
       }
     },
