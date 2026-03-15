@@ -437,6 +437,11 @@ function setTxView(v) {
   });
   document.getElementById('txFlatCard').style.display = v==='flat' ? '' : 'none';
   document.getElementById('txGroupContainer').style.display = v==='group' ? '' : 'none';
+  // Hide the account summary pills bar when switching back to flat view
+  if (v === 'flat') {
+    const bar = document.getElementById('txSummaryBar');
+    if (bar) bar.style.display = 'none';
+  }
   renderTransactions();
 }
 
