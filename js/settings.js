@@ -52,7 +52,7 @@ async function saveAppSetting(key, value) {
   _appSettingsCache[key] = value;
   if (!sb) return;
   try {
-    const m = String(key||'').match(/^(prices_enabled_|grocery_enabled_|backup_enabled_|snapshot_enabled_)(.+)$/);
+    const m = String(key||'').match(/^(prices_enabled_|grocery_enabled_|backup_enabled_|snapshot_enabled_|investments_enabled_)(.+)$/);
     const family_id = m ? m[2] : null;
     // Feature flags: try RPC SECURITY DEFINER first (bypasses RLS)
     if (family_id) {
@@ -906,6 +906,7 @@ function currentUserFeatureEnabled(featureKey, fallback = true) {
 async function applyUserFeatureFlags() {
   try { await applyPricesFeature?.(); } catch {}
   try { await applyGroceryFeature?.(); } catch {}
+  try { await applyInvestmentsFeature?.(); } catch {}
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -929,8 +930,9 @@ function initFamModulesRow() {
   row.style.display = '';
 
   const keys = [
-    { key: 'prices_enabled_'  + famId, label: 'Preços',   emoji: '🏷️', applyFn: 'applyPricesFeature'  },
-    { key: 'grocery_enabled_' + famId, label: 'Mercado',  emoji: '🛒', applyFn: 'applyGroceryFeature' },
+    { key: 'prices_enabled_'  + famId, label: 'Preços',   emoji: '🏷️', applyFn: 'applyPricesFeature'    },
+    { key: 'grocery_enabled_' + famId, label: 'Mercado',  emoji: '🛒', applyFn: 'applyGroceryFeature'   },
+    { key: 'investments_enabled_' + famId, label: 'Investimentos', emoji: '📈', applyFn: 'applyInvestmentsFeature' },
     { key: 'backup_enabled_'  + famId, label: 'Backup',   emoji: '☁️', applyFn: null },
     { key: 'snapshot_enabled_'+ famId, label: 'Snapshot', emoji: '📸', applyFn: null },
   ];

@@ -104,6 +104,8 @@ const _accounts = {
     state.accounts.forEach(a => {
       a.balance = (parseFloat(a.initial_balance) || 0) + (txMap[a.id] || 0);
     });
+    // Augment investment account balances with market value of positions
+    if (typeof invPostBalanceHook === 'function') invPostBalanceHook();
   },
 };
 

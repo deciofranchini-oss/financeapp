@@ -512,7 +512,7 @@ async function bootApp(){
   if (typeof initWizard === 'function') setTimeout(() => initWizard().catch(()=>{}), 800);
 }
 
-const pageTitles={dashboard:'Dashboard',transactions:'Transações',accounts:'Contas',reports:'Relatórios',budgets:'Orçamentos',categories:'Categorias',payees:'Beneficiários',scheduled:'Programados',import:'Importar / Backup',settings:'Configurações',prices:'Gestão de Preços',
+const pageTitles={dashboard:'Dashboard',transactions:'Transações',accounts:'Contas',reports:'Relatórios',budgets:'Orçamentos',categories:'Categorias',payees:'Beneficiários',scheduled:'Programados',import:'Importar / Backup',settings:'Configurações',investments:'Carteira de Investimentos',prices:'Gestão de Preços',
   grocery:'🛒 Lista de Mercado'};
 
 // SVG icons used in the mobile topbar (replaces text title on small screens)
@@ -788,6 +788,7 @@ function navigate(page){
   else if(page==='import')initImportPage();
   else if(page==='settings')loadSettings();
   else if(page==='audit')loadAuditLogs();
+  else if(page==='investments')loadInvestmentsPage?.();
   else if(page==='prices')initPricesPage();
   else if(page==='grocery')initGroceryPage();
 
