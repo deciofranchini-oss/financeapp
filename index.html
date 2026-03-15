@@ -619,6 +619,11 @@
 
     <!-- DASHBOARD -->
     <div class="page active" id="page-dashboard">
+      <!-- Active filter badge — shown when member/group filter is active -->
+      <div id="dashFilterBadge" style="display:none;background:var(--accent-lt);color:var(--accent);border:1px solid var(--accent);border-radius:20px;padding:4px 12px;font-size:.78rem;font-weight:600;margin-bottom:10px;align-items:center;gap:6px">
+        <span></span>
+        <button onclick="document.getElementById('dashMemberFilter').value='';document.getElementById('dashRelGroup').value='';loadDashboard()" style="background:none;border:none;cursor:pointer;color:var(--accent);font-size:.85rem;padding:0;line-height:1" title="Limpar filtro">✕</button>
+      </div>
       <div class="grid-4 mb-4">
         <div class="stat-card"><div class="stat-accent"></div><div class="stat-label">Patrimônio Total</div><div class="stat-value text-accent" id="statTotal">—</div><div class="stat-sub">Todas as contas</div></div>
         <div class="stat-card"><div class="stat-accent" style="background:var(--green)"></div><div class="stat-label">Receitas do Mês</div><div class="stat-value text-green" id="statIncome">—</div><div class="stat-sub">Mês atual</div></div>
@@ -629,7 +634,7 @@
         <div class="card">
           <div class="card-header">
             <span class="card-title">Fluxo de Caixa (6 meses)</span>
-            <select id="cashflowAccountFilter" onchange="renderCashflowChart()" 
+            <select id="cashflowAccountFilter" onchange="renderCashflowChart(_getDashMemberIds())" 
               style="font-size:.75rem;padding:3px 8px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);color:var(--text2);max-width:160px">
               <option value="">Todas as contas</option>
             </select>
@@ -640,11 +645,11 @@
           <div class="card-header">
             <span class="card-title">Despesas por Categoria</span>
             <div style="display:flex;align-items:center;gap:6px">
-              <select id="dashRelGroup" onchange="renderCategoryChart()"
+              <select id="dashRelGroup" onchange="loadDashboard()"
                 style="font-size:.75rem;padding:3px 8px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);color:var(--text2);max-width:130px;display:none">
                 <option value="">Todos os membros</option>
               </select>
-              <select id="dashMemberFilter" onchange="renderCategoryChart()"
+              <select id="dashMemberFilter" onchange="loadDashboard()"
                 style="font-size:.75rem;padding:3px 8px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);color:var(--text2);max-width:150px;display:none">
                 <option value="">Família (todos)</option>
               </select>
@@ -664,7 +669,7 @@
   <span class="card-title">Últimas Transações</span>
   <span id="dashPendingBadge" class="badge" style="background:var(--amber-lt,#fffbeb);color:var(--amber,#b45309);border:1px solid rgba(180,83,9,.18);display:none;white-space:nowrap">⏳ 0 pendentes</span>
   <span id="dashAutoRunSummary" class="text-muted" style="font-size:.75rem;display:none;white-space:nowrap;cursor:pointer" onclick="navigate('audit')"></span>
-  <select id="dashRecentStatus" onchange="loadDashboardRecent()" style="font-size:.75rem;padding:3px 8px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);color:var(--text2);max-width:170px">
+  <select id="dashRecentStatus" onchange="loadDashboardRecent(_getDashMemberIds())" style="font-size:.75rem;padding:3px 8px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);color:var(--text2);max-width:170px">
     <option value="">Todos</option>
     <option value="confirmed">✅ Confirmadas</option>
     <option value="pending">⏳ Pendentes</option>
