@@ -1,544 +1,786 @@
-# Fintrack (GitHub Pages + Supabase) — DOCUMENTATION.md
+# Family FinTrack — Developer & AI Reference Guide
 
-> **Goal of this document:** give enough technical + functional context so Claude/other AIs (and humans) can safely modify the app without regressions.
->
-> **Stack:** Vanilla JS SPA + Supabase Postgres (browser client) + optional PWA (Service Worker) + optional EmailJS/Chart.js/Export libs.
+> **Purpose:** Complete technical, functional, and database reference for developers and AI assistants.
+> **Version:** _44 · March 2026 | **Author:** Décio Mattar Franchini
+> **Stack:** Vanilla JS PWA · Supabase (PostgreSQL + Auth + Storage) · GitHub Pages
 
 ---
 
 ## Table of Contents
 
-- [1. What this app is](#1-what-this-app-is)
-- [2. Architecture overview](#2-architecture-overview)
-- [3. Runtime boot flow](#3-runtime-boot-flow)
-- [4. Project structure and responsibilities](#4-project-structure-and-responsibilities)
-- [5. Global contracts and invariants (don’t break)](#5-global-contracts-and-invariants-dont-break)
-- [6. Logo: ALL references and how it loads](#6-logo-all-references-and-how-it-loads)
-- [7. UX / Functional documentation](#7-ux--functional-documentation)
-- [8. Supabase connection and security notes](#8-supabase-connection-and-security-notes)
-- [9. Database model (SQL + ERD) explained](#9-database-model-sql--erd-explained)
-- [10. Config keys (app_settings + localStorage)](#10-config-keys-app_settings--localstorage)
-- [11. Import / Export / Attachments](#11-import--export--attachments)
-- [12. Scheduling (recurring transactions)](#12-scheduling-recurring-transactions)
-- [13. Release / Deploy (GitHub Pages)](#13-release--deploy-github-pages)
-- [14. Regression checklist](#14-regression-checklist)
+1. [What this app is](#1-what-this-app-is)
+2. [Architecture overview](#2-architecture-overview)
+3. [Runtime boot flow](#3-runtime-boot-flow)
+4. [Script load order](#4-script-load-order)
+5. [Global contracts](#5-global-contracts)
+6. [Auth and user management](#6-auth-and-user-management)
+7. [Multi-tenant model](#7-multi-tenant-model)
+8. [Module responsibilities](#8-module-responsibilities)
+9. [Database schema](#9-database-schema)
+10. [FX multi-currency](#10-fx-multi-currency)
+11. [Transactions](#11-transactions)
+12. [Reports and PDF export](#12-reports-and-pdf-export)
+13. [Scheduled transactions engine](#13-scheduled-transactions-engine)
+14. [Import pipeline](#14-import-pipeline)
+15. [Optional modules](#15-optional-modules)
+16. [Setup wizard](#16-setup-wizard)
+17. [Config keys](#17-config-keys)
+18. [Logo pipeline](#18-logo-pipeline)
+19. [Deploy GitHub Pages](#19-deploy-github-pages)
+20. [Regression checklist](#20-regression-checklist)
+21. [Known pitfalls](#21-known-pitfalls)
+22. [Changelog _37 to _44](#22-changelog-_37-to-_44)
 
 ---
 
 ## 1. What this app is
 
-A personal/family finance PWA-like web app designed to run on **GitHub Pages** and store data in **Supabase (Postgres)**.
+**Family FinTrack** is a Progressive Web Application (PWA) for personal and family financial management.
+It runs entirely in the browser — no backend server, no build step. Supabase acts as BaaS.
 
 Core capabilities:
-- Accounts + Groups (with currency support)
-- Categories (hierarchy + types)
-- Payees (beneficiary/source)
-- Transactions (expense/income/transfer/card payment; pending/confirmed)
-- Reports + exports (PDF/XLSX/CSV)
-- Budgets
+- Multi-user per family, full data isolation by family_id
+- Accounts + Groups (multi-currency, IOF, credit card: best_purchase_day, due_day)
+- Categories (hierarchical, typed: despesa / receita / transferencia)
+- Payees with contact data, CNPJ/CPF, and default category
+- Transactions (expense / income / transfer / card payment; pending / confirmed; tags; attachments)
+- Budgets (monthly / annual per category with auto_reset)
 - Scheduled transactions + auto-register engine
-- Import pipeline with staging tables
-- App-wide settings + per-screen user preferences
+- Foreign exchange rates via api.frankfurter.app (TTL 4h, cached in app_settings)
+- Reports: grouped categories, tag filter, PDF / XLSX / CSV export
+- Import pipeline: CSV, OFX, Nubank, Inter, Itau, XP, MoneyWiz + AI mapping
+- Backup/restore (full JSONB snapshot per family in app_backups)
+- Grocery lists + price history (optional, feature-flagged per family)
+- AI receipt parsing via Google Gemini Vision
+- Setup wizard for new families (manual trigger for admins in Settings)
 
 ---
 
 ## 2. Architecture overview
 
-- **Front-end:** Vanilla JS SPA (single `index.html` containing sections for all screens)
-- **Navigation:** `navigate(page)` toggles visible sections (`.page.active`, etc.)
-- **State:** global `state` object in `js/app.js` used across modules
-- **Backend:** Supabase Postgres accessed via `@supabase/supabase-js@2` directly in browser
-- **Auth model used by front:** custom tables `app_users` + `app_sessions`
-- **Optional auth present in schema but not used by front currently:** Supabase Auth (`auth.users`) + `user_profiles`
-- **PWA:** `sw.js` registered from `js/app.js`
+```
+Browser (PWA / index.html)
+       ↓  @supabase/supabase-js v2 (CDN)
+Supabase Platform
+  ├─ Auth     (JWT sessions, password management)
+  ├─ PostgREST (auto-generated REST API)
+  ├─ PostgreSQL (RLS policies enforce tenant isolation)
+  └─ Storage  (attachments, avatars)
+```
 
-External libs (CDN):
-- Supabase JS v2
-- Chart.js
-- html2canvas, jsPDF, jsPDF autotable
-- SheetJS (xlsx)
-- EmailJS
+All business logic is in the frontend. Supabase is used only for persistence and auth.
+Navigation is SPA: navigate(page) shows/hides div.page elements.
+No bundler, no build step. Classic script globals. Load order is critical.
+
+External libs from CDN (loaded before app scripts):
+Supabase JS v2, Chart.js 4, html2canvas, jsPDF + autotable, SheetJS xlsx, EmailJS.
 
 ---
 
 ## 3. Runtime boot flow
 
-Typical runtime sequence:
+```
+Page load → scripts execute in order
+  └─ auth.js (last to load) calls tryAutoConnect()       <- entry point
+       ├─ No credentials → show setupScreen
+       ├─ URL has ?code= (password recovery) → _showRecoveryPwdForm()
+       └─ Credentials found → sb = supabase.createClient(url, key)
+             └─ tryRestoreSession()
+                   ├─ No session → showLoginScreen()
+                   └─ Session valid → _loadCurrentUserContext()
+                         ├─ 1. sb.auth.getUser()
+                         ├─ 2. app_users query (role, name, family_id, avatar)
+                         ├─ 3. family_members query (all user families + roles)
+                         ├─ 4. families query (resolve names)
+                         ├─ Fallback 1: use app_users.family_id if family_members empty
+                         ├─ Fallback 2: fresh family_members query by auth.uid()
+                         └─ currentUser set → bootApp()
+                               ├─ DB.preload()         [accounts+categories+payees] awaited
+                               ├─ loadAppSettings()    [app_settings table] awaited, non-fatal
+                               ├─ loadScheduled()      [background]
+                               ├─ initFxRates()        [background]
+                               ├─ populateSelects()
+                               └─ navigate('dashboard')
+```
 
-1) **Load HTML + scripts** (`index.html`)
-2) `tryAutoConnect()` (in `js/app.js`)
-   - reads `sb_url` + `sb_key` from `localStorage`
-   - if present, creates Supabase client and validates it
-3) If multi-user/auth is enabled:
-   - tries to restore session (`ft_session_token`, `ft_user_id`)
-   - if invalid -> show auth/login screen
-4) If missing Supabase credentials -> show Setup screen
-5) On success -> `bootApp()`:
-   - `registerServiceWorkerSafe()`
-   - `loadAppSettings()` and apply runtime config
-   - apply logo (`setAppLogo()`)
-   - load base data + render default route (usually dashboard)
-
----
-
-## 4. Project structure and responsibilities
-
-### Root
-- `index.html`
-  - App shell: all screens, sidebar/topbar, modals
-  - Contains logo `<img>` placeholders with known IDs (see logo section)
-- `sw.js`
-  - PWA Service Worker cache/offline
-- `logo.png`
-  - local asset (but default runtime uses a URL; see logo section)
-
-### `css/`
-- `css/style.css`
-  - main styling
-
-### `js/` (loaded by `index.html`)
-> **Important:** scripts are loaded as classic `<script>` (globals). Order matters.
-
-- `js/app.js` (CORE)
-  - Supabase init, boot, navigation, global `state`
-  - **Logo pipeline** (`DEFAULT_LOGO_URL`, `APP_LOGO_URL`, `setAppLogo()`)
-  - Service Worker registration
-- `js/auth.js`
-  - Custom auth using `app_users`/`app_sessions`
-  - Permission flags (`can_*`)
-  - Helpers: `currentUser`, `famQ()`, `famId()`
-- `js/accounts.js`
-  - Accounts + groups (`accounts`, `account_groups`) CRUD + rendering
-- `js/categories.js`
-  - Category tree CRUD + selection logic
-- `js/payees.js` / `js/payee_autocomplete.js`
-  - Payees CRUD + autocomplete + default category behavior
-- `js/transactions.js`
-  - Transaction list + filters + creation/editing
-  - Transfers + card payments + status (pending/confirmed)
-  - Supports grouped-by-account view and flat list view
-- `js/budgets.js`
-  - Budget CRUD + month/category views
-- `js/dashboard.js`
-  - Aggregations + charts (Chart.js)
-- `js/reports.js`
-  - Reporting, exports (PDF/XLSX/CSV), aggregations
-- `js/scheduled.js` / `js/auto_register.js`
-  - Scheduled transactions engine + occurrence generation + logs
-- `js/attachments.js`
-  - Storage uploads + binding into transactions
-- `js/iof.js`
-  - IOF logic (per-account `iof_rate` and/or defaults)
-- `js/forecast.js`
-  - Forecast projection (transactions + scheduled)
-- `js/email.js`
-  - EmailJS integration for sending reports
-- `js/settings.js`
-  - Loads/saves `app_settings`, handles admin-only settings UI
-  - Applies `app_logo_url` to runtime (via `setAppLogo`)
-- `js/import.js`
-  - Import sessions + staging tables + commit workflow
-- `js/backup.js`
-  - backup/restore utilities + “clear data”
-- `js/audit.js`
-  - audit logging layer (depends on what is enabled in DB)
-
-### Present in repo but NOT loaded by index.html (likely legacy / unused)
-- `js/admin.js`
-- `js/autocheck.js`
-- `js/config.js`
-- `js/icons.js`
-- `js/utils.js`
-- `js/supabase-config.js`
-
-> Recommendation: keep them clearly marked as legacy or remove to reduce confusion and AI hallucination risk.
+CRITICAL: loadAppSettings() uses .catch() — failure must never abort DB.preload().
 
 ---
 
-## 5. Global contracts and invariants (don’t break)
+## 4. Script load order
 
-### 5.1 Global variables used across modules
-- `sb` — Supabase client created by `initSupabase(url, key)`
-- `state` — global UI/data state contract used by multiple modules
-- `currentUser` — current logged user (from `auth.js`)
-- `famQ(queryBuilder)` — applies family filter to a query
-- `famId()` — returns current `family_id` for inserts
+| # | File | Lines | Fns | Key role |
+|---|---|---|---|---|
+| 1 | cursor.js | 295 | 8 | Loading cursor widget |
+| 2 | db.js | 387 | 9 | Data-access layer: DB.*, TTL cache, dbPreload() |
+| 3 | settings.js | 1158 | 53 | loadAppSettings(), saveAppSetting(), getAppSetting() |
+| 4 | config.js | 6 | 0 | CDN URL constants |
+| 5 | app.js | 617 | 20 | Boot: tryAutoConnect(), bootApp(), navigate(), nav |
+| 6 | accounts.js | 639 | 27 | Account + group CRUD |
+| 7 | categories.js | 512 | 22 | Hierarchical category tree CRUD + picker widget |
+| 8 | payees.js | 786 | 32 | Payee CRUD + default category |
+| 9 | transactions.js | 1700 | 57 | Transaction CRUD, FX panel, debounced filters |
+| 10 | budgets.js | 587 | 19 | Budget CRUD + progress bars |
+| 11 | fx_rates.js | 212 | 13 | initFxRates(), getFxRate(), toBRL(), txToBRL() |
+| 12 | dashboard.js | 454 | 11 | KPIs, account balances, category doughnut |
+| 13 | reports.js | 1836 | 60 | Analysis + tag filter + PDF/XLSX/CSV |
+| 14 | payee_autocomplete.js | 276 | 21 | Transaction form autocomplete |
+| 15 | ui_helpers.js | 416 | 18 | Shared UI components |
+| 16 | scheduled.js | 1575 | 50 | Scheduled transactions + occurrence generator |
+| 17 | attachments.js | 192 | 9 | Supabase Storage upload |
+| 18 | iof.js | 169 | 7 | IOF rate computation (3.38% default) |
+| 19 | forecast.js | 296 | 5 | Balance forecast chart |
+| 20 | email.js | 15 | 0 | EmailJS config constants |
+| 21 | import.js | 1343 | 44 | Import wizard + staging commit + bank parsers |
+| 22 | backup.js | 1120 | 38 | Full JSONB backup/restore per family |
+| 23 | auth.js | 3447 | 103 | Auth + ALL admin/family management (largest file) |
+| 24 | admin.js | 36 | 2 | STUB ONLY: toggleFamilyFeature(), _loadFamilyFeatures() |
+| 25 | autocheck.js | 480 | 18 | Auto-check timer + migration SQL display |
+| 26 | auto_register.js | 513 | 21 | Scheduled auto-register engine |
+| 27 | audit.js | 160 | 6 | scheduled_run_logs audit log view |
+| 28 | receipt_ai.js | 415 | 17 | Gemini Vision receipt -> price_history |
+| 29 | prices.js | 1225 | 69 | Price history module (feature-flagged) |
+| 30 | grocery.js | 714 | 21 | Grocery list module (feature-flagged) |
+| 31 | import_ai.js | 306 | 8 | AI-assisted import column mapping |
+| 32 | wizard.js | 751 | 45 | Setup wizard + openWizardManual() |
 
-If you change names/signatures, expect cascading failures.
+WARNING: admin.js is a stub. All admin/user management lives in auth.js.
+Never add to admin.js a function that already exists in auth.js — it would silently override the correct version.
 
-### 5.2 `state` contract (high regression risk)
-Defined in `js/app.js`. Keys commonly used:
-- `txFilter`: `{ search, month, account, type, status }`
-- view modes (e.g., flat list vs grouped-by-account)
-- pagination: `txPage`, `txPageSize`, `txTotal`
-- sorting: `txSortField`, `txSortAsc`
-- UX toggles: privacy mode, compact view, etc.
-
-**Rule:** if you add keys, keep backward compatibility. If you rename keys, update all modules and preferences storage.
-
----
-
-## 6. Logo: ALL references and how it loads
-
-This section is intentionally explicit so no one breaks branding consistency.
-
-### 6.1 Source of truth (runtime)
-In `js/app.js`:
-- `DEFAULT_LOGO_URL = 'https://deciofranchini-oss.github.io/fintrack/logo.png'`
-- `APP_LOGO_URL` starts as default
-- `setAppLogo(url)` updates the `src` for all logo images by ID:
-  - `sidebarLogoImg`
-  - `settingsLogoImg`
-  - `topbarLogoImg`
-  - `loginLogoImg`
-  - `authLogoImg`
-
-### 6.2 Where logo images exist (HTML IDs)
-In `index.html` there are `<img>` placeholders (some with hardcoded default `src`):
-- `img#authLogoImg` (auth/login screen)
-- `img#loginLogoImg` (login area)
-- `img#sidebarLogoImg` (sidebar)
-- `img#topbarLogoImg` (top bar; may be hidden by CSS/logic)
-- `img#settingsLogoImg` (settings page)
-
-### 6.3 Logo override via DB setting
-`js/settings.js` loads `app_settings`.
-If key exists:
-- `app_settings.key = 'app_logo_url'`
-- then `setAppLogo(app_logo_url)` overrides everywhere
-
-### 6.4 Admin UX to change logo
-In `index.html`:
-- `#logoSettingsSection` (admin-only)
-- URL input: `#appLogoUrl`
-- file input: `#appLogoFile`
-- preview: `#appLogoPreview`
-- actions: `saveAppLogo()` + `resetAppLogo()`
-
-In `js/settings.js`:
-- `saveAppLogo()` saves `app_logo_url` into `app_settings` and applies immediately.
-- `resetAppLogo()` clears `app_logo_url` (falls back to DEFAULT_LOGO_URL).
-
-### 6.5 Important “don’t break” rules
-- Do not rename logo `<img>` IDs.
-- Ensure `setAppLogo()` runs on boot and when entering auth screens.
-- If you change default logo behavior, keep a fallback that works even when the app fails early.
+WARNING: No duplicate const/let at global scope.
+AUTO_REGISTER_SQL is declared only in autocheck.js. auto_register.js references it without redeclaring.
+Before adding any top-level const/let, grep all JS files for the name.
 
 ---
 
-## 7. UX / Functional documentation
+## 5. Global contracts
 
-### 7.1 Setup screen (first run)
-- User inputs:
-  - Supabase URL
-  - Supabase anon public key
-- Stored in `localStorage`:
-  - `sb_url`
-  - `sb_key`
-- App validates connection by querying a lightweight table read.
-- On success: `bootApp()`.
+### Core globals
 
-### 7.2 Auth (custom multi-user model)
-Tables:
-- `app_users` (users + roles + permissions)
-- `app_sessions` (token + expiry)
+| Name | Where set | Purpose |
+|---|---|---|
+| sb | app.js tryAutoConnect() | Supabase client — all DB/auth queries |
+| state | state.js | Runtime cache for all data |
+| currentUser | auth.js _loadCurrentUserContext() | Identity + permissions |
+| famQ(query) | auth.js | Appends .eq('family_id', currentUser.family_id) |
+| famId() | auth.js | Returns currentUser.family_id for inserts |
+| DB | db.js | Typed data-access layer with TTL cache |
 
-Login flow:
-- user enters email + password
-- client computes SHA-256 hash and compares with `password_hash`
-- if `approved=false` -> block with message
-- if `must_change_pwd=true` -> force password update
-- on success:
-  - creates session record in `app_sessions`
-  - stores token and user id in `localStorage`:
-    - `ft_session_token`
-    - `ft_user_id`
+### currentUser shape
 
-Permissions:
-- enforced in UI using flags like `can_admin`, `can_edit`, etc.
-- note: real security still requires DB RLS policies (see security section).
+```js
+{
+  id:                  string,   // = auth.uid()
+  email:               string,
+  name:                string,
+  role:                'admin' | 'owner' | 'user' | 'viewer',
+  family_id:           string | null,
+  families:            [{ id, name, role }],
+  avatar_url:          string | null,
+  preferred_family_id: string | null,
+  can_view:    true,
+  can_create:  bool,
+  can_edit:    bool,
+  can_delete:  bool,   // admin/owner only
+  can_export:  true,
+  can_import:  bool,
+  can_admin:   bool,   // true only for role='admin'
+  can_manage_family: bool,
+}
+```
 
-### 7.3 Navigation model
-- SPA sections in `index.html`
-- `navigate(pageId)` toggles visible page
-- page entry may trigger data reload/render (dashboard/reports/transactions)
+### famQ() behaviour
 
-### 7.4 Accounts + Groups
-- Accounts belong to:
-  - group (`accounts.group_id`) optional
-  - family (`accounts.family_id`)
-- Currency handling:
-  - `accounts.currency`
-  - groups have `account_groups.currency`
-- Balances:
-  - `initial_balance` + transactions
-  - may also use stored `accounts.balance` depending on module logic
+```js
+famQ(sb.from('transactions').select('*'))
+// Admin/owner with no family_id -> no filter (global access, intentional)
+// User with no family_id -> filters by '00000000-...' (prevents data leak)
+```
 
-### 7.5 Transactions (critical UX)
-Transactions support:
-- Expense / income
-- Transfer (debit origin + credit destination)
-- Card payment (transfer-like + categorized as card payment)
-- Status:
-  - `status = confirmed | pending`
-  - pending should be visually separated/highlighted
+Always use famQ() for reads. Always include family_id: famId() in inserts.
 
-Views:
-- Flat list
-- Grouped-by-account list (separate renderer)
+### DB data-access layer
 
-Filters:
-- month
-- account
-- search
-- type
-- status
+```js
+await DB.preload()                      // boot: accounts + categories + payees
+await DB.accounts.load(force?)          // TTL 2 min
+await DB.categories.load(force?)        // TTL 5 min
+await DB.payees.load(force?)            // TTL 2 min
+await DB.accounts.recalcBalances()      // recomputes account.balance
+await DB.transactions.load(opts)        // paginated + filtered
+await DB.dashboard.loadKPIs()           // income/expense/total/pendingCount
+await DB.dashboard.loadCashflow(acctId) // 6-month aggregation, 1 query
+await DB.prices.saveReceipt(...)        // batched price_history insert
+DB.bustAll()                            // invalidate all caches
+```
 
-Attachments:
-- optional `attachment_url`, `attachment_name`
+DB.dashboard.loadKPIs() returns zeros immediately if currentUser.family_id is null.
 
-### 7.6 Categories
-- Tree structure: `parent_id` self FK
-- Type:
-  - `despesa`, `receita`, `transferencia`
-- UI must preserve tree selection + path display.
+### state object key properties
 
-### 7.7 Payees
-- Unique by name
-- Type:
-  - beneficiary, payer, both
-- Optional default category.
-
-### 7.8 Reports + Exports
-Reports:
-- group by category/payee/account/month, etc.
-Exports:
-- PDF: html2canvas + jsPDF (+ autotable)
-- XLSX: SheetJS
-- CSV: simple export
-
-### 7.9 Preferences
-Per-screen preferences can be saved:
-- localStorage (primary in many flows)
-- optionally `user_preferences` if enabled
+```js
+state.accounts        // Account[] with computed .balance
+state.groups          // account_groups[]
+state.categories      // Category[] flat list
+state.payees          // Payee[]
+state.transactions    // current page Tx[]
+state.txFilter        // { search, month, account, type, status }
+state.txView          // 'flat' | 'group'
+state.txPage          // pagination
+state.chartInstances  // { canvasId: Chart } — used by PDF export
+state.privacyMode     // masks all amounts when true
+state.scheduled       // ScheduledTx[]
+state.budgets         // Budget[]
+```
 
 ---
 
-## 8. Supabase connection and security notes
+## 6. Auth and user management
 
-### 8.1 How it connects
-- Client-side Supabase JS with anon key.
-- This is normal for Supabase, but security depends on **RLS + policies**.
+### Two-table model
 
-### 8.2 Security reality check
-If RLS is not strict:
-- anyone with URL + anon key can query from the browser console.
+| Table | Role |
+|---|---|
+| auth.users | Supabase Auth — JWT sessions, hashed passwords |
+| app_users | App metadata — name, role, permissions, approval status |
+| family_members | SOURCE OF TRUTH for user-family links + per-family role |
 
-Client-side “family filters” (`famQ()`) are not security controls.
-They are convenience filters only.
+### Self-registration flow
 
-**Recommended approach:**
-- Use Supabase Auth + RLS (strongest)
-- Or enforce strict policies on `family_id` with authenticated claims
+1. doRegister() -> inserts app_users (approved=false, active=false, role='viewer')
+2. Admin notified via EmailJS (_notifyAdminNewRegistration())
+3. Admin: Gerenciar Usuarios -> Pendentes -> Aprovar
+4. approveUser() opens approvalModal (select/create family)
+5. doApproveUser(): updates app_users, upserts family_members, calls RPC approve_user (SECURITY DEFINER), falls back to sb.auth.signUp(), sends welcome email + Supabase password reset link
 
----
+### Admin-created user
 
-## 9. Database model (SQL + ERD) explained
+saveUser() (new user):
+1. Inserts app_users (approved=true, active=true)
+2. Upserts family_members with role from uInitFamilyRole
+3. sb.auth.signUp() with password
+4. _sendNewUserWelcomeEmail() with temporary password
 
-### 9.1 Core entities
-- `families`
-  - tenant root; everything ties to family
-- `account_groups`
-  - group of accounts, includes `currency`
-- `accounts`
-  - holds `initial_balance`, `balance`, `currency`, `iof_rate`, `group_id`, `family_id`
-- `categories`
-  - hierarchical (`parent_id`) + `type`
-- `payees`
-  - unique names + optional default category
-- `transactions`
-  - main ledger; supports transfers + card payments + status + attachments
+### Password reset (admin)
 
-### 9.2 Budgets
-- `budgets(category_id, month, amount, family_id)`
+resetUserPwd() -> resetPwdModal -> doResetUserPwd():
+1. sbAdmin.auth.admin.updateUserById() — requires service role key in settings
+2. Fallback: RPC set_user_password — requires migration_set_password.sql
+3. Fallback: sb.auth.resetPasswordForEmail()
+4. Syncs app_users.password_hash, clears must_change_pwd
 
-### 9.3 Scheduling
-- `scheduled_transactions`
-  - recurrence rules + transfer/card payment support + notifications
-- `scheduled_occurrences`
-  - generated occurrences; link to `transactions` when registered
-- `scheduled_run_logs`
-  - audit trail of runs
+### Roles and permissions
 
-### 9.4 Import staging
-- `import_sessions`
-- `import_staging_accounts`
-- `import_staging_categories`
-- `import_staging_payees`
-- `import_staging_transactions`
-
-### 9.5 Users (custom auth)
-- `app_users`
-  - user identity + permission flags + family
-- `app_sessions`
-  - persistent sessions
-
-### 9.6 Settings + preferences
-- `app_settings` (key/value jsonb)
-- `user_preferences` (screen/preferences jsonb)
-
-### 9.7 Supabase Auth (parallel, not used by current front)
-- `user_profiles` references `auth.users`
+| Role | can_admin | can_delete | can_import | can_manage_family |
+|---|---|---|---|---|
+| admin | yes | yes | yes | yes |
+| owner | no | yes | yes | yes |
+| user | no | no | no | no |
+| viewer | no | no | no | no |
 
 ---
 
-## 10. Config keys (app_settings + localStorage)
+## 7. Multi-tenant model
 
-### 10.1 localStorage keys (known)
-- `sb_url` — Supabase project URL
-- `sb_key` — Supabase anon public key
-- `ft_session_token` — custom session token
-- `ft_user_id` — logged user id
-- EmailJS fallback keys (if not present in DB):
-  - `ej_service`
-  - `ej_template`
-  - `ej_key`
-- UX preferences (varies by screen; check modules):
-  - transaction view mode, grouping, etc.
+Every data table has family_id. All reads use famQ(). All inserts include family_id: famId().
 
-### 10.2 app_settings keys (known / used)
-- `app_logo_url` — overrides logo globally
-- EmailJS:
-  - `ej_service`
-  - `ej_template`
-  - `ej_key`
-- Security / access:
-  - `masterPin` (if used)
-- Other feature toggles:
-  - auto-register toggles
-  - menu visibility options
+NOTE: famQ() is a frontend convenience filter only. Without Supabase RLS policies, any authenticated
+user can bypass it from the browser console. Enable RLS on all tables.
 
-> Note: the app typically loads up to ~200 settings keys and caches them.
+Feature flags per family stored in app_settings as {feature}_enabled_{family_id}.
+Cached in window._familyFeaturesCache and localStorage.
 
 ---
 
-## 11. Import / Export / Attachments
+## 8. Module responsibilities
 
-### Import
-- uses `import_sessions` + staging tables
-- workflow:
-  1) create session
-  2) parse input -> staging tables
-  3) user reviews conflicts
-  4) commit -> inserts into real tables
+### auth.js (3447 lines, 103 functions)
 
-### Export
-- reports can export PDF (canvas -> PDF) and XLSX (SheetJS)
+Session: tryRestoreSession(), doLogin(), doLogout(), _loadCurrentUserContext()
+Registration: doRegister(), approveUser(), doApproveUser(), rejectUser()
+User management: loadUsersList(), saveUser(), editUser(), resetUserPwd(), doResetUserPwd(), toggleUserActive()
+Family management: loadFamiliesList(), saveFamily(), deleteFamily(), wipeFamilyData(),
+  addUserToFamily(), removeUserFromFamily(), updateMemberRole(), inviteToFamily()
+Navigation: famQ(), famId(), switchFamily(), _renderFamilySwitcher()
+Wizard: _offerFamilyWizard(), _launchWizardForFamily()
+Email: _sendApprovalEmail(), _sendNewUserWelcomeEmail(), _notifyAdminNewRegistration()
+Avatar: _userAvatarHtml(), _uploadUserAvatar()
 
-### Attachments
-- uploads to Supabase Storage (implementation in `js/attachments.js`)
-- links stored in `transactions.attachment_url` + `attachment_name`
+### transactions.js (1700 lines, 57 functions)
+
+filterTransactions(immediate?) — debounced 280ms for typing, immediate for selects
+loadTransactions() — paginated via DB.transactions.load()
+saveTransaction() — handles FX, IOF, transfers, attachments
+openTxDetail(id) — detail modal with edit/delete/duplicate/convert-to-scheduled
+FX panel: _updateTxCurrencyPanel(), fetchTxCurrencyRate(), updateTxCurrencyPreview()
+  - Shows for any non-BRL account (not just when currencies differ)
+  - Fetches from api.frankfurter.app
+
+### reports.js (1836 lines, 60 functions)
+
+fetchRptTransactions() — all filters including tag (.contains('tags', [tagV]))
+loadReports() — KPIs, 4 Chart.js charts, grouped category table
+_buildReportPDF() — visibility fix + fresh render + canvas capture
+_ensureChartsRendered() — always re-renders with container visible
+Category table: 3 groups (Despesas / Receitas / Transferencias), % within group
+Color dedup: _catColor(color, idx, usedSet) — 24-color palette, no repeats per chart
+
+### dashboard.js (454 lines, 11 functions)
+
+loadDashboard() — guard: exits if !sb or user has no family_id
+renderCategoryChart() — doughnut with _catColor + usedSet
+renderCashflowChart() — 6-month bar+line via DB.dashboard.loadCashflow()
+
+### wizard.js (751 lines, 45 functions)
+
+Auto-triggers on boot when all true:
+1. User is admin or owner
+2. wizard_dismissed flag is false in app_settings
+3. Family has 0 transactions
+4. Family has no accounts OR no categories
+
+openWizardManual() — bypass all guards, admin/owner only, from Settings panel
+_updateWizardSettingsStatus() — shows status in Settings row
 
 ---
 
-## 12. Scheduling (recurring transactions)
+## 9. Database schema
 
-Tables:
-- `scheduled_transactions`
-- `scheduled_occurrences`
-- `scheduled_run_logs`
+### Core financial tables
+
+```sql
+families (id, name, description, active, created_at, updated_at)
+
+account_groups (id, family_id, name, emoji, color, currency)
+
+accounts (id, family_id, group_id, name, type, currency, balance, initial_balance,
+          color, icon, active, is_favorite, is_brazilian, iof_rate,
+          best_purchase_day, due_day)
+-- type: corrente | poupanca | investimento | cartao_credito | carteira | outros
+
+categories (id, family_id, parent_id, name, type, color, icon)
+-- type: 'despesa' | 'receita' | 'transferencia'
+
+payees (id, family_id, name, type, default_category_id, address, city,
+        state_uf, zip_code, phone, whatsapp, website, cnpj_cpf)
+-- type: 'beneficiario' | 'fonte_pagadora' | 'ambos'
+
+transactions (id, family_id, account_id, payee_id, category_id,
+              description, amount, currency, exchange_rate,
+              brl_amount,        <- canonical BRL equivalent (use this)
+              amount_brl,        <- legacy, do not write
+              date, time, memo, tags TEXT[], check_number,
+              is_transfer, transfer_to_account_id, transfer_pair_id, transfer_kind,
+              linked_transfer_id, is_card_payment,
+              status,            <- 'confirmed' | 'pending'
+              reconciled, balance_after,
+              attachment_url, attachment_name,
+              moneywiz_key, import_session_id, created_at, updated_at)
+
+budgets (id, family_id, category_id, month DATE, amount, budget_type, auto_reset, year, notes)
+-- budget_type: 'monthly' | 'annual'
+```
+
+### Scheduled transaction tables
+
+```sql
+scheduled_transactions (id, family_id, description, type, amount, currency,
+                         brl_amount, fx_mode, fx_rate,
+                         account_id, transfer_to_account_id, transfer_kind,
+                         payee_id, category_id, memo, tags, status,
+                         start_date, frequency, custom_interval, custom_unit,
+                         end_count, end_date, auto_register, auto_confirm,
+                         notify_email, notify_email_addr, notify_days_before)
+-- frequency: once|weekly|biweekly|monthly|bimonthly|quarterly|semiannual|annual|custom
+-- status: active | paused | finished
+
+scheduled_occurrences (id, scheduled_id, scheduled_date, actual_date, amount, memo,
+                        transaction_id, execution_status, execution_token, executed_at, error_message)
+-- execution_status: pending|processing|executed|failed|skipped
+
+scheduled_run_logs (id, family_id, scheduled_id, scheduled_date, transaction_id,
+                     status, amount, description, created_at)
+```
+
+### User and auth tables
+
+```sql
+app_users (id, email, name, password_hash, role, active, approved, must_change_pwd,
+           can_view, can_create, can_edit, can_delete, can_export, can_import, can_admin,
+           last_login, created_at, created_by, family_id, preferred_family_id,
+           avatar_url, show_school_link)
+-- role: owner | admin | editor | viewer | user | member
+
+app_sessions (id, user_id, token, expires_at, created_at)
+
+family_members (id, user_id, family_id, role, created_at)
+-- SOURCE OF TRUTH for user-family relationships
+-- role: owner | admin | user | viewer
+
+user_profiles (id, email, display_name, role, active)
+-- Legacy mirror of auth.users; not actively used by app code
+```
+
+### System tables
+
+```sql
+app_settings (key TEXT PK, value JSONB, updated_at)
+app_backups (id, family_id, label, backup_type, created_by, payload JSONB, counts JSONB, size_kb)
+tags (id, name UNIQUE)  -- global, no family_id; NOT used (tags stored as TEXT[] in transactions)
+```
+
+### Import staging tables
+
+```sql
+import_sessions             (id TEXT, file_name, import_type, status, stats JSONB, created_at, committed_at)
+                            -- WARNING: no family_id (only isolation gap in schema)
+import_staging_transactions (id, session_id, account_name, transfer_account, description,
+                              payee_name, category_path, date, time, memo, amount, currency,
+                              check_number, tags, running_balance, is_transfer, action, conflict_reason)
+import_staging_accounts     (id, session_id, name, type, currency, balance, icon, color, source_data, status)
+import_staging_categories   (id, session_id, name, type, parent_name, icon, color, full_path, status)
+import_staging_payees       (id, session_id, name, status)
+```
+
+### Price and grocery tables (optional modules)
+
+```sql
+price_items   (id, family_id, category_id, name, description, unit,
+               avg_price, last_price, min_price, record_count)
+price_stores  (id, family_id, payee_id, name, address, city, state_uf, phone, cnpj, zip_code)
+price_history (id, family_id, item_id, store_id, unit_price, quantity, purchased_at, notes)
+grocery_lists (id, family_id, name, status)  -- status: open | done
+grocery_items (id, list_id, family_id, name, qty, unit, checked, price_item_id,
+               suggested_price, suggested_store, needs_mapping)
+```
+
+### Entity relationship summary
+
+```
+families ─< account_groups ─< accounts ─< transactions
+         ─< categories (self-ref: parent_id)
+         ─< payees
+         ─< budgets ─> categories
+         ─< scheduled_transactions ─< scheduled_occurrences ─> transactions
+         ─< app_backups
+         ─< family_members >─ app_users
+         ─< price_items ─< price_history ─> price_stores
+         ─< grocery_lists ─< grocery_items ─> price_items
+```
+
+---
+
+## 10. FX multi-currency
+
+- FX rates fetched from api.frankfurter.app (free, no key required)
+- Cached in app_settings: key fx_rates_cache + fx_rates_ts, TTL 4 hours
+- initFxRates() is deduped with _fxPromise — safe to call multiple times
+- getFxRate(currency) returns BRL multiplier (1 for BRL)
+- toBRL(amount, currency) converts using cached rate
+- txToBRL(tx) prefers tx.brl_amount if saved; falls back to toBRL()
+
+FX panel in transaction form:
+- Shown whenever account currency != BRL (not only when tx/account differ)
+- Same currency (e.g. USD tx on USD account): fetches accountCur -> BRL
+- Different currency: fetches txCurrency -> accountCurrency
+- brl_amount always saved when non-BRL account and rate provided
+
+---
+
+## 11. Transactions
+
+### Types
+
+| type | is_transfer | is_card_payment | Description |
+|---|---|---|---|
+| expense | false | false | Regular expense |
+| income | false | false | Regular income |
+| transfer | true | false | Inter-account transfer (2 rows) |
+| card_payment | true | true | Credit card bill payment |
+
+### Transfer pair model
+
+A transfer creates TWO transactions rows:
+- Debit: account_id=source, amount negative, transfer_to_account_id=destination
+- Credit: account_id=destination, amount positive, linked_transfer_id=debit.id
+- Both share transfer_pair_id
+
+Legacy single-leg: only debit row, linked_transfer_id is null.
+DB.accounts.recalcBalances() handles legacy credit separately.
+
+### Filter debounce
+
+filterTransactions(immediate?):
+- immediate=true  -> fires immediately (selects: account, month, type, status)
+- immediate=false -> 280ms debounce (search text input)
+
+---
+
+## 12. Reports and PDF export
+
+### Filters (fetchRptTransactions)
+
+Period, Account, Type (expense/income), Category, Payee, Tag
+
+Tag filter: .contains('tags', [tagV]) — PostgREST array-contains operator.
+Tag dropdown populated from current results, refreshes after each fetch.
+
+### Category table grouping
+
+Three sections with own subtotals and % within group:
+- Despesas:     amount < 0 AND NOT is_transfer
+- Receitas:     amount > 0 AND NOT is_transfer  
+- Transferencias: is_transfer = true
+
+### Color dedup (_catColor)
+
+_catColor(color, idx, usedSet):
+- Uses category custom color if non-generic and not yet used
+- Otherwise advances through CAT_PALETTE (24 colors) until unused
+- Each chart creates its own new Set() -> zero repeats per chart
+
+### PDF chart capture (definitive fix since _42)
+
+_buildReportPDF():
+1. Makes reportRegularView visible (remove display:none)
+2. Sets visibility:hidden on page-reports (invisible but layout calculated)
+3. Calls loadReports() -> fresh Chart.js render at correct devicePixelRatio
+4. Waits 2x requestAnimationFrame for browser to composite
+5. Captures canvases with toDataURL()
+6. Restores original visibility
+
+---
+
+## 13. Scheduled transactions engine
 
 Flow:
-- define schedule rule
-- engine computes next occurrences
-- if auto-register enabled:
-  - creates actual `transactions`
-  - logs run in `scheduled_run_logs`
-- optional notification by EmailJS (if configured)
+```
+scheduled_transactions (rule)
+  └─ generate occurrences -> scheduled_occurrences
+        └─ auto-register -> transactions (actual ledger entry)
+                └─ logged in scheduled_run_logs
+```
+
+auto_register.js runs on boot and on configurable browser timer (autocheck.js):
+1. Fetches scheduled_transactions where auto_register=true, status='active'
+2. Computes next occurrence dates up to daysAhead
+3. Creates transactions, marks occurrences executed, logs in scheduled_run_logs
+4. Uses execution_token (UUID) to prevent double-execution in concurrent tabs
+
+Frequencies: once, weekly, biweekly, monthly, bimonthly, quarterly, semiannual, annual, custom
 
 ---
 
-## 13. Release / Deploy (GitHub Pages)
+## 14. Import pipeline
 
-- App is static.
-- Ensure paths use relative references (`./`) where possible.
-- Service Worker is registered with `./sw.js` and scope `./` for GH Pages compatibility.
+Staging flow:
+1. Parse file -> insert import_staging_* (all linked by session_id)
+2. User reviews conflicts and mappings
+3. Commit -> insert into real tables
 
-Typical deployment:
-1) commit to main
-2) GitHub Pages serves from repo root (or `/docs` depending configuration)
-3) validate:
-   - load on desktop + mobile Safari
-   - first-run setup
-   - service worker registers
-   - supabase connection works
+Supported formats: CSV, OFX, Nubank CSV, Inter CSV, Itau OFX, XP OFX, MoneyWiz CSV
+
+AI-assisted mapping (import_ai.js): sends column headers to Google Gemini,
+returns field mapping JSON, pre-fills the column mapping UI.
 
 ---
 
-## 14. Regression checklist
+## 15. Optional modules
 
-Before shipping changes, validate:
+Enabled per family by admin in Settings -> Familia & Usuarios or family card checkboxes.
 
-### Boot / Setup / Auth
-- Setup screen saves `sb_url`/`sb_key` and boots
-- Auto-connect works after reload
-- Multi-user login works:
-  - approved vs not approved behavior
-  - must-change-password behavior
-  - session restoration works after refresh
-
-### Logo consistency
-- Logo shows correctly on:
-  - auth screen
-  - login screen
-  - sidebar
-  - settings page
-  - topbar (if enabled)
-- `app_logo_url` override applies everywhere
-- reset returns to default
-
-### Transactions (highest priority)
-- Create/edit:
-  - expense, income
-  - transfer (debit origin + credit destination)
-  - card payment (transfer-like + categorized properly)
-- Status:
-  - pending vs confirmed separation and visuals
-- Views:
-  - flat list
-  - grouped-by-account view matches layout rules
-- Filters + pagination + sorting work
-
-### Accounts / Currency
-- Account balances reflect initial balance + transactions
-- Grouping by currency is consistent
-
-### Reports / Export
-- report filters work
-- PDF export works on desktop + mobile
-- XLSX export works
-
-### Scheduling
-- creating schedules works
-- auto-register does not duplicate entries
-- logs recorded as expected
-
-### Import
-- staging load + commit works
-- conflicts handled gracefully
-
-### PWA
-- service worker registers without errors
-- caching doesn’t break updates (force refresh scenario tested)
+| Feature | Flag key | Module |
+|---|---|---|
+| Gestao de Precos | prices_enabled_{family_id} | prices.js |
+| Lista de Mercado | grocery_enabled_{family_id} | grocery.js |
+| Backup/Snapshot | backup_enabled_{family_id} | backup.js |
 
 ---
 
-## Notes for AI-assisted changes
+## 16. Setup wizard
 
-When modifying:
-- keep the global contracts (`sb`, `state`, IDs, `setAppLogo`) stable
-- prefer small, surgical edits
-- document changes in a CHANGELOG section in your PR/commit message
-- if you add settings, register them in this doc under [Config keys](#10-config-keys-app_settings--localstorage)
+### Auto-trigger conditions (ALL must be true)
 
-END.
+1. currentUser.can_admin=true OR role='owner'
+2. app_settings['wizard_dismissed'] != true
+3. Family has 0 transactions
+4. Family has no accounts OR no categories
+
+Once dismissed: sets wizard_dismissed=true, never auto-shows again.
+
+### Manual trigger
+
+Settings -> Familia & Usuarios -> [▶ Iniciar] button (admin/owner only).
+openWizardManual() bypasses all guards, clears wizard_dismissed.
+Status sub-text shows: pending (amber) / completed / default.
+
+### Also triggered after new family creation
+
+saveFamily() creates new family -> _offerFamilyWizard() -> green banner
+-> [Configurar agora] -> _launchWizardForFamily().
+
+### Wizard steps
+
+1. Family name
+2. Members (adults + children)
+3. Invite adults by email
+4. Main expense categories + budgets (skippable)
+5. First account (opens openAccountModal())
+6. First transaction (opens transaction modal)
+7. Complete
+
+---
+
+## 17. Config keys
+
+### app_settings table
+
+| Key | Purpose |
+|---|---|
+| app_logo_url | Overrides default logo URL everywhere |
+| wizard_dismissed | true when wizard completed/dismissed |
+| ej_service | EmailJS service ID |
+| ej_template | EmailJS template ID |
+| ej_sched_template | EmailJS template for scheduled notifications |
+| ej_key | EmailJS public key |
+| masterPin | Optional PIN lock |
+| fintrack_auto_check_config | Auto-register timer config (JSON object) |
+| fx_rates_cache | Cached FX rates JSON |
+| fx_rates_ts | Timestamp of last FX fetch |
+| {feature}_enabled_{family_id} | Feature flags per family |
+| menu_visibility | Per-admin menu item visibility JSON |
+
+### localStorage keys
+
+| Key | Purpose |
+|---|---|
+| sb_url | Supabase project URL |
+| sb_key | Supabase anon key |
+| sb_service_key | Service role key (for admin password reset) |
+| ft_active_family_{user_id} | Last active family per user |
+| ft_remember_me | Base64 encoded remember-me credentials |
+| bottomNavCollapsed | Bottom nav collapsed state |
+| fintrack_auto_check_config | Auto-register config (synced from DB) |
+
+---
+
+## 18. Logo pipeline
+
+setAppLogo(url) updates all logo img elements by ID:
+sidebarLogoImg, settingsLogoImg, topbarLogoImg, loginLogoImg, authLogoImg.
+
+Default: DEFAULT_LOGO_URL = 'https://deciofranchini-oss.github.io/fintrack/logo.png'
+Dark variant: logo2.png (filename with "2" appended) for dark sidebar backgrounds.
+Override via app_settings['app_logo_url'] -> saveAppLogo() in settings.js.
+
+Do NOT rename these img IDs or the logo will break.
+
+---
+
+## 19. Deploy GitHub Pages
+
+Static PWA. No build step. Push to main -> GitHub Pages serves from repo root.
+Service Worker (sw.js) registered with ./sw.js scope for GH Pages compatibility.
+
+After deploy validation:
+- Login works on desktop + mobile Safari
+- Service worker registers (DevTools > Application > Service Workers)
+- Dashboard loads with data
+- PDF export includes charts with correct vivid colors
+- Tag filter appears in reports
+- Wizard accessible from Settings
+
+---
+
+## 20. Regression checklist
+
+Boot:
+- Setup screen saves credentials and boots
+- Session restore after reload
+- Login: approved/pending/must-change-pwd flows
+- Dashboard loads with data
+
+Admin:
+- + Novo Usuario opens form and saves
+- Edit user (pencil button) opens form pre-filled
+- Approve user: modal + family select + auth account created + email sent
+- Reset password: modal with 2 fields, updates auth
+- Family creation shows wizard banner
+
+Transactions:
+- Expense/income save correctly
+- Transfer creates 2 rows, both balances update
+- FX panel shows for non-BRL accounts
+- Tag filter in reports filters correctly
+
+Reports:
+- Category table shows 3 groups
+- PDF includes vivid charts (not faded)
+- CSV has Tags column
+
+Wizard:
+- Auto-triggers for new empty family
+- Manual trigger in Settings works
+
+---
+
+## 21. Known pitfalls
+
+### Duplicate const at global scope crashes everything
+
+const X in file A AND const X in file B -> SyntaxError at parse time -> entire app fails.
+Before adding any top-level const/let, grep all JS files for the name.
+Known: AUTO_REGISTER_SQL declared only in autocheck.js.
+
+### admin.js overrides auth.js
+
+admin.js loads after auth.js. Functions with same name in admin.js silently override auth.js.
+admin.js intentionally contains only 2 unique functions. Keep it that way.
+
+### Chart colors faded in PDF
+
+Caused by Chart.js rendering with canvas parent display:none.
+Fixed by _ensureChartsRendered() which always re-renders with container visible.
+
+### famQ() is not security
+
+famQ() is client-side convenience only. Enable Supabase RLS on all tables.
+
+### brl_amount vs amount_brl
+
+Both exist in transactions. brl_amount is current. amount_brl is legacy.
+Always write to brl_amount. txToBRL() uses brl_amount.
+
+### import_sessions has no family_id
+
+Only table without tenant isolation. Staging data is transient but be aware.
+
+---
+
+## 22. Changelog _37 to _44
+
+_38: Admin panel fixed (id mismatch uFamilyId->uInitFamilyId); switchUATab handles 3 tabs;
+     saveUser creates family_members + auth account + welcome email; approveUser/resetUserPwd
+     use proper modal flows; admin.js reduced to stub; saveFamily offers wizard banner;
+     FX panel for non-BRL accounts; filterTransactions debounce; wizard after new family.
+
+_39: SyntaxError duplicate AUTO_REGISTER_SQL fixed; loadAppSettings non-fatal in boot;
+     loadDashboard guard for missing sb/family_id; DB.loadKPIs guard;
+     _loadCurrentUserContext fallback2 for missing family link.
+
+_40: Report category table grouped by Despesas/Receitas/Transferencias with % within group;
+     PDF category table updated; HTML column Tipo removed.
+
+_41: CAT_PALETTE expanded to 24 colors; _catColor(color,idx,usedSet) guarantees no repeats
+     within each chart; reports use separate usedSet per chart; FB palette removed.
+
+_42: PDF charts definitive fix: _buildReportPDF makes reportRegularView visible before render;
+     _ensureChartsRendered always calls loadReports() fresh with visibility:hidden trick;
+     waits 2x requestAnimationFrame for correct devicePixelRatio.
+
+_43: Tag filter in reports: rptTag select, Supabase .contains on tags TEXT[],
+     dynamic dropdown from current results, CSV Tags column, active filters label.
+
+_44: openWizardManual() in wizard.js bypasses all auto-trigger guards;
+     Settings -> Familia & Usuarios row with live status indicator;
+     _updateWizardSettingsStatus() called on settings page load.
