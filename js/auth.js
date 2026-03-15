@@ -1440,6 +1440,298 @@ async function _inlineReject(userId, userName) {
 }
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  COPY FAMILY DATA — copies ALL data from source family → target family
+//  Target family data is wiped first, then repopulated with remapped UUIDs.
+//  Admin-only operation.
+// ══════════════════════════════════════════════════════════════════════════════
+
+function openCopyFamilyModal(srcId, srcName) {
+  if (currentUser?.role !== 'admin') {
+    toast('Apenas Administradores globais podem copiar dados de famílias', 'error');
+    return;
+  }
+
+  // Remove any existing modal
+  document.getElementById('copyFamilyModal')?.remove();
+
+  // Build target family options (all families except source)
+  const _targets = (_families || []).filter(f => f.id !== srcId);
+  const targetOpts = _targets.length
+    ? _targets.map(f => `<option value="${f.id}">${esc(f.name || f.id)}</option>`).join('')
+    : '<option value="" disabled>Nenhuma outra família disponível</option>';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay open';
+  modal.id = 'copyFamilyModal';
+  modal.style.zIndex = '10020';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:460px"><div class="modal-handle"></div>
+      <div class="modal-header">
+        <span class="modal-title">📋 Copiar Dados de Família</span>
+        <button class="modal-close" onclick="closeModal('copyFamilyModal')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="background:var(--amber-lt);border:1px solid var(--amber);border-radius:var(--r-sm);padding:12px 14px;margin-bottom:16px;font-size:.82rem;color:var(--amber,#b45309)">
+          ⚠️ <strong>Atenção:</strong> Todos os dados da família de <strong>destino</strong> serão
+          <u>substituídos permanentemente</u> pelos dados da família de <strong>origem</strong>.
+          Esta operação não pode ser desfeita.
+        </div>
+
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="font-size:.82rem;font-weight:600">Origem (fonte)</label>
+          <div style="padding:9px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);font-size:.85rem;font-weight:600">
+            🏠 ${esc(srcName)}
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom:16px">
+          <label style="font-size:.82rem;font-weight:600">Destino (será sobrescrito)</label>
+          <select id="copyFamilyTarget" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);color:var(--text);font-size:.85rem">
+            <option value="">— Selecione a família de destino —</option>
+            ${targetOpts}
+          </select>
+        </div>
+
+        <div id="copyFamilyProgress" style="display:none;margin-bottom:12px">
+          <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:8px">
+            <div id="copyFamilyBar" style="height:100%;background:var(--accent);width:0%;transition:width .3s ease;border-radius:3px"></div>
+          </div>
+          <div id="copyFamilyStatus" style="font-size:.78rem;color:var(--muted);text-align:center"></div>
+        </div>
+
+        <div id="copyFamilyError" style="display:none;color:var(--red);font-size:.8rem;margin-bottom:12px;padding:8px 12px;background:#fff5f5;border:1px solid #fca5a5;border-radius:var(--r-sm)"></div>
+
+        <div style="display:flex;gap:8px">
+          <button id="copyFamilyBtn" class="btn btn-primary" style="flex:1"
+            onclick="executeCopyFamily('${srcId}','${esc(srcName).replace(/'/g,"\\'")}')">
+            📋 Copiar Dados
+          </button>
+          <button class="btn btn-ghost" onclick="closeModal('copyFamilyModal')">Cancelar</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(modal);
+}
+
+async function executeCopyFamily(srcId, srcName) {
+  const targetId = document.getElementById('copyFamilyTarget')?.value;
+  if (!targetId) {
+    const errEl = document.getElementById('copyFamilyError');
+    if (errEl) { errEl.textContent = 'Selecione a família de destino.'; errEl.style.display = ''; }
+    return;
+  }
+
+  const targetFamily = (_families || []).find(f => f.id === targetId);
+  const targetName   = targetFamily?.name || targetId;
+
+  // Triple confirmation
+  const conf1 = confirm(
+    `⚠️ CONFIRMAÇÃO NECESSÁRIA\n\n` +
+    `Você está prestes a SUBSTITUIR TODOS OS DADOS de:\n` +
+    `   Destino: "${targetName}"\n\n` +
+    `Com os dados de:\n` +
+    `   Origem: "${srcName}"\n\n` +
+    `Isso inclui: transações, contas, categorias, beneficiários, orçamentos,\n` +
+    `transações programadas, listas de compras, preços e membros da família.\n\n` +
+    `Esta operação NÃO PODE ser desfeita. Deseja continuar?`
+  );
+  if (!conf1) return;
+
+  const typed = window.prompt(
+    `Para confirmar, digite exatamente o nome da família de DESTINO:\n"${targetName}"`
+  );
+  if (typed !== targetName) {
+    toast('Nome incorreto — operação cancelada', 'warning');
+    return;
+  }
+
+  const btn      = document.getElementById('copyFamilyBtn');
+  const progress = document.getElementById('copyFamilyProgress');
+  const bar      = document.getElementById('copyFamilyBar');
+  const status   = document.getElementById('copyFamilyStatus');
+  const errEl    = document.getElementById('copyFamilyError');
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Copiando...'; }
+  if (progress) progress.style.display = '';
+  if (errEl) errEl.style.display = 'none';
+
+  function setProgress(pct, msg) {
+    if (bar)    bar.style.width = pct + '%';
+    if (status) status.textContent = msg;
+  }
+
+  try {
+    // ── STEP 1: Fetch all source data ──────────────────────────────────────
+    setProgress(5, 'Lendo dados da família de origem…');
+
+    // Tables in dependency order (parents before children)
+    const TABLES = [
+      { name: 'account_groups',          fk: [] },
+      { name: 'categories',              fk: ['parent_id→categories.id'] },
+      { name: 'payees',                  fk: ['default_category_id→categories.id'] },
+      { name: 'accounts',                fk: ['group_id→account_groups.id'] },
+      { name: 'price_stores',            fk: ['payee_id→payees.id'] },
+      { name: 'price_items',             fk: ['category_id→categories.id'] },
+      { name: 'budgets',                 fk: ['category_id→categories.id'] },
+      { name: 'scheduled_transactions',  fk: ['account_id→accounts.id','payee_id→payees.id','category_id→categories.id','transfer_to_account_id→accounts.id'] },
+      { name: 'grocery_lists',           fk: [] },
+      { name: 'family_composition',      fk: [] },
+      { name: 'transactions',            fk: ['account_id→accounts.id','payee_id→payees.id','category_id→categories.id','transfer_to_account_id→accounts.id'] },
+      { name: 'price_history',           fk: ['item_id→price_items.id','store_id→price_stores.id'] },
+      { name: 'grocery_items',           fk: ['list_id→grocery_lists.id','price_item_id→price_items.id'] },
+      { name: 'scheduled_occurrences',   fk: ['scheduled_id→scheduled_transactions.id','transaction_id→transactions.id'] },
+    ];
+
+    const srcData = {};
+    for (let i = 0; i < TABLES.length; i++) {
+      const t = TABLES[i];
+      setProgress(5 + Math.round((i / TABLES.length) * 25), `Lendo ${t.name}…`);
+      const { data, error } = await sb.from(t.name).select('*').eq('family_id', srcId);
+      if (error && error.code !== 'PGRST116') {
+        console.warn(`[copy] read ${t.name}:`, error.message);
+      }
+      srcData[t.name] = data || [];
+    }
+
+    // ── STEP 2: Build UUID remap ───────────────────────────────────────────
+    setProgress(30, 'Gerando novos IDs…');
+
+    // Create a new UUID for each row in each table
+    const idMap = {}; // oldId → newId
+
+    function newUUID() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
+    }
+
+    // First pass: assign new IDs for every row
+    for (const t of TABLES) {
+      for (const row of srcData[t.name]) {
+        idMap[row.id] = newUUID();
+      }
+    }
+
+    // Remap a value: if it's a known old ID → return new ID, else return as-is
+    function remap(val) {
+      if (!val) return val;
+      return idMap[val] ?? val;
+    }
+
+    // ── STEP 3: Wipe target family data ───────────────────────────────────
+    setProgress(35, 'Limpando dados da família de destino…');
+
+    // Delete in reverse order (children before parents)
+    const wipeTables = [
+      'scheduled_occurrences','grocery_items','price_history','transactions',
+      'grocery_lists','family_composition','budgets','scheduled_transactions',
+      'price_items','price_stores','accounts','payees','categories','account_groups',
+    ];
+    for (const tname of wipeTables) {
+      const { error } = await sb.from(tname).delete().eq('family_id', targetId);
+      if (error) console.warn(`[copy] wipe ${tname}:`, error.message);
+    }
+
+    // ── STEP 4: Insert remapped data ──────────────────────────────────────
+    const insertBase = 40;
+    const insertRange = 55;
+
+    for (let i = 0; i < TABLES.length; i++) {
+      const t    = TABLES[i];
+      const rows = srcData[t.name];
+      if (!rows.length) continue;
+
+      setProgress(
+        insertBase + Math.round((i / TABLES.length) * insertRange),
+        `Copiando ${t.name} (${rows.length} registros)…`
+      );
+
+      const newRows = rows.map(row => {
+        const r = { ...row };
+
+        // Assign new ID
+        r.id        = idMap[row.id];
+        r.family_id = targetId;
+
+        // Remap all FK columns
+        // account_groups
+        // categories
+        if ('parent_id'              in r) r.parent_id              = remap(r.parent_id);
+        // payees
+        if ('default_category_id'    in r) r.default_category_id    = remap(r.default_category_id);
+        // accounts
+        if ('group_id'               in r) r.group_id               = remap(r.group_id);
+        // price_stores
+        if ('payee_id'               in r) r.payee_id               = remap(r.payee_id);
+        // price_items
+        if ('category_id'            in r) r.category_id            = remap(r.category_id);
+        // budgets: family_member_id
+        if ('family_member_id'       in r) r.family_member_id       = remap(r.family_member_id);
+        // scheduled_transactions
+        if ('account_id'             in r) r.account_id             = remap(r.account_id);
+        if ('transfer_to_account_id' in r) r.transfer_to_account_id = remap(r.transfer_to_account_id);
+        // transactions
+        if ('transfer_pair_id'       in r) r.transfer_pair_id       = remap(r.transfer_pair_id);
+        if ('linked_transfer_id'     in r) r.linked_transfer_id     = remap(r.linked_transfer_id);
+        // price_history
+        if ('item_id'                in r) r.item_id                = remap(r.item_id);
+        if ('store_id'               in r) r.store_id               = remap(r.store_id);
+        // grocery_items
+        if ('list_id'                in r) r.list_id                = remap(r.list_id);
+        if ('price_item_id'          in r) r.price_item_id          = remap(r.price_item_id);
+        // scheduled_occurrences
+        if ('scheduled_id'           in r) r.scheduled_id           = remap(r.scheduled_id);
+        if ('transaction_id'         in r) r.transaction_id         = remap(r.transaction_id);
+        // family_composition
+        if ('app_user_id'            in r) r.app_user_id            = r.app_user_id; // keep as-is (links to app_users)
+        // transactions family_member_ids (UUID array)
+        if (r.family_member_ids && Array.isArray(r.family_member_ids)) {
+          r.family_member_ids = r.family_member_ids.map(mid => remap(mid));
+        }
+        // Remove created_at so DB generates fresh timestamps
+        // (keep for data integrity — don't remove)
+
+        return r;
+      });
+
+      // Insert in chunks of 200 to avoid payload limits
+      const CHUNK = 200;
+      for (let c = 0; c < newRows.length; c += CHUNK) {
+        const chunk = newRows.slice(c, c + CHUNK);
+        const { error } = await sb.from(t.name).insert(chunk);
+        if (error) {
+          console.warn(`[copy] insert ${t.name} chunk:`, error.message, error.details);
+          // Non-fatal: log and continue
+        }
+      }
+    }
+
+    // ── STEP 5: Done ──────────────────────────────────────────────────────
+    setProgress(100, `✅ Cópia concluída! ${Object.values(srcData).reduce((s,a) => s + a.length, 0)} registros copiados.`);
+    if (bar) bar.style.background = 'var(--green,#16a34a)';
+    if (btn) { btn.textContent = '✓ Concluído'; }
+
+    setTimeout(async () => {
+      closeModal('copyFamilyModal');
+      toast(`✓ Dados de "${srcName}" copiados para "${targetName}" com sucesso`, 'success');
+      await loadFamiliesList();
+    }, 1500);
+
+  } catch(e) {
+    if (errEl) {
+      errEl.textContent = 'Erro durante a cópia: ' + (e.message || e);
+      errEl.style.display = '';
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '📋 Tentar Novamente'; }
+    if (bar) bar.style.background = 'var(--red)';
+    console.error('[copy family]', e);
+  }
+}
+
+
 async function loadFamiliesList() {
   // ── Carregar famílias ──────────────────────────────────────────────────────
   let families = [];
@@ -1673,6 +1965,9 @@ async function loadFamiliesList() {
             onclick="wipeFamilyData('${fid}','${fmcEscape(f.name)}')">🗑️ Dados</button>
           <button class="fam-action-btn fam-action-danger"
             onclick="deleteFamily('${fid}','${fmcEscape(f.name)}')">✕ Excluir</button>
+          <button class="fam-action-btn fam-action-copy"
+            onclick="openCopyFamilyModal('${fid}','${fmcEscape(fname)}')"
+            title="Copiar todos os dados desta família para outra família">📋 Copiar</button>
         </div>
       </div>` : '';
 
