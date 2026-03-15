@@ -472,7 +472,7 @@ function loadSettings() {
   }
 
   // Seções admin-only
-  const adminSections = ['settingsVisibilitySection', 'userMgmtSection', 'normalizeNamesSection'];
+  const adminSections = ['settingsVisibilitySection', 'userMgmtSection', 'normalizeNamesSection', 'orphanScanSection'];
   adminSections.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = isAdmin ? '' : 'none';
