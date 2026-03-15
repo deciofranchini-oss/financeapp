@@ -63,6 +63,25 @@ function populateReportFilters() {
       opts(state.payees.sort((a,b)=>a.name.localeCompare(b.name)), p=>p.id, p=>p.name);
     payEl.value = cur;
   }
+
+  // Tag filter — built from transactions already in state (may be empty on first load;
+  // refreshed after each fetchRptTransactions call via _refreshRptTagFilter)
+  _refreshRptTagFilter();
+}
+
+/** Rebuild the tag filter dropdown from the current rptState.txData (or state.transactions). */
+function _refreshRptTagFilter() {
+  const tagEl = document.getElementById('rptTag');
+  if (!tagEl) return;
+  const cur = tagEl.value;
+  // Collect all unique tags from loaded transactions
+  const tagSet = new Set();
+  const src = rptState.txData?.length ? rptState.txData : (state.transactions || []);
+  src.forEach(t => (t.tags || []).forEach(tag => { if (tag) tagSet.add(tag); }));
+  const sorted = [...tagSet].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  tagEl.innerHTML = '<option value="">Todas</option>' +
+    sorted.map(tag => `<option value="${esc(tag)}">${esc(tag)}</option>`).join('');
+  if (cur && tagSet.has(cur)) tagEl.value = cur;
 }
 
 function loadCurrentReport() {
@@ -78,6 +97,7 @@ async function fetchRptTransactions() {
   const typeV  = document.getElementById('rptType')?.value      || '';
   const catId  = document.getElementById('rptCategory')?.value  || '';
   const payId  = document.getElementById('rptPayee')?.value     || '';
+  const tagV   = document.getElementById('rptTag')?.value       || '';
 
   let q = famQ(sb.from('transactions')
     .select('*, accounts!transactions_account_id_fkey(name,color,currency), categories(name,color,type), payees(name)'))
@@ -88,10 +108,18 @@ async function fetchRptTransactions() {
   if(payId) q = q.eq('payee_id', payId);
   if(typeV==='expense') q = q.lt('amount',0);
   if(typeV==='income')  q = q.gt('amount',0);
+  // Tag filter: PostgREST array-contains operator
+  if(tagV)  q = q.contains('tags', [tagV]);
 
   const {data, error} = await q;
   if(error) { toast(error.message,'error'); return []; }
-  return (data||[]).filter(t=>!t.is_transfer);
+  const result = (data||[]).filter(t=>!t.is_transfer);
+
+  // Refresh tag dropdown with tags found in this period/filters
+  // (do it after filter so we show tags relevant to current context)
+  setTimeout(_refreshRptTagFilter, 0);
+
+  return result;
 }
 
 /* ═══ VIEW: ANÁLISE ═══ */
@@ -372,6 +400,8 @@ function _getActiveFiltersLabel() {
   if (pay?.value) parts.push('Ben: ' + (pay.options[pay.selectedIndex]?.text || pay.value));
   const typ = document.getElementById('rptType');
   if (typ?.value) parts.push(typ.value === 'expense' ? 'Só Despesas' : 'Só Receitas');
+  const tag = document.getElementById('rptTag');
+  if (tag?.value) parts.push('Tag: ' + tag.value);
   return parts.length ? parts.join(' · ') : 'Todos os dados';
 }
 
@@ -1211,7 +1241,7 @@ function exportReportCSV() {
   if (!txs.length) { toast('Nenhum dado para exportar', 'error'); return; }
   const { from, to } = getRptDateRange();
   const BOM = '\uFEFF';
-  const headers = ['Data','Descrição','Conta','Moeda','Categoria','Beneficiário','Valor','Tipo','Memo'];
+  const headers = ['Data','Descrição','Conta','Moeda','Categoria','Beneficiário','Tags','Valor','Tipo','Memo'];
   const rows = txs.map(t => [
     t.date,
     `"${(t.description||'').replace(/"/g,'""')}"`,
@@ -1219,6 +1249,7 @@ function exportReportCSV() {
     t.accounts?.currency || 'BRL',
     `"${(t.categories?.name||'').replace(/"/g,'""')}"`,
     `"${(t.payees?.name||'').replace(/"/g,'""')}"`,
+    `"${(t.tags||[]).join(', ').replace(/"/g,'""')}"`,
     String(t.amount).replace('.', ','),
     t.amount < 0 ? 'Despesa' : 'Receita',
     `"${(t.memo||'').replace(/"/g,'""')}"`,
