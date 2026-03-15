@@ -199,6 +199,12 @@ async function loadReports() {
     expMap[n].total+=Math.abs(t.amount); expMap[n].count++;
   });
   const expEntries = Object.entries(expMap).sort((a,b)=>b[1].total-a[1].total);
+  // Always destroy stale instance — even if there is no data to render,
+  // so filters don't leave the previous chart visible
+  if(state.chartInstances['reportCatChart']) {
+    state.chartInstances['reportCatChart'].destroy();
+    delete state.chartInstances['reportCatChart'];
+  }
   if(expEntries.length){
     const _expColors = new Set();
     renderChart('reportCatChart','doughnut',expEntries.map(e=>e[0]),
@@ -215,6 +221,11 @@ async function loadReports() {
     incMap[n].total+=t.amount; incMap[n].count++;
   });
   const incEntries = Object.entries(incMap).sort((a,b)=>b[1].total-a[1].total);
+  // Always destroy stale instance first
+  if(state.chartInstances['reportIncomeChart']) {
+    state.chartInstances['reportIncomeChart'].destroy();
+    delete state.chartInstances['reportIncomeChart'];
+  }
   if(incEntries.length){
     const _incColors = new Set();
     renderChart('reportIncomeChart','doughnut',incEntries.map(e=>e[0]),
@@ -486,12 +497,25 @@ async function _ensureChartsRendered() {
     if (viewWasHidden && view) view.style.display = '';
     if (pageWasHidden && page) { page.style.visibility = 'hidden'; page.classList.add('active'); }
 
+    // Force chart instances to recalculate their dimensions now that the
+    // container is display:block. Chart.js renders at 0×0 if the canvas
+    // was inside a display:none parent at draw time.
+    Object.values(state.chartInstances || {}).forEach(ch => {
+      try { ch.resize(); } catch(e) {}
+    });
+
     // Always re-render: destroys old (potentially faded) chart instances
     // and creates fresh ones with correct colors and pixel ratio.
     await loadReports();
 
     // Wait two frames — first for Chart.js to draw, second for browser to composite
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    // Extra resize pass after render to ensure all canvases are at full resolution
+    Object.values(state.chartInstances || {}).forEach(ch => {
+      try { ch.resize(); } catch(e) {}
+    });
+    await new Promise(r => requestAnimationFrame(r));
 
     // Restore visibility (will be undone again in _buildReportPDF if needed)
     if (viewWasHidden && view) view.style.display = 'none';

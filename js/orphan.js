@@ -551,3 +551,179 @@ async function _doOrphanDelete(groups) {
   // Re-run scan to show updated state
   await runOrphanScan();
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ATTACHMENT ORPHAN SCANNER
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function scanOrphanAttachments() {
+  const btn = document.getElementById('attachScanBtn');
+  const out = document.getElementById('attachScanResults');
+  if (!btn || !out) return;
+  if (!sb) { toast('Sem conexão', 'error'); return; }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Verificando…';
+  out.innerHTML = '<div style="color:var(--muted);font-size:.82rem;padding:8px">Carregando…</div>';
+
+  try {
+    const BUCKET = 'fintrack-attachments';
+
+    // 1. Fetch all transactions that have an attachment_url
+    const { data: txRows, error: txErr } = await famQ(
+      sb.from('transactions')
+        .select('id, description, date, attachment_url, attachment_name, family_id')
+    ).not('attachment_url', 'is', null);
+    if (txErr) throw txErr;
+
+    // 2. List all files in the bucket under transactions/
+    const { data: storageList, error: stErr } = await sb.storage
+      .from(BUCKET)
+      .list('transactions', { limit: 1000, offset: 0 });
+    // Note: this lists one level deep — each entry is a tx folder
+    // We may not have enough permission for this; handle gracefully
+    const storageBrowsable = !stErr && Array.isArray(storageList);
+
+    // 3. Build a set of known storage paths from DB rows
+    //    We can extract the path from the public URL:
+    //    https://<proj>.supabase.co/storage/v1/object/public/BUCKET/path/file.ext
+    function extractPath(url) {
+      if (!url) return null;
+      const marker = '/' + BUCKET + '/';
+      const idx = url.indexOf(marker);
+      if (idx === -1) return null;
+      return decodeURIComponent(url.slice(idx + marker.length).split('?')[0]);
+    }
+
+    // 4. For each transaction with attachment_url, attempt a HEAD request to verify existence
+    //    Supabase public URLs return 200 if file exists, 400/404 if not.
+    const broken = [];
+    const total  = (txRows || []).length;
+
+    out.innerHTML = `<div style="color:var(--muted);font-size:.82rem;padding:8px">Verificando ${total} anexo${total !== 1 ? 's' : ''}…</div>`;
+
+    for (let i = 0; i < (txRows || []).length; i++) {
+      const tx = txRows[i];
+      const url = tx.attachment_url;
+      if (!url) continue;
+
+      // Update progress every 10 items
+      if (i % 10 === 0) {
+        out.innerHTML = `<div style="color:var(--muted);font-size:.82rem;padding:8px">Verificando ${i + 1}/${total}…</div>`;
+      }
+
+      try {
+        const res = await fetch(url, { method: 'HEAD' });
+        if (!res.ok) {
+          broken.push({ tx, path: extractPath(url), status: res.status });
+        }
+      } catch(e) {
+        // Network error — treat as broken
+        broken.push({ tx, path: extractPath(url), status: 'network-error' });
+      }
+    }
+
+    // 5. Render results
+    if (!broken.length) {
+      out.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;background:var(--accent-lt);border-radius:var(--r-sm);border:1px solid var(--accent)">
+          <span style="font-size:1.1rem">✅</span>
+          <span style="font-size:.84rem;color:var(--accent);font-weight:600">
+            Todos os ${total} anexo${total !== 1 ? 's' : ''} verificado${total !== 1 ? 's' : ''} — nenhum órfão encontrado.
+          </span>
+        </div>`;
+    } else {
+      const rows = broken.map((b, i) => `
+        <tr>
+          <td style="padding:6px 8px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="attachOrphan_${i}" checked style="width:14px;height:14px">
+              <span style="font-size:.78rem;font-weight:600">${esc(b.tx.description || b.tx.id)}</span>
+            </label>
+            <div style="font-size:.7rem;color:var(--muted);margin-left:20px">
+              ${b.tx.date} · ID: ${b.tx.id.slice(0,8)}…
+              ${b.tx.attachment_name ? '· ' + esc(b.tx.attachment_name) : ''}
+            </div>
+            <div style="font-size:.7rem;color:var(--red);margin-left:20px;word-break:break-all">
+              HTTP ${b.status} → ${esc(b.path || b.tx.attachment_url)}
+            </div>
+          </td>
+        </tr>`).join('');
+
+      out.innerHTML = `
+        <div style="margin-bottom:10px;padding:10px 14px;background:#fff5f5;border:1px solid #fca5a5;border-radius:var(--r-sm)">
+          <div style="font-size:.85rem;font-weight:700;color:var(--red);margin-bottom:4px">
+            ⚠️ ${broken.length} anexo${broken.length !== 1 ? 's' : ''} órfão${broken.length !== 1 ? 's' : ''} detectado${broken.length !== 1 ? 's' : ''}
+          </div>
+          <div style="font-size:.75rem;color:var(--muted)">
+            Estas transações têm <code>attachment_url</code> referenciando arquivos que não existem mais no Storage.
+            Limpar os campos evita links quebrados na UI.
+          </div>
+        </div>
+        <table style="width:100%;border-collapse:collapse">${rows}</table>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" onclick="fixOrphanAttachments(${JSON.stringify(broken.map((_,i)=>i))})">
+            🔧 Limpar campos de anexo selecionados
+          </button>
+          <button class="btn btn-ghost btn-sm" onclick="
+            document.querySelectorAll('[id^=attachOrphan_]').forEach(c=>c.checked=true)
+          ">Selecionar todos</button>
+          <button class="btn btn-ghost btn-sm" onclick="
+            document.querySelectorAll('[id^=attachOrphan_]').forEach(c=>c.checked=false)
+          ">Desmarcar todos</button>
+        </div>`;
+      // store for fix fn
+      window._attachOrphanRows = broken;
+    }
+
+  } catch(e) {
+    out.innerHTML = `<div style="color:var(--red);font-size:.82rem;padding:8px">Erro: ${esc(e.message || String(e))}</div>`;
+    console.error('[scanOrphanAttachments]', e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 Verificar Anexos';
+  }
+}
+
+async function fixOrphanAttachments(indices) {
+  const rows = window._attachOrphanRows || [];
+  // Only process checked ones
+  const selected = indices.filter(i => {
+    const el = document.getElementById(`attachOrphan_${i}`);
+    return el?.checked;
+  });
+  if (!selected.length) { toast('Nenhum item selecionado', 'warning'); return; }
+
+  const confirmed = confirm(
+    `Limpar os campos attachment_url e attachment_name de ${selected.length} transação${selected.length !== 1 ? 'ões' : ''}?\n\n` +
+    `Os registros de transação são mantidos. Apenas o link para o arquivo inexistente é removido.`
+  );
+  if (!confirmed) return;
+
+  let fixed = 0;
+  const errors = [];
+
+  for (const i of selected) {
+    const b = rows[i];
+    if (!b) continue;
+    try {
+      const { error } = await sb.from('transactions')
+        .update({ attachment_url: null, attachment_name: null })
+        .eq('id', b.tx.id);
+      if (error) throw error;
+      fixed++;
+    } catch(e) {
+      errors.push(`${b.tx.id.slice(0,8)}: ${e.message}`);
+    }
+  }
+
+  if (errors.length) {
+    console.error('[fixOrphanAttachments] errors:', errors);
+    toast(`${fixed} corrigido${fixed !== 1 ? 's' : ''}; ${errors.length} erro${errors.length !== 1 ? 's' : ''}`, 'warning');
+  } else {
+    toast(`✅ ${fixed} anexo${fixed !== 1 ? 's' : ''} órfão${fixed !== 1 ? 's' : ''} removido${fixed !== 1 ? 's' : ''}`, 'success');
+  }
+
+  // Re-run scan
+  await scanOrphanAttachments();
+}
