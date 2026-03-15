@@ -1017,9 +1017,11 @@
               <option value="">Todas as contas</option>
             </select>
           </div>
-          <div style="display:flex;align-items:flex-end;padding-bottom:2px">
-            <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;cursor:pointer;margin-bottom:0">
-              <input type="checkbox" id="forecastIncludeScheduled" checked onchange="loadForecast()">
+          <div>
+            <label style="font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);display:block;margin-bottom:4px">Opções</label>
+            <label style="display:flex;align-items:center;gap:7px;font-size:.83rem;font-weight:500;cursor:pointer;padding:6px 0">
+              <input type="checkbox" id="forecastIncludeScheduled" checked onchange="loadForecast()"
+                style="width:15px;height:15px;flex-shrink:0;accent-color:var(--accent)">
               Incluir programados
             </label>
           </div>
