@@ -1199,6 +1199,19 @@ function _familyDisplayName(id, fallback='') {
   return fallback || id || '';
 }
 
+// ── Tab switch for family management panel ──────────────────────────────────
+function _switchFamTab(familyId) {
+  // Deactivate all tabs and panels
+  document.querySelectorAll('.fam-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.fam-panel').forEach(p => p.classList.remove('active'));
+  // Activate selected
+  const tab   = document.getElementById('famTab-' + familyId);
+  const panel = document.getElementById('famPanel-' + familyId);
+  if (tab)   tab.classList.add('active');
+  if (panel) panel.classList.add('active');
+}
+
+
 async function openUserAdmin() {
   const isAdmin       = currentUser?.role === 'admin';       // acesso total
   const isFamilyOwner = _currentUserIsFamilyOwner();         // owner de ≥1 família
@@ -1520,120 +1533,187 @@ async function loadFamiliesList() {
   const newFamBtn = document.querySelector('#uaFamilies .btn-primary');
   if (newFamBtn) newFamBtn.style.display = '';
 
-  el.innerHTML = visibleFamilies.map(f => {
+  // ── Build tab strip + panels ─────────────────────────────────────────────
+  // One tab per family; each tab shows that family's panel when clicked.
+  // Mobile-first: tab strip scrolls horizontally, all panels stacked below tabs.
+
+  const fmcEscape = s => String(s||'').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+
+  function _familyTab(f, isActive) {
     const members = membersByFamily[f.id] || [];
+    const name    = esc(_familyDisplayName(f.id, f.name || ''));
+    return `<button
+      class="fam-tab${isActive ? ' active' : ''}"
+      onclick="_switchFamTab('${f.id}')"
+      id="famTab-${f.id}"
+      title="${name}">
+      <span class="fam-tab-icon">🏠</span>
+      <span class="fam-tab-name">${name}</span>
+      <span class="fam-tab-count">${members.length}</span>
+    </button>`;
+  }
+
+  function _memberRow(m, fid) {
+    const roleOpts = ['owner','admin','user','viewer'].map(r => {
+      const icons = {owner:'👑',admin:'🔧',user:'👤',viewer:'👁'};
+      const labels = {owner:'Owner',admin:'Admin',user:'Usuário',viewer:'Visualizador'};
+      return `<option value="${r}" ${m.member_role===r?'selected':''}>${icons[r]} ${labels[r]}</option>`;
+    }).join('');
+    return `
+      <div class="fam-member-row">
+        <div class="fam-member-info">
+          ${_userAvatarHtml({ avatar_url: m.user_avatar, role: m.user_role, name: m.user_name }, 32)}
+          <div class="fam-member-text">
+            <div class="fam-member-name">${esc(m.user_name||'—')}</div>
+            <div class="fam-member-email">${esc(m.user_email||'—')}</div>
+          </div>
+        </div>
+        <div class="fam-member-actions">
+          <select class="fam-role-select" data-uid="${m.user_id}" data-fid="${fid}" onchange="updateMemberRole(this)">
+            ${roleOpts}
+          </select>
+          <button class="fam-remove-btn" title="Remover"
+            onclick="removeUserFromFamily('${m.user_id}','${fmcEscape(m.user_name||m.user_email)}','${fmcEscape(_familyDisplayName(fid, ''))}','${fid}')">✕</button>
+        </div>
+      </div>`;
+  }
+
+  function _familyPanel(f, members, available, isActive) {
+    const fid   = f.id;
+    const fname = _familyDisplayName(fid, f.name || '');
+    const _groceryOn = !!(_fc['grocery_enabled_' + fid]);
+    const _pricesOn  = !!(_fc['prices_enabled_'  + fid]);
+    const isOwner    = isGlobalAdmin || members.some(m => m.user_id === currentUser?.id && m.member_role === 'owner');
 
     const membersHtml = members.length
-      ? members.map(m => `
-        <div class="fm-row" data-member-id="${m.member_id||''}" data-user-id="${m.user_id}" data-family-id="${f.id}">
-          <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
-            ${_userAvatarHtml({ avatar_url: m.user_avatar, role: m.user_role, name: m.user_name }, 30)}
-            <div style="min-width:0">
-              <div style="font-size:.83rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.user_name||'—')}</div>
-              <div style="font-size:.72rem;color:var(--muted)">${esc(m.user_email||'—')}</div>
-            </div>
-          </div>
-          <select class="fm-role-sel" data-uid="${m.user_id}" data-fid="${f.id}"
-                  style="font-size:.78rem;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);width:120px"
-                  onchange="updateMemberRole(this)">
-            <option value="owner"   ${m.member_role==='owner'   ? 'selected':''}>👑 Owner</option>
-            <option value="admin"   ${m.member_role==='admin'   ? 'selected':''}>🔧 Admin</option>
-            <option value="user"    ${m.member_role==='user'    ? 'selected':''}>👤 Usuário</option>
-            <option value="viewer"  ${m.member_role==='viewer'  ? 'selected':''}>👁 Visualizador</option>
-          </select>
-          <button class="btn-icon" title="Remover da família"
-                  onclick="removeUserFromFamily('${m.user_id}','${esc(m.user_name||m.user_email)}','${esc(_familyDisplayName(f.id, f.name||''))}','${f.id}')">✕</button>
-        </div>`).join('')
-      : '<div style="font-size:.78rem;color:var(--muted);padding:10px 0;text-align:center">Nenhum membro ainda</div>';
+      ? members.map(m => _memberRow(m, fid)).join('')
+      : `<div class="fam-empty">Nenhum usuário vinculado ainda</div>`;
 
-    // Usuários que ainda NÃO são membros desta família
-    const available = (allUsers||[]).filter(u => !familiesByUser[u.id]?.has(f.id));
-
-    const _groceryOn = !!(_fc['grocery_enabled_' + f.id]);
-    const _pricesOn  = !!(_fc['prices_enabled_'  + f.id]);
-    return `<div class="card" style="margin-bottom:14px">
-      <div class="card-header">
-        <div style="display:flex;align-items:center;gap:10px">
-          <div style="width:38px;height:38px;border-radius:10px;background:var(--accent-lt);display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0">🏠</div>
-          <div>
-            <div style="font-weight:700;font-size:.95rem">${esc(_familyDisplayName(f.id, f.name||''))}</div>
-            <div style="font-size:.74rem;color:var(--muted)">${members.length} membro${members.length!==1?'s':''} ${f.description ? '· ' + esc(f.description) : ''}</div>
-          </div>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <button id="famGroceryBtn-${f.id}"
-            class="fam-mod-btn${_groceryOn?' active':''}"
-            onclick="_famToggleModule('${f.id}','grocery_enabled_','famGroceryBtn-${f.id}','applyGroceryFeature')"
-            title="${_groceryOn?'Desativar':'Ativar'} Mercado">
-            🛒 Mercado <span class="fam-mod-dot">${_groceryOn?'●':'○'}</span>
-          </button>
-          <button id="famPricesBtn-${f.id}"
-            class="fam-mod-btn${_pricesOn?' active':''}"
-            onclick="_famToggleModule('${f.id}','prices_enabled_','famPricesBtn-${f.id}','applyPricesFeature')"
-            title="${_pricesOn?'Desativar':'Ativar'} Preços">
-            🏷️ Preços <span class="fam-mod-dot">${_pricesOn?'●':'○'}</span>
-          </button>
-          ${(isGlobalAdmin || membersByFamily[f.id]?.some(m => m.user_email === currentUser?.email && m.member_role === 'owner')) ? `
-            <button class="btn btn-ghost btn-sm" onclick="editFamily('${f.id}')" style="padding:3px 10px;font-size:.73rem">✏️ Editar</button>
-            <button class="btn btn-ghost btn-sm" onclick="openDbBackupCreateForFamily('${f.id}','${esc(_familyDisplayName(f.id, f.name||'')).replace(/'/g,"\\'")}')" style="padding:3px 10px;font-size:.73rem" title="Criar snapshot desta família">📸 Backup</button>
-            <button class="btn btn-ghost btn-sm" onclick="openFamilyBackupManager('${f.id}','${esc(_familyDisplayName(f.id, f.name||'')).replace(/'/g,"\\'")}')" style="padding:3px 10px;font-size:.73rem" title="Ver e restaurar snapshots desta família">🗂️ Snapshots</button>
-            <button class="btn btn-ghost btn-sm" id="wipeFamBtn-${f.id}" onclick="wipeFamilyData('${f.id}','${esc(f.name).replace(/'/g,"\\'")}')" style="padding:3px 10px;font-size:.73rem;color:var(--amber,#f59e0b)" title="Apagar todos os dados desta família">🗑️ Dados</button>
-            <button class="btn btn-ghost btn-sm" onclick="deleteFamily('${f.id}','${esc(f.name).replace(/'/g,"\\'")}')" style="padding:3px 10px;font-size:.73rem;color:var(--red)" title="Excluir família">✕ Excluir</button>
-          ` : ''}
-        </div>
-      </div>
-      <div style="padding:4px 0">
-        ${membersHtml}
-        ${available.length ? `
-        <div class="fm-add-row">
-          <select id="addMemberSel-${f.id}" style="font-size:.8rem;flex:1">
-            <option value="">— Adicionar usuário existente —</option>
+    const addRow = available.length ? `
+      <div class="fam-section">
+        <div class="fam-section-title">➕ Adicionar usuário existente</div>
+        <div class="fam-add-form">
+          <select id="addMemberSel-${fid}" class="fam-select">
+            <option value="">— Selecionar usuário —</option>
             ${available.map(u => `<option value="${u.id}">${esc(u.name||u.email)}</option>`).join('')}
           </select>
-          <select id="addMemberRole-${f.id}" style="font-size:.8rem;width:130px">
+          <select id="addMemberRole-${fid}" class="fam-select fam-select-role">
             <option value="user">👤 Usuário</option>
             <option value="admin">🔧 Admin</option>
             <option value="viewer">👁 Visualizador</option>
             <option value="owner">👑 Owner</option>
           </select>
-          <button class="btn btn-primary btn-sm" onclick="addUserToFamily('${f.id}')"
-                  style="font-size:.78rem;white-space:nowrap">+ Adicionar</button>
-        </div>` : ''}
-        <!-- Convidar novo usuário por e-mail -->
-        <div class="fm-invite-row">
-          <span style="font-size:.73rem;color:var(--muted);font-weight:600;white-space:nowrap">📨 Convidar por e-mail:</span>
-          <input type="email" id="inviteEmail-${f.id}" placeholder="email@exemplo.com"
-                 style="font-size:.8rem;flex:1;min-width:140px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)"
-                 onkeydown="if(event.key==='Enter')inviteToFamily('${f.id}','${esc(f.name).replace(/'/g,"\\'")}')" />
-          <select id="inviteRole-${f.id}" style="font-size:.8rem;width:120px">
+          <button class="btn btn-primary fam-btn-full" onclick="addUserToFamily('${fid}')">+ Adicionar</button>
+        </div>
+      </div>` : '';
+
+    const inviteRow = `
+      <div class="fam-section">
+        <div class="fam-section-title">📨 Convidar por e-mail</div>
+        <div class="fam-invite-form">
+          <input type="email" id="inviteEmail-${fid}" placeholder="email@exemplo.com" class="fam-input"
+            onkeydown="if(event.key==='Enter')inviteToFamily('${fid}','${fmcEscape(fname)}')">
+          <select id="inviteRole-${fid}" class="fam-select fam-select-role">
             <option value="user">👤 Usuário</option>
             <option value="admin">🔧 Admin</option>
             <option value="viewer">👁 Visualizador</option>
             <option value="owner">👑 Owner</option>
           </select>
-          <button class="btn btn-primary btn-sm" id="inviteBtn-${f.id}"
-                  onclick="inviteToFamily('${f.id}','${esc(f.name).replace(/'/g,"\\'")}')"
-                  style="font-size:.78rem;white-space:nowrap">📨 Convidar</button>
+          <button class="btn btn-primary fam-btn-full" id="inviteBtn-${fid}"
+            onclick="inviteToFamily('${fid}','${fmcEscape(fname)}')">📨 Convidar</button>
+        </div>
+      </div>`;
+
+    const modulesRow = `
+      <div class="fam-section">
+        <div class="fam-section-title">🧩 Módulos</div>
+        <div class="fam-modules">
+          <button id="famGroceryBtn-${fid}"
+            class="fam-mod-chip${_groceryOn?' active':''}"
+            onclick="_famToggleModule('${fid}','grocery_enabled_','famGroceryBtn-${fid}','applyGroceryFeature')">
+            🛒 Mercado <span>${_groceryOn?'●':'○'}</span>
+          </button>
+          <button id="famPricesBtn-${fid}"
+            class="fam-mod-chip${_pricesOn?' active':''}"
+            onclick="_famToggleModule('${fid}','prices_enabled_','famPricesBtn-${fid}','applyPricesFeature')">
+            🏷️ Preços <span>${_pricesOn?'●':'○'}</span>
+          </button>
+        </div>
+      </div>`;
+
+    const adminActions = isOwner ? `
+      <div class="fam-section fam-danger-zone">
+        <div class="fam-section-title">⚙️ Ações</div>
+        <div class="fam-action-grid">
+          <button class="fam-action-btn" onclick="editFamily('${fid}')">✏️ Editar</button>
+          <button class="fam-action-btn" onclick="openDbBackupCreateForFamily('${fid}','${fmcEscape(fname)}')">📸 Backup</button>
+          <button class="fam-action-btn" onclick="openFamilyBackupManager('${fid}','${fmcEscape(fname)}')">🗂️ Snapshots</button>
+          <button class="fam-action-btn fam-action-warn" id="wipeFamBtn-${fid}"
+            onclick="wipeFamilyData('${fid}','${fmcEscape(f.name)}')">🗑️ Dados</button>
+          <button class="fam-action-btn fam-action-danger"
+            onclick="deleteFamily('${fid}','${fmcEscape(f.name)}')">✕ Excluir</button>
+        </div>
+      </div>` : '';
+
+    const compositionSection = isOwner ? `
+      <div class="fam-section">
+        <div class="fam-section-header">
+          <div class="fam-section-title">👨‍👩‍👧 Membros da Família
+            <span id="fmcBadge-${fid}" class="fam-badge-muted">carregando…</span>
+          </div>
+          <button class="btn btn-primary btn-sm fam-btn-sm"
+            onclick="openFamilyMemberFormForFamily('${fid}')">+ Membro</button>
+        </div>
+        <div id="fmcList-${fid}" class="fam-fmc-list">
+          <div class="fam-loading">Carregando…</div>
+        </div>
+      </div>` : '';
+
+    return `
+      <div class="fam-panel${isActive ? ' active' : ''}" id="famPanel-${fid}">
+        <!-- Header -->
+        <div class="fam-panel-header">
+          <div class="fam-panel-title">
+            <span class="fam-panel-icon">🏠</span>
+            <div>
+              <div class="fam-panel-name">${esc(fname)}</div>
+              <div class="fam-panel-meta">
+                ${members.length} membro${members.length!==1?'s':''}${f.description ? ' · ' + esc(f.description) : ''}
+              </div>
+            </div>
+          </div>
         </div>
 
-        ${(isGlobalAdmin || members.some(m => m.user_id === currentUser?.id && m.member_role === 'owner')) ? `
-        <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="font-size:.82rem;font-weight:700;color:var(--text)">👨&#x200D;👩&#x200D;👧 Membros da Família</span>
-              <span id="fmcBadge-${f.id}" style="font-size:.7rem;color:var(--muted)">carregando…</span>
-            </div>
-            <button class="btn btn-primary btn-sm"
-              onclick="openFamilyMemberFormForFamily('${f.id}')"
-              style="font-size:.75rem;padding:4px 10px">+ Membro</button>
-          </div>
-          <div id="fmcList-${f.id}" style="display:flex;flex-direction:column;gap:6px">
-            <div style="color:var(--muted);font-size:.78rem;text-align:center;padding:10px 0">Carregando…</div>
-          </div>
-        </div>` : ''}
-      </div>
+        <!-- Modules -->
+        ${modulesRow}
+
+        <!-- Users -->
+        <div class="fam-section">
+          <div class="fam-section-title">👤 Usuários vinculados</div>
+          <div class="fam-members-list">${membersHtml}</div>
+        </div>
+
+        ${addRow}
+        ${inviteRow}
+        ${compositionSection}
+        ${adminActions}
+      </div>`;
+  }
+
+  // Build tab strip
+  const tabsHtml = `
+    <div class="fam-tabs" id="famTabsStrip">
+      ${visibleFamilies.map((f, i) => _familyTab(f, i === 0)).join('')}
     </div>`;
+
+  // Build all panels
+  const panelsHtml = visibleFamilies.map((f, i) => {
+    const members  = membersByFamily[f.id] || [];
+    const available = (allUsers||[]).filter(u => !familiesByUser[u.id]?.has(f.id));
+    return _familyPanel(f, members, available, i === 0);
   }).join('');
+
+  el.innerHTML = tabsHtml + `<div class="fam-panels">${panelsHtml}</div>`;
 
   // Load family composition (members) for each visible family where user is owner/admin
   setTimeout(async () => {
