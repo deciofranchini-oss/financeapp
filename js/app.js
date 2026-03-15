@@ -137,12 +137,182 @@ async function initSupabase(){
     resetAutoLockTimer();
   }catch(e){toast('Erro: '+e.message,'error');}
 }
+/**
+ * _handleSupabaseEmailRedirect()
+ *
+ * Supabase email links (confirmation, reset, magic link) go to the URL configured
+ * as "Site URL" in the Supabase Dashboard. If that URL points to the root domain
+ * (e.g. https://deciofranchini-oss.github.io) but the app lives at a sub-path
+ * (e.g. /fintrack/), email links land on the wrong page and the code/hash is lost.
+ *
+ * This function detects that situation and redirects to the correct app location,
+ * preserving the original query string and hash so the auth flow can continue.
+ *
+ * PERMANENT FIX: Set the Supabase Dashboard "Site URL" to:
+ *   https://deciofranchini-oss.github.io/fintrack/
+ * and add it to "Redirect URLs" as well.
+ */
+function _handleSupabaseEmailRedirect() {
+  try {
+    const appBase    = getAppBaseUrl();
+    const rootOrigin = window.location.origin + '/';
+
+    // Are we on the root path but app lives in a subdirectory?
+    const onWrongPath = (window.location.pathname === '/' || window.location.pathname === '/index.html')
+      && appBase !== rootOrigin;
+
+    // Does the URL contain a Supabase auth signal?
+    const qs   = window.location.search;
+    const hash = window.location.hash;
+    const hasAuthCode = qs.includes('code=') || qs.includes('token=');
+    const hasAuthHash = hash.includes('access_token') || hash.includes('type=recovery')
+      || hash.includes('error=');
+
+    if (onWrongPath && (hasAuthCode || hasAuthHash)) {
+      // Redirect to the correct app path, preserving query + hash
+      const target = appBase + 'index.html' + qs + hash;
+      console.log('[auth-redirect] Redirecting from root to app path:', target);
+      window.location.replace(target);
+      return; // Page will reload
+    }
+  } catch(e) {
+    console.warn('[auth-redirect]', e.message);
+  }
+}
+
+/**
+ * _detectAndShowAuthError()
+ *
+ * Supabase encodes errors in the URL hash when an email link fails:
+ *   #error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+...
+ *
+ * Without handling this, the login screen appears with no explanation.
+ * This function detects the error, shows a friendly modal, cleans the URL,
+ * and returns true so tryAutoConnect() can skip the normal boot.
+ */
+function _detectAndShowAuthError() {
+  try {
+    const hash = window.location.hash;
+    if (!hash.includes('error=')) return false;
+
+    const params = Object.fromEntries(
+      hash.slice(1).split('&').map(p => {
+        const eq = p.indexOf('=');
+        return [decodeURIComponent(p.slice(0, eq)), decodeURIComponent(p.slice(eq + 1).replace(/\+/g, ' '))];
+      })
+    );
+
+    if (!params.error) return false;
+
+    // Clean the URL so a refresh doesn't re-trigger this
+    history.replaceState(null, '', window.location.pathname);
+
+    const errorCode   = params.error_code   || params.error || 'unknown';
+    const description = params.error_description || 'Ocorreu um erro de autenticação.';
+
+    // Map Supabase error codes to user-friendly Portuguese messages
+    const messages = {
+      'otp_expired': {
+        title: 'Link expirado',
+        body:  'Este link de e-mail já expirou. Links são válidos por 1 hora.',
+        hint:  'Se precisar redefinir a senha, use a opção "Esqueci minha senha" na tela de login.',
+        icon:  '⏱️',
+      },
+      'access_denied': {
+        title: 'Acesso negado',
+        body:  description,
+        hint:  'Tente novamente ou entre em contato com o administrador.',
+        icon:  '🚫',
+      },
+      'email_not_confirmed': {
+        title: 'E-mail não confirmado',
+        body:  'Seu e-mail ainda não foi confirmado.',
+        hint:  'Verifique sua caixa de entrada e clique no link de confirmação.',
+        icon:  '📧',
+      },
+    };
+
+    // Use specific message or fall back to generic
+    const msg = messages[errorCode] || {
+      title: 'Erro de autenticação',
+      body:  description,
+      hint:  'Tente novamente ou entre em contato com o administrador.',
+      icon:  '⚠️',
+    };
+
+    // Show setup screen first (credentials may not be loaded yet)
+    // then overlay the error message on top of login
+    const creds = getSupabaseCreds();
+    if (creds.url && creds.key) {
+      // Credentials exist — show login screen with error overlay
+      showLoginScreen?.();
+      setTimeout(() => _showAuthErrorBanner(msg), 300);
+    } else {
+      // No credentials — show setup screen with error
+      const setup = document.getElementById('setupScreen');
+      if (setup) setup.style.display = 'flex';
+      setTimeout(() => _showAuthErrorBanner(msg), 300);
+    }
+
+    return true; // Halt normal boot
+  } catch(e) {
+    console.warn('[auth-error-detect]', e.message);
+    return false;
+  }
+}
+
+function _showAuthErrorBanner(msg) {
+  // Remove any existing banner
+  document.getElementById('authErrorBanner')?.remove();
+
+  const banner = document.createElement('div');
+  banner.id = 'authErrorBanner';
+  banner.style.cssText = [
+    'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:19999',
+    'background:linear-gradient(135deg,#fef2f2,#fff5f5)',
+    'border-bottom:3px solid #dc2626',
+    'padding:20px 24px', 'box-shadow:0 4px 24px rgba(220,38,38,.18)',
+    'animation:slideDown .3s ease',
+  ].join(';');
+
+  banner.innerHTML = `
+    <div style="max-width:560px;margin:0 auto;display:flex;align-items:flex-start;gap:14px">
+      <span style="font-size:2rem;flex-shrink:0;margin-top:2px">${msg.icon}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:1rem;color:#991b1b;margin-bottom:4px">${msg.title}</div>
+        <div style="font-size:.87rem;color:#7f1d1d;margin-bottom:6px">${msg.body}</div>
+        <div style="font-size:.8rem;color:#92400e;background:#fef3c7;border-radius:6px;padding:6px 10px;border-left:3px solid #f59e0b">
+          💡 ${msg.hint}
+        </div>
+      </div>
+      <button onclick="this.closest('#authErrorBanner').remove()"
+        style="flex-shrink:0;background:none;border:none;cursor:pointer;font-size:1.2rem;color:#9ca3af;padding:0;line-height:1;margin-top:2px">✕</button>
+    </div>
+    <style>@keyframes slideDown{from{transform:translateY(-100%)}to{transform:translateY(0)}}</style>`;
+
+  document.body.insertAdjacentElement('afterbegin', banner);
+}
+
 async function tryAutoConnect(){
   const creds=getSupabaseCreds();
   const url=creds.url, key=creds.key;
   if(url&&key){
     document.getElementById('supabaseUrl').value=url;
     document.getElementById('supabaseKey').value=key;
+
+    // ── Supabase email link cross-path redirect ───────────────────────────────
+    // When Supabase Dashboard "Site URL" is set to the root (e.g. /),
+    // but the app lives at /fintrack/, email links land on the wrong page.
+    // We fix this by storing the canonical app URL in localStorage and
+    // redirecting any stray code/hash back to the right location.
+    _handleSupabaseEmailRedirect();
+
+    // ── Error hash detection ──────────────────────────────────────────────────
+    // Supabase signals OTP errors via hash fragments like:
+    // #error=access_denied&error_code=otp_expired&error_description=...
+    // Detect this early and show a friendly message instead of silently
+    // showing the login screen with no explanation.
+    if (_detectAndShowAuthError()) return;
 
     // ── Password recovery detection ──────────────────────────────────────────
     // HOW SUPABASE v2 PKCE RESET WORKS:
@@ -247,6 +417,23 @@ async function tryAutoConnect(){
     const setup=document.getElementById('setupScreen');
     if(setup) setup.style.display='flex';
   }
+}
+
+/**
+ * Returns the canonical base URL of this app with trailing slash.
+ * Works whether hosted at root (/) or a subpath (/fintrack/).
+ * Always use this instead of window.location.origin + window.location.pathname
+ * so that Supabase email links point to the correct location.
+ *
+ * Examples:
+ *   https://deciofranchini-oss.github.io/fintrack/index.html → https://deciofranchini-oss.github.io/fintrack/
+ *   https://localhost:5500/ → https://localhost:5500/
+ */
+function getAppBaseUrl() {
+  const { origin, pathname } = window.location;
+  // Strip filename (index.html) and ensure trailing slash
+  const base = pathname.endsWith('/') ? pathname : pathname.substring(0, pathname.lastIndexOf('/') + 1);
+  return origin + base;
 }
 
 const DEFAULT_LOGO_URL='https://deciofranchini-oss.github.io/fintrack/logo.png';

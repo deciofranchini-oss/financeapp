@@ -482,7 +482,7 @@ async function doMagicLink() {
     }
 
     // Send the magic link via Supabase OTP
-    const redirectTo = window.location.origin + window.location.pathname;
+    const redirectTo = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
     const { error } = await sb.auth.signInWithOtp({
       email,
       options: { emailRedirectTo: redirectTo, shouldCreateUser: false },
@@ -1098,7 +1098,7 @@ async function doForgotPwd() {
   if (!email) { errEl.textContent = 'Informe seu e-mail.'; errEl.style.display = ''; return; }
   btn.disabled = true; btn.textContent = '⏳ Enviando...';
   try {
-    const redirectTo = window.location.origin + window.location.pathname;
+    const redirectTo = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
     const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
     if (error) throw error;
     errEl.textContent = '✅ Se este e-mail estiver cadastrado, você receberá o link de recuperação em breve. Verifique também a pasta de spam.';
@@ -1940,7 +1940,7 @@ async function _sendInviteEmail(toEmail, familyName, inviterName) {
     const serviceId  = autoCheckConfig?.emailServiceId  || 'service_8e4rkde';
     const publicKey  = autoCheckConfig?.emailPublicKey  || 'wwnXjEFDaVY7K-qIjwX0H';
     const templateId = autoCheckConfig?.emailTemplateId || 'template_fla7gdi';
-    const appUrl     = window.location.origin + window.location.pathname;
+    const appUrl     = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
 
     await emailjs.send(serviceId, templateId, {
       to_email:       toEmail,
@@ -2662,7 +2662,7 @@ async function _sendApprovalEmail(email, name, familyName) {
 
   // 1. Enviar link de redefinição de senha (Supabase) para o usuário definir a própria senha
   try {
-    const redirectTo = window.location.origin + window.location.pathname;
+    const redirectTo = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
     await sb.auth.resetPasswordForEmail(email, { redirectTo });
   } catch(e) { console.warn('[approval] resetPasswordForEmail:', e.message); }
 
@@ -2736,7 +2736,7 @@ async function _sendNewUserWelcomeEmail(email, name, familyName, tempPassword) {
 
   const nameEsc = (name || 'Usuário').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
   const famEsc  = (familyName || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
-  const appUrl  = window.location.origin + window.location.pathname;
+  const appUrl  = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
 
   const famBlock = familyName
     ? `<div style="background:#f0fdf4;border-left:4px solid #22c55e;border-radius:6px;padding:12px 16px;margin-bottom:20px">
@@ -2885,7 +2885,7 @@ async function doResetUserPwd() {
 
     if (!authUpdated) {
       // Fallback: enviar link de redefinição por email
-      const redirectTo = window.location.origin + window.location.pathname;
+      const redirectTo = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
       const { error: resetErr } = await sb.auth.resetPasswordForEmail(targetEmail, { redirectTo });
       if (resetErr) throw new Error('Sem Service Role Key configurada. Vá em Configurações → Service Role Key.');
       // Sincronizar app_users mesmo assim
