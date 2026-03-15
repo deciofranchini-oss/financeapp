@@ -6719,3 +6719,217 @@ tr.tx-row-new td:first-child {
   .dash-fav-card__balance { font-size: 1.1rem; }
   .dash-fav-card__icon { width: 30px; height: 30px; border-radius: 8px; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   PRICES PAGE — Modern grid redesign
+══════════════════════════════════════════════════════════════════════ */
+
+/* Grid container */
+.px-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+/* Card */
+.px-card {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 15px 12px;
+  cursor: pointer;
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+  overflow: hidden;
+}
+
+.px-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--px-clr, var(--accent));
+  border-radius: 14px 14px 0 0;
+  opacity: .7;
+}
+
+.px-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0,0,0,.09);
+  border-color: var(--px-clr, var(--accent));
+}
+
+.px-card:active { transform: scale(.98); }
+
+/* Top row: avatar + category badge + cart btn */
+.px-card-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.px-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .72rem;
+  font-weight: 800;
+  letter-spacing: -.02em;
+  flex-shrink: 0;
+}
+
+.px-cat-badge {
+  font-size: .65rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+  flex: 1;
+}
+
+.px-cart-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  font-size: .85rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s;
+  color: var(--accent);
+}
+
+.px-cart-btn:hover {
+  background: var(--accent-lt);
+  border-color: var(--accent);
+  transform: scale(1.1);
+}
+
+/* Item name */
+.px-name {
+  font-size: .92rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.px-unit {
+  font-size: .68rem;
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--surface2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.px-desc {
+  font-size: .73rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Prices row */
+.px-prices {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.px-price-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 7px 4px 6px;
+  border-right: 1px solid var(--border);
+  background: var(--surface2);
+}
+
+.px-price-col:last-child { border-right: none; }
+
+.px-price-lbl {
+  font-size: .6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  margin-bottom: 3px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.px-price-val {
+  font-size: .82rem;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.px-price-val.accent { color: var(--accent); }
+
+/* Trend indicators */
+.px-trend { font-size: .7rem; font-weight: 700; }
+.px-trend.up { color: var(--red); }
+.px-trend.dn { color: var(--green); }
+.px-trend.eq { color: var(--muted); }
+
+/* Footer progress bar (record count visualisation) */
+.px-card-footer { margin-top: 2px; }
+
+.px-progress {
+  height: 3px;
+  background: var(--border);
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.px-progress-bar {
+  height: 100%;
+  border-radius: 99px;
+  opacity: .5;
+  transition: width .4s ease;
+}
+
+/* Mobile: 2-col */
+@media (max-width: 600px) {
+  .px-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .px-card { padding: 12px 12px 10px; }
+  .px-avatar { width: 28px; height: 28px; font-size: .65rem; }
+  .px-name { font-size: .84rem; }
+  .px-price-val { font-size: .76rem; }
+  .px-price-lbl { font-size: .55rem; }
+}
+
+@media (max-width: 380px) {
+  .px-grid { grid-template-columns: 1fr; }
+}
