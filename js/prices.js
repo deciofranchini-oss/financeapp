@@ -154,28 +154,59 @@ function _renderPricesPage() {
       </div>`;
     return;
   }
-  listEl.innerHTML = `<div class="price-list">` +
+  listEl.innerHTML = `<div class="px-grid">` +
     items.map(item => {
-      const avg  = item.avg_price  != null ? fmt(item.avg_price)  : '—';
-      const last = item.last_price != null ? fmt(item.last_price) : '—';
-      const cat  = item.categories?.name || '';
+      const avg  = item.avg_price  != null ? fmt(item.avg_price)  : null;
+      const last = item.last_price != null ? fmt(item.last_price) : null;
+      const cnt  = item.record_count || 0;
+      const cat  = item.categories?.name  || '';
+      const catColor = item.categories?.color || 'var(--accent)';
+
+      // Trend arrow: compare last vs avg
+      let trend = '';
+      if (item.avg_price != null && item.last_price != null) {
+        if      (item.last_price > item.avg_price * 1.02) trend = '<span class="px-trend up">↑</span>';
+        else if (item.last_price < item.avg_price * 0.98) trend = '<span class="px-trend dn">↓</span>';
+        else                                               trend = '<span class="px-trend eq">→</span>';
+      }
+
+      // Visual avatar: first 2 chars of item name, coloured by category
+      const initials = item.name.trim().slice(0,2).toUpperCase();
+      const unitBadge = (item.unit && item.unit !== 'un')
+        ? `<span class="px-unit">${esc(item.unit)}</span>` : '';
+
       return `
-      <div class="price-card" onclick="openPriceItemDetail('${item.id}')">
-        <div class="price-card-body">
-          <div class="price-card-name">${esc(item.name)}${item.unit && item.unit !== 'un' ? ` <span style="font-size:.72rem;color:var(--muted);font-weight:400">${esc(item.unit)}</span>` : ''}</div>
-          ${cat  ? `<div class="price-card-tag">${esc(cat)}</div>` : ''}
-          ${item.description ? `<div class="price-card-desc">${esc(item.description)}</div>` : ''}
+      <div class="px-card" onclick="openPriceItemDetail('${item.id}')"
+           style="--px-clr:${catColor}">
+        <div class="px-card-top">
+          <div class="px-avatar" style="background:color-mix(in srgb,${catColor} 15%,transparent);color:${catColor}">${initials}</div>
+          ${cat ? `<span class="px-cat-badge" style="color:${catColor};background:color-mix(in srgb,${catColor} 12%,transparent)">${esc(cat)}</span>` : ''}
+          <button class="px-cart-btn" title="Adicionar à lista de compras"
+                  onclick="event.stopPropagation();openAddToGroceryList('${item.id}','${esc(item.name).replace(/'/g,'\u0027')}','${esc(item.unit||'un')}',${item.last_price ?? 'null'})">
+            🛒
+          </button>
         </div>
-        <div class="price-card-stats">
-          <div class="price-stat-col"><span class="price-stat-lbl">Média</span><span class="price-stat-val accent">${avg}</span></div>
-          <div class="price-stat-col"><span class="price-stat-lbl">Último</span><span class="price-stat-val">${last}</span></div>
-          <div class="price-stat-col"><span class="price-stat-lbl">Registros</span><span class="price-stat-val">${item.record_count || 0}</span></div>
+        <div class="px-name">${esc(item.name)}${unitBadge}</div>
+        ${item.description ? `<div class="px-desc">${esc(item.description)}</div>` : ''}
+        <div class="px-prices">
+          <div class="px-price-col">
+            <span class="px-price-lbl">Preço médio</span>
+            <span class="px-price-val">${avg ?? '—'}</span>
+          </div>
+          <div class="px-price-col">
+            <span class="px-price-lbl">Último ${trend}</span>
+            <span class="px-price-val ${item.last_price != null ? 'accent' : ''}">${last ?? '—'}</span>
+          </div>
+          <div class="px-price-col">
+            <span class="px-price-lbl">Registros</span>
+            <span class="px-price-val">${cnt}</span>
+          </div>
         </div>
-        <button class="price-card-add-btn" title="Adicionar a uma lista de compras"
-                onclick="event.stopPropagation();openAddToGroceryList('${item.id}','${esc(item.name).replace(/'/g,'\u0027')}','${esc(item.unit||'un')}',${item.last_price ?? 'null'})">
-          🛒
-        </button>
-        <div class="price-card-chevron">›</div>
+        <div class="px-card-footer">
+          <div class="px-progress">
+            <div class="px-progress-bar" style="width:${Math.min(100, cnt * 10)}%;background:${catColor}"></div>
+          </div>
+        </div>
       </div>`;
     }).join('') + `</div>`;
 }
