@@ -60,6 +60,58 @@ async function initWizard() {
   _wzOpen();
 }
 
+/**
+ * openWizardManual() — called by the admin button in Settings → Família & Usuários.
+ *
+ * Wizard auto-triggers on boot when ALL of these are true:
+ *   1. User is admin or owner
+ *   2. wizard_dismissed flag is false (not yet run or explicitly reset)
+ *   3. No transactions exist for this family
+ *   4. Family has no accounts OR no categories
+ *
+ * This function bypasses all guards and opens the wizard regardless of state.
+ * It clears the wizard_dismissed flag so it can run to completion.
+ * Also triggered automatically after creating a new family (via _offerFamilyWizard).
+ */
+async function openWizardManual() {
+  // Guard: only admin/owner can launch manually
+  if (!currentUser?.can_admin && currentUser?.role !== 'owner') {
+    toast('Acesso restrito a administradores', 'error');
+    return;
+  }
+  // Clear dismissed flag so wizard can save progress normally
+  await saveAppSetting('wizard_dismissed', false).catch(() => {});
+  _wzReset();
+  // Pre-fill family name from current context
+  _wz.familyName = (currentUser?.families?.find(f => f.id === currentUser.family_id)?.name || '').replace(/família|family/gi, '').trim();
+  _wzOpen();
+  // Update the status sub-text in settings to show wizard is active
+  _updateWizardSettingsStatus();
+}
+
+/** Update the wizard status sub-text in Settings to reflect current state. */
+async function _updateWizardSettingsStatus() {
+  const el = document.getElementById('wizardSettingsSub');
+  if (!el) return;
+  try {
+    const dismissed = await getAppSetting('wizard_dismissed', false);
+    const hasAccounts = (state.accounts || []).length > 0;
+    const hasCats = (state.categories || []).length > 0;
+    const { count: txCount } = await famQ(
+      sb.from('transactions').select('id', { count: 'exact', head: true })
+    );
+    const hasTx = (txCount || 0) > 0;
+    if (dismissed || (hasAccounts && hasCats && hasTx)) {
+      el.textContent = 'Configuração concluída · Clique para refazer';
+    } else if (!hasAccounts || !hasCats) {
+      el.textContent = 'Pendente · Família ainda não configurada';
+      el.style.color = 'var(--amber, #b45309)';
+    } else {
+      el.textContent = 'Configurar nome, membros e categorias da família';
+    }
+  } catch (_) {}
+}
+
 function _wzReset() {
   _wz.step = 1;
   _wz.familyName = (currentUser?.families?.[0]?.name || '').replace(/família|family/gi,'').trim();
