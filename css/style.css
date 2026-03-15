@@ -6380,3 +6380,23 @@ tr.tx-row-new td:first-child {
 .fam-action-copy:hover {
   background: var(--accent-lt);
 }
+
+/* ── Scheduled card member chips ─────────────────────────────────────────── */
+.sc-member-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.sc-member-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--accent-lt);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  font-size: .7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
