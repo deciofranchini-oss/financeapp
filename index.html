@@ -4512,66 +4512,82 @@
         </div>
 
         <!-- Members list -->
-        <div style="padding:14px 20px 0">
-          <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px">
-            Membros
-          </div>
-          <div id="mfmMembersList" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto;padding-right:4px"></div>
+        <div style="padding:14px 20px 12px">
+          <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:10px">👥 Membros</div>
+          <div id="mfmMembersList" style="display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto;padding-right:2px"></div>
         </div>
 
-        <!-- Add existing user -->
-        <div style="padding:12px 20px 0" id="mfmAddExistingRow">
-          <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px">
-            Adicionar usuário existente
-          </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <select id="mfmAddUserSel" style="flex:1;min-width:140px;font-size:.82rem">
-              <option value="">— Selecionar usuário —</option>
-            </select>
-            <select id="mfmAddUserRole" style="width:130px;font-size:.82rem">
-              <option value="user">👤 Usuário</option>
-              <option value="admin">🔧 Admin</option>
-              <option value="viewer">👁 Visualizador</option>
-              <option value="owner">👑 Owner</option>
-            </select>
-            <button class="btn btn-primary btn-sm" onclick="mfmAddExisting()" style="white-space:nowrap;font-size:.8rem">+ Adicionar</button>
-          </div>
-        </div>
-
-        <!-- Invite by email -->
-        <div style="padding:12px 20px 16px">
-          <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px">
-            Convidar por e-mail
-          </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-            <input type="email" id="mfmInviteEmail" placeholder="email@exemplo.com"
-                   style="flex:1;min-width:160px;font-size:.82rem"
-                   onkeydown="if(event.key==='Enter')mfmInvite()">
-            <select id="mfmInviteRole" style="width:130px;font-size:.82rem">
-              <option value="user">👤 Usuário</option>
-              <option value="admin">🔧 Admin</option>
-              <option value="viewer">👁 Visualizador</option>
-              <option value="owner">👑 Owner</option>
-            </select>
-            <button class="btn btn-primary btn-sm" id="mfmInviteBtn" onclick="mfmInvite()" style="white-space:nowrap;font-size:.8rem">📨 Convidar</button>
-          </div>
-          <div id="mfmMsg" style="display:none;font-size:.78rem;margin-top:8px;padding:6px 10px;border-radius:6px"></div>
-        </div>
-
-        <!-- ── Funcionalidades da Família ─────────────────────────────── -->
-        <div style="padding:0 20px 20px">
-          <button style="display:flex;align-items:center;gap:8px;width:100%;background:none;border:none;
-            border-top:1px solid var(--border);padding:14px 0 10px;cursor:pointer;font-size:.82rem;
-            font-weight:600;color:var(--text);text-align:left"
-            onclick="const b=document.getElementById('mfmFeatBody');const a=document.getElementById('mfmFeatArr');b.style.display=b.style.display==='none'?'':'none';a.style.transform=b.style.display===''?'':'rotate(-90deg)'">
-            <span style="font-size:1rem">🧩</span>
-            Funcionalidades
-            <span id="mfmFeatArr" style="margin-left:auto;transition:transform .2s;font-size:.75rem">▾</span>
+        <!-- ── Add member — collapsible section ── -->
+        <div style="border-top:1px solid var(--border)">
+          <button
+            onclick="mfmToggleAddPanel()"
+            id="mfmAddToggle"
+            style="display:flex;align-items:center;gap:8px;width:100%;padding:12px 20px;background:none;
+              border:none;cursor:pointer;font-size:.8rem;font-weight:600;color:var(--muted);text-align:left"
+            onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">
+            <span>➕</span> Adicionar membro
+            <svg id="mfmAddArr" style="margin-left:auto;transition:transform .2s;flex-shrink:0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
           </button>
-          <div id="mfmFeatBody" style="display:none">
-            <p style="font-size:.78rem;color:var(--muted);margin-bottom:12px;line-height:1.5">
-              Ative ou desative módulos opcionais para esta família.
-            </p>
+          <div id="mfmAddPanel" style="display:none;padding:0 20px 16px">
+            <!-- Tabs -->
+            <div style="display:flex;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;margin-bottom:14px">
+              <button id="mfmTabExist" onclick="mfmSwitchAddTab('exist')"
+                style="flex:1;padding:8px;font-size:.8rem;font-weight:600;border:none;cursor:pointer;background:var(--accent);color:#fff;transition:all .12s">
+                👤 Usuário existente
+              </button>
+              <button id="mfmTabInvite" onclick="mfmSwitchAddTab('invite')"
+                style="flex:1;padding:8px;font-size:.8rem;font-weight:600;border:none;cursor:pointer;background:var(--surface2);color:var(--muted);transition:all .12s">
+                📨 Convidar por e-mail
+              </button>
+            </div>
+            <!-- Existing user pane -->
+            <div id="mfmPaneExist" id="mfmAddExistingRow">
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <select id="mfmAddUserSel" style="font-size:.82rem;width:100%">
+                  <option value="">— Selecionar usuário —</option>
+                </select>
+                <div style="display:flex;gap:6px">
+                  <select id="mfmAddUserRole" style="flex:1;font-size:.82rem">
+                    <option value="user">👤 Usuário</option>
+                    <option value="admin">🔧 Admin</option>
+                    <option value="viewer">👁 Visualizador</option>
+                    <option value="owner">👑 Owner</option>
+                  </select>
+                  <button class="btn btn-primary btn-sm" onclick="mfmAddExisting()" style="white-space:nowrap;font-size:.8rem;padding:0 16px">+ Adicionar</button>
+                </div>
+              </div>
+            </div>
+            <!-- Invite pane -->
+            <div id="mfmPaneInvite" style="display:none">
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <input type="email" id="mfmInviteEmail" placeholder="email@exemplo.com"
+                  style="font-size:.82rem;width:100%" onkeydown="if(event.key==='Enter')mfmInvite()">
+                <div style="display:flex;gap:6px">
+                  <select id="mfmInviteRole" style="flex:1;font-size:.82rem">
+                    <option value="user">👤 Usuário</option>
+                    <option value="admin">🔧 Admin</option>
+                    <option value="viewer">👁 Visualizador</option>
+                    <option value="owner">👑 Owner</option>
+                  </select>
+                  <button class="btn btn-primary btn-sm" id="mfmInviteBtn" onclick="mfmInvite()" style="white-space:nowrap;font-size:.8rem;padding:0 16px">📨 Convidar</button>
+                </div>
+              </div>
+            </div>
+            <div id="mfmMsg" style="display:none;font-size:.78rem;margin-top:10px;padding:7px 11px;border-radius:var(--r-sm)"></div>
+          </div>
+        </div>
+
+        <!-- ── Funcionalidades ── -->
+        <div style="border-top:1px solid var(--border)">
+          <button onclick="const b=document.getElementById('mfmFeatBody');const open=b.style.display==='none';b.style.display=open?'block':'none';document.getElementById('mfmFeatArr').style.transform=open?'rotate(180deg)':''"
+            style="display:flex;align-items:center;gap:8px;width:100%;padding:12px 20px;background:none;
+              border:none;cursor:pointer;font-size:.8rem;font-weight:600;color:var(--muted);text-align:left"
+            onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">
+            <span>🧩</span> Funcionalidades
+            <svg id="mfmFeatArr" style="margin-left:auto;transition:transform .2s;flex-shrink:0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div id="mfmFeatBody" style="display:none;padding:0 20px 16px">
+            <p style="font-size:.78rem;color:var(--muted);margin-bottom:12px;line-height:1.5">Ative ou desative módulos opcionais para esta família.</p>
             <div id="mfmFeatCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px"></div>
           </div>
         </div>
