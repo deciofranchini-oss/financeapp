@@ -182,10 +182,10 @@ async function loadReports() {
 
   /* KPIs */
   document.getElementById('reportKpis').innerHTML = `
-    <div class="report-kpi"><div class="report-kpi-label">Receitas</div><div class="report-kpi-value text-green">${fmt(totInc)}</div></div>
-    <div class="report-kpi"><div class="report-kpi-label">Despesas</div><div class="report-kpi-value text-red">${fmt(totExp)}</div></div>
-    <div class="report-kpi"><div class="report-kpi-label">Saldo</div><div class="report-kpi-value ${bal>=0?'text-green':'text-red'}">${fmt(bal)}</div></div>
-    <div class="report-kpi"><div class="report-kpi-label">Nº Transações</div><div class="report-kpi-value">${txs.length}</div></div>
+    <div class="rpt-kpi rpt-kpi--inc"><div class="rpt-kpi-label">Receitas</div><div class="rpt-kpi-value">${fmt(totInc)}</div></div>
+    <div class="rpt-kpi rpt-kpi--exp"><div class="rpt-kpi-label">Despesas</div><div class="rpt-kpi-value">${fmt(totExp)}</div></div>
+    <div class="rpt-kpi rpt-kpi--bal ${bal>=0?'pos':'neg'}"><div class="rpt-kpi-label">Saldo</div><div class="rpt-kpi-value">${fmt(bal)}</div></div>
+    <div class="rpt-kpi"><div class="rpt-kpi-label">Transações</div><div class="rpt-kpi-value">${txs.length}</div></div>
     <div class="report-kpi"><div class="report-kpi-label">Ticket médio</div><div class="report-kpi-value">${exps.length?fmt(totExp/exps.length):'—'}</div></div>
   `;
   document.getElementById('reportDataInfo').textContent =
