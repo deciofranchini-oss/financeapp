@@ -6501,3 +6501,62 @@ tr.tx-row-new td:first-child {
   }
   .inv-pos-name { grid-column: 1 / -1; }
 }
+
+/* ── Transaction row typography refresh ────────────────────────────────────
+   Larger description, category (with icon) and payee. Proportions maintained.
+─────────────────────────────────────────────────────────────────────────── */
+
+/* Description */
+.tx-v2-title {
+  font-size: .97rem !important;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Category row: icon + name */
+.tx-v2-category {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: .82rem !important;
+  color: var(--text2);
+  line-height: 1.25;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tx-v2-cat-icon {
+  font-size: .82rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* Payee / account meta */
+.tx-v2-pay {
+  font-size: .79rem !important;
+  color: var(--muted);
+}
+
+.tx-v2-meta {
+  margin-top: 1px;
+  font-size: .79rem;
+}
+
+.tx-v2-acct {
+  font-size: .79rem;
+  color: var(--muted);
+}
+
+/* Mobile: scale proportionally */
+@media (max-width: 640px) {
+  .tx-v2-title    { font-size: .93rem !important; }
+  .tx-v2-category { font-size: .78rem !important; }
+  .tx-v2-cat-icon { font-size: .78rem; }
+  .tx-v2-pay      { font-size: .75rem !important; }
+  .tx-v2-meta     { font-size: .75rem; }
+}
