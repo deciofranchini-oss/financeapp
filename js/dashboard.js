@@ -239,13 +239,42 @@ async function loadDashboard(){
         <div class="dash-favs-grid">${favs.map(rowHtml).join('')}</div>
       </div>`;
 
-      // Non-favorites below, as a compact collapsed section if many accounts
+      // Non-favorites: split BRL vs foreign, both collapsed by default
       const nonFavs = accs.filter(a => !a.is_favorite);
       if (nonFavs.length) {
-        html += `<div>
-          <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:4px 0 2px;border-top:1px solid var(--border);margin-top:4px">Outras</div>
-          ${nonFavs.map(rowHtml).join('')}
-        </div>`;
+        const brlAccs = nonFavs.filter(a => !a.currency || a.currency === 'BRL');
+        const fxAccs  = nonFavs.filter(a =>  a.currency && a.currency !== 'BRL');
+
+        const buildOtherGroup = (key, label, emoji, gAccs) => {
+          if (!gAccs.length) return '';
+          // Start collapsed by default
+          if (_dashGroupCollapsed[key] === undefined) _dashGroupCollapsed[key] = true;
+          const collapsed = _dashGroupCollapsed[key];
+          const gTotal = gAccs.reduce((s,a) => s + toBRL(parseFloat(a.balance)||0, a.currency||'BRL'), 0);
+          return `<div style="margin-top:6px">
+            <div onclick="toggleDashGroup('${key}')"
+              style="display:flex;justify-content:space-between;align-items:center;
+                padding:7px 0;cursor:pointer;user-select:none;
+                border-top:1px solid var(--border)">
+              <span style="display:flex;align-items:center;gap:6px;font-size:.68rem;font-weight:700;
+                text-transform:uppercase;letter-spacing:.07em;color:var(--muted)">
+                <span style="display:inline-block;transition:transform .2s;
+                  transform:rotate(${collapsed?'-90deg':'0deg'})"
+                  id="dashGroupArrow-${key}">▾</span>
+                ${emoji} ${label}
+              </span>
+              <span style="font-size:.72rem;font-weight:600;color:var(--muted)">${dashFmt(gTotal,'BRL')}</span>
+            </div>
+            <div id="dashGroupBody-${key}"
+              style="overflow:hidden;transition:max-height .25s ease;
+                max-height:${collapsed?'0':'2000px'}">
+              ${gAccs.map(rowHtml).join('')}
+            </div>
+          </div>`;
+        };
+
+        html += buildOtherGroup('__nonfav_brl', 'Em Real', '🇧🇷', brlAccs);
+        html += buildOtherGroup('__nonfav_fx',  'Moeda Estrangeira', '🌍', fxAccs);
       }
       el.innerHTML = html;
       return;
