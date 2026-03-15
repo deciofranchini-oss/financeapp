@@ -2843,11 +2843,39 @@ async function saveUser() {
 async function approveUser(userId, userName) {
   document.getElementById('approvalUserId').value = userId;
   document.getElementById('approvalUserName').textContent = userName;
-  document.getElementById('approvalFamilyId').innerHTML =
-    '<option value="">— Nenhuma (admin global) —</option>' +
-    _families.map(f => `<option value="${f.id}">${esc(_familyDisplayName(f.id, f.name||''))}</option>`).join('');
   document.getElementById('approvalNewFamilyName').value = '';
   document.getElementById('approvalError').style.display = 'none';
+
+  // Fetch user row to check if they were invited to a specific family
+  let preselectedFamilyId = null;
+  try {
+    const { data: uRow } = await sb.from('app_users')
+      .select('family_id, name, email')
+      .eq('id', userId)
+      .maybeSingle();
+    if (uRow?.family_id) preselectedFamilyId = uRow.family_id;
+  } catch(_) {}
+
+  // Build family selector
+  document.getElementById('approvalFamilyId').innerHTML =
+    '<option value="">— Nenhuma (admin global) —</option>' +
+    _families.map(f => `<option value="${f.id}" ${f.id === preselectedFamilyId ? 'selected' : ''}>` +
+      `${esc(_familyDisplayName(f.id, f.name||''))}</option>`).join('');
+
+  // Show / hide invite-origin notice
+  const noticeEl = document.getElementById('approvalInviteNotice');
+  if (noticeEl) {
+    if (preselectedFamilyId) {
+      const famName = _families.find(f => f.id === preselectedFamilyId)?.name || preselectedFamilyId;
+      noticeEl.innerHTML = `📨 <strong>Convite de origem:</strong> Este utilizador foi convidado para
+        <strong>${esc(_familyDisplayName(preselectedFamilyId, famName))}</strong>.
+        A família foi pré-selecionada acima.`;
+      noticeEl.style.display = '';
+    } else {
+      noticeEl.style.display = 'none';
+    }
+  }
+
   openModal('approvalModal');
 }
 
@@ -3769,13 +3797,37 @@ async function _mfmRender() {
     }
   }
 
-  // Populate "add existing user" dropdown — users not already in this family
+  // Populate "add existing user" dropdown — restricted to users in families
+  // the current user belongs to (privacy: cannot browse all users globally)
   const memberIds = new Set(members.map(m => m.user_id));
   const addSel = document.getElementById('mfmAddUserSel');
   if (addSel) {
     try {
-      const { data: allUsers } = await sb.from('app_users').select('id,name,email').eq('approved', true).order('name');
-      const available = (allUsers || []).filter(u => !memberIds.has(u.id));
+      // Get all family IDs the current user belongs to
+      const myFamilyIds = (currentUser?.families || []).map(f => f.id).filter(Boolean);
+
+      let eligibleUsers = [];
+      if (myFamilyIds.length) {
+        // Fetch user_ids of members of MY families
+        const { data: myFamMembers } = await sb
+          .from('family_members')
+          .select('user_id')
+          .in('family_id', myFamilyIds);
+
+        const myFamUserIds = [...new Set((myFamMembers || []).map(m => m.user_id))];
+
+        if (myFamUserIds.length) {
+          const { data: famUsers } = await sb
+            .from('app_users')
+            .select('id,name,email')
+            .in('id', myFamUserIds)
+            .eq('approved', true)
+            .order('name');
+          eligibleUsers = famUsers || [];
+        }
+      }
+
+      const available = eligibleUsers.filter(u => !memberIds.has(u.id));
       addSel.innerHTML = '<option value="">— Selecionar usuário —</option>' +
         available.map(u => `<option value="${u.id}">${esc(u.name || u.email)}</option>`).join('');
       document.getElementById('mfmAddExistingRow').style.display = available.length ? '' : 'none';
