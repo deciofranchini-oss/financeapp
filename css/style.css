@@ -46,10 +46,10 @@ body{font-family:var(--font-sans);background:var(--bg);color:var(--text);height:
   gap: 8px;
 }
 .sb-logo-img {
-  height: 36px;
-  max-height: 36px;
+  height: 25px;
+  max-height: 25px;
   width: auto;
-  max-width: 150px;        /* never wider than sidebar minus close btn + padding */
+  max-width: 170px;        /* never wider than sidebar minus close btn + padding */
   object-fit: contain;
   display: block;
   flex-shrink: 1;
