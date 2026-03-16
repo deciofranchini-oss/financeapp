@@ -242,8 +242,8 @@ function renderForecastTables(allItems, accounts) {
             ? `<div class="forecast-amount-brl">${fmt(t.brl_amount,'BRL')}</div>`
             : (a.currency === 'BRL' ? '' : `<div class="forecast-amount-brl">&nbsp;</div>`)
           }
-          <div class="forecast-projected-balance ${isNeg?'amount-neg':''}">Saldo proj.: ${fmt(runningBalance,a.currency)}</div>
-          <div class="forecast-balance-mobile ${isNeg?'amount-neg':''}">Saldo proj.: ${fmt(runningBalance,a.currency)}</div>
+          <div class="forecast-projected-balance ${isNeg?'amount-neg':''}">${fmt(runningBalance,a.currency)}</div>
+          <div class="forecast-balance-mobile ${isNeg?'amount-neg':''}">${fmt(runningBalance,a.currency)}</div>
         </td>
       </tr>`;
     }).join('');
