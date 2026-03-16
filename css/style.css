@@ -156,7 +156,7 @@ body{font-family:var(--font-sans);background:var(--bg);color:var(--text);height:
   padding: 9px 10px;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 1.4rem;
+  font-size: 1.2rem;
   font-weight: 400;
   color: rgba(255,255,255,.58);
   transition: background .14s, color .14s;
@@ -5642,9 +5642,9 @@ tr.tx-pending { background: rgba(251,191,36,.05); }
 .forecast-date-cell--today .forecast-date-today { color:var(--accent); }
 .forecast-desc-cell { min-width:0; }
 .forecast-line { display:block; margin:0; padding:0; min-height:14px; line-height:1.1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.forecast-title { font-size:.92rem; color:var(--text); font-weight:600; }
-.forecast-category { font-size:.82rem; color:var(--text2); }
-.forecast-payee { font-size:.74rem; color:var(--muted); }
+.forecast-title { font-size:.82rem; color:var(--text); }
+.forecast-category { font-size:.72rem; color:var(--text2); }
+.forecast-payee { font-size:.7rem; color:var(--muted); }
 .forecast-amount-cell,
 .forecast-balance-cell { width:96px; text-align:right; white-space:nowrap; font-variant-numeric: tabular-nums; }
 @media (max-width: 640px) {
@@ -5680,19 +5680,13 @@ tr.tx-pending { background: rgba(251,191,36,.05); }
 
 /* ── Forecast mobile: show running balance line-by-line under amount ── */
 .forecast-amount-main { display:block; }
-.forecast-projected-balance,
-.forecast-balance-mobile {
-  margin-top:2px;
-  font-size:.72rem;
-  line-height:1.15;
-  white-space:nowrap;
-  color:var(--muted);
-}
-.forecast-projected-balance {
-  display:block;
-}
 .forecast-balance-mobile {
   display:none;
+  margin-top:2px;
+  font-size:.68rem;
+  line-height:1.1;
+  white-space:nowrap;
+  color:var(--muted);
 }
 @media (max-width: 640px) {
   .forecast-balance-head,
@@ -5709,9 +5703,6 @@ tr.tx-pending { background: rgba(251,191,36,.05); }
   .forecast-amount-cell {
     width: auto !important;
     min-width: 90px;
-  }
-  .forecast-projected-balance {
-    display:none;
   }
   .forecast-balance-mobile {
     display:block;
@@ -7577,26 +7568,39 @@ tr.tx-row-new td:first-child {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   LOGIN PAGE — Static logo
+   LOGIN PAGE — Logo animations
 ══════════════════════════════════════════════════════════════════════ */
 
-.login-logo-anim,
-.login-logo-anim.exiting {
-  animation: none !important;
-  transform: none !important;
-  filter: none !important;
-  opacity: 1 !important;
-  will-change: auto;
+/* Entrance: drop in + fade */
+@keyframes loginLogoIn {
+  0%   { opacity: 0; transform: scale(.6) translateY(-20px); filter: blur(8px); }
+  60%  { opacity: 1; transform: scale(1.06) translateY(0);   filter: blur(0); }
+  80%  { transform: scale(.97); }
+  100% { transform: scale(1); }
 }
 
-/* Login card entrance */
-@keyframes loginCardIn {
-  0%   { opacity: 0; transform: translateY(24px); }
-  100% { opacity: 1; transform: translateY(0); }
+/* Subtle breathing pulse while idle on login screen */
+@keyframes loginLogoPulse {
+  0%,100% { filter: drop-shadow(0 0 0px rgba(42,180,100,0)); transform: scale(1); }
+  50%     { filter: drop-shadow(0 0 18px rgba(42,180,100,.5)); transform: scale(1.03); }
+}
+
+/* Exit: zoom out + blur when login succeeds */
+@keyframes loginLogoExit {
+  0%   { opacity: 1; transform: scale(1);    filter: blur(0); }
+  100% { opacity: 0; transform: scale(1.6);  filter: blur(12px); }
+}
+
+.login-logo-anim {
+  transform-origin: center center;
+}
+
+.login-logo-anim.exiting {
+  animation: none !important;
 }
 
 #loginScreen > div {
-  animation: loginCardIn .55s cubic-bezier(.22,1,.36,1) .15s both;
+  animation: none !important;
 }
 
 
@@ -7674,4 +7678,172 @@ html.platform-windows .auth-card * {
     transition: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+
+/* HARD STOP FOR WINDOWS LOGIN RENDER FLICKER */
+html.platform-windows #loginScreen,
+html.ft-platform-windows #loginScreen,
+body.platform-windows #loginScreen,
+body.ft-platform-windows #loginScreen,
+#loginScreen.platform-windows,
+#loginScreen.ft-platform-windows {
+  background: #16301f !important;
+  background-image: none !important;
+  isolation: isolate;
+}
+html.platform-windows #loginScreen *,
+html.ft-platform-windows #loginScreen *,
+body.platform-windows #loginScreen *,
+body.ft-platform-windows #loginScreen *,
+#loginScreen.platform-windows *,
+#loginScreen.ft-platform-windows * {
+  animation: none !important;
+  transition: none !important;
+  transform: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  will-change: auto !important;
+}
+html.platform-windows #loginScreen > div,
+html.ft-platform-windows #loginScreen > div,
+body.platform-windows #loginScreen > div,
+body.ft-platform-windows #loginScreen > div,
+#loginScreen.platform-windows > div,
+#loginScreen.ft-platform-windows > div {
+  box-shadow: 0 8px 24px rgba(0,0,0,.16) !important;
+  contain: layout paint;
+}
+html.platform-windows #loginScreen input:focus,
+html.ft-platform-windows #loginScreen input:focus,
+body.platform-windows #loginScreen input:focus,
+body.ft-platform-windows #loginScreen input:focus,
+#loginScreen.platform-windows input:focus,
+#loginScreen.ft-platform-windows input:focus {
+  outline: 2px solid rgba(42,96,73,.18) !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
+
+
+/* WINDOWS STABILITY PATCH */
+html.platform-windows,
+html.ft-platform-windows,
+body.platform-windows,
+body.ft-platform-windows {
+  scroll-behavior: auto !important;
+}
+
+html.platform-windows #loginScreen,
+html.ft-platform-windows #loginScreen,
+body.platform-windows #loginScreen,
+body.ft-platform-windows #loginScreen,
+#loginScreen.platform-windows,
+#loginScreen.ft-platform-windows {
+  background: #16301f !important;
+  background-image: none !important;
+}
+
+html.platform-windows #loginScreen .login-card,
+html.ft-platform-windows #loginScreen .login-card,
+body.platform-windows #loginScreen .login-card,
+body.ft-platform-windows #loginScreen .login-card,
+#loginScreen.platform-windows .login-card,
+#loginScreen.ft-platform-windows .login-card {
+  border: 1px solid rgba(22,48,31,.12) !important;
+  border-radius: 18px !important;
+  box-shadow: 0 8px 20px rgba(0,0,0,.16) !important;
+  contain: layout paint style;
+}
+
+html.platform-windows #loginScreen .login-input,
+html.ft-platform-windows #loginScreen .login-input,
+body.platform-windows #loginScreen .login-input,
+body.ft-platform-windows #loginScreen .login-input,
+#loginScreen.platform-windows .login-input,
+#loginScreen.ft-platform-windows .login-input {
+  background: #fff !important;
+  border: 1px solid #d7ddd9 !important;
+  box-shadow: none !important;
+  caret-color: #16301f !important;
+}
+
+html.platform-windows #loginScreen .login-input:focus,
+html.ft-platform-windows #loginScreen .login-input:focus,
+body.platform-windows #loginScreen .login-input:focus,
+body.ft-platform-windows #loginScreen .login-input:focus,
+#loginScreen.platform-windows .login-input:focus,
+#loginScreen.ft-platform-windows .login-input:focus {
+  border-color: #2a6049 !important;
+  outline: 2px solid rgba(42,96,73,.16) !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
+
+html.platform-windows #loginScreen .login-btn,
+html.ft-platform-windows #loginScreen .login-btn,
+body.platform-windows #loginScreen .login-btn,
+body.ft-platform-windows #loginScreen .login-btn,
+#loginScreen.platform-windows .login-btn,
+#loginScreen.ft-platform-windows .login-btn {
+  background: #2a6049 !important;
+  background-image: none !important;
+}
+
+html.platform-windows .modal-overlay,
+html.ft-platform-windows .modal-overlay,
+body.platform-windows .modal-overlay,
+body.ft-platform-windows .modal-overlay,
+html.platform-windows .sidebar-overlay,
+html.ft-platform-windows .sidebar-overlay,
+body.platform-windows .sidebar-overlay,
+body.ft-platform-windows .sidebar-overlay,
+html.platform-windows #wizardOverlay,
+html.ft-platform-windows #wizardOverlay,
+body.platform-windows #wizardOverlay,
+body.ft-platform-windows #wizardOverlay {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.platform-windows .config-btn,
+html.ft-platform-windows .config-btn,
+body.platform-windows .config-btn,
+body.ft-platform-windows .config-btn,
+html.platform-windows .btn,
+html.ft-platform-windows .btn,
+body.platform-windows .btn,
+body.ft-platform-windows .btn,
+html.platform-windows .btn-icon,
+html.ft-platform-windows .btn-icon,
+body.platform-windows .btn-icon,
+body.ft-platform-windows .btn-icon,
+html.platform-windows .tab,
+html.ft-platform-windows .tab,
+body.platform-windows .tab,
+body.ft-platform-windows .tab,
+html.platform-windows .view-btn,
+html.ft-platform-windows .view-btn,
+body.platform-windows .view-btn,
+body.ft-platform-windows .view-btn,
+html.platform-windows .icon-tab,
+html.ft-platform-windows .icon-tab,
+body.platform-windows .icon-tab,
+body.ft-platform-windows .icon-tab,
+html.platform-windows .icon-option,
+html.ft-platform-windows .icon-option,
+body.platform-windows .icon-option,
+body.ft-platform-windows .icon-option,
+html.platform-windows .nav-item,
+html.ft-platform-windows .nav-item,
+body.platform-windows .nav-item,
+body.ft-platform-windows .nav-item,
+html.platform-windows .modal-close,
+html.ft-platform-windows .modal-close,
+body.platform-windows .modal-close,
+body.ft-platform-windows .modal-close {
+  transition-property: background-color, border-color, color, opacity !important;
+  transition-duration: .15s !important;
+  transition-timing-function: ease !important;
 }
