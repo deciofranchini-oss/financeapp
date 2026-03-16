@@ -357,6 +357,26 @@ function applyLoginPlatformMode() {
 window.detectLoginPlatform = detectLoginPlatform;
 window.applyLoginPlatformMode = applyLoginPlatformMode;
 
+function isWindowsLoginMode() {
+  try {
+    const info = window.__FT_LOGIN_PLATFORM__ || detectLoginPlatform();
+    return !!info?.isWindows;
+  } catch (_) {
+    return false;
+  }
+}
+
+function focusFieldSafely(elementId, delay = 100) {
+  window.setTimeout(() => {
+    try {
+      if (isWindowsLoginMode()) return;
+      const el = document.getElementById(elementId);
+      if (el && typeof el.focus === 'function') el.focus({ preventScroll: true });
+    } catch (_) {}
+  }, delay);
+}
+
+
 // ── Show / hide login screen ──
 function showLoginScreen() {
   // Ensure sb is initialized whenever login screen is shown —
@@ -393,11 +413,15 @@ function showLoginScreen() {
       if (passEl)  passEl.value  = saved.password || '';
       if (remEl)   remEl.checked = true;
     }
-    setTimeout(() => {
-      const emailEl = document.getElementById('loginEmail');
-      if (emailEl && !emailEl.value) emailEl.focus();
-      else document.getElementById('loginPassword')?.focus();
-    }, 100);
+    if (!isWindowsLoginMode()) {
+      setTimeout(() => {
+        try {
+          const emailEl = document.getElementById('loginEmail');
+          if (emailEl && !emailEl.value) emailEl.focus({ preventScroll: true });
+          else document.getElementById('loginPassword')?.focus({ preventScroll: true });
+        } catch (_) {}
+      }, 100);
+    }
   }
 }
 function _saveRememberedCredentials(email, password) {
@@ -1185,7 +1209,7 @@ function showRegisterForm() {
   document.getElementById('loginFormArea').style.display = 'none';
   document.getElementById('registerFormArea').style.display = '';
   document.getElementById('pendingApprovalArea').style.display = 'none';
-  setTimeout(() => document.getElementById('regName')?.focus(), 100);
+  focusFieldSafely('regName');
 }
 function showLoginFormArea() {
   ['registerFormArea','pendingApprovalArea','changePwdArea','forgotPwdArea','recoveryPwdArea']
@@ -1193,7 +1217,7 @@ function showLoginFormArea() {
   document.getElementById('loginFormArea').style.display = '';
   document.getElementById('loginError').style.display = 'none';
   document.getElementById('regError').style.display = 'none';
-  setTimeout(() => document.getElementById('loginEmail')?.focus(), 100);
+  focusFieldSafely('loginEmail');
 }
 
 function showForgotPwdForm() {
@@ -1202,7 +1226,7 @@ function showForgotPwdForm() {
   document.getElementById('forgotPwdArea').style.display = '';
   document.getElementById('forgotPwdError').style.display = 'none';
   document.getElementById('forgotPwdError').textContent = '';
-  setTimeout(() => document.getElementById('forgotPwdEmail')?.focus(), 100);
+  focusFieldSafely('forgotPwdEmail');
 }
 
 async function doForgotPwd() {

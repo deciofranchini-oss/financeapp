@@ -112,7 +112,7 @@ async function registerServiceWorkerSafe(){
       if(window.caches?.keys){
         const keys = await caches.keys().catch(()=>[]);
         for(const key of keys || []){
-          if(/^fintrack-shell-/i.test(key)){
+          if(/^fintrack-shell-/i.test(key) || /workbox|sw-precache|vite|webpack/i.test(key)){
             try { await caches.delete(key); } catch(_) {}
           }
         }
@@ -121,7 +121,7 @@ async function registerServiceWorkerSafe(){
     }
 
     // GitHub Pages friendly path: sw.js at site root
-    await navigator.serviceWorker.register('./sw.js?v=20260316b', { scope: './' });
+    await navigator.serviceWorker.register('./sw.js?v=20260316c', { scope: './', updateViaCache: 'none' });
   }catch(e){
     console.warn('[sw]', e.message);
   }
