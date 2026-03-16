@@ -404,7 +404,7 @@
 <div class="setup-screen" id="setupScreen" style="display:none">
   <div class="setup-box">
     <div style="text-align:center;margin-bottom:16px">
-      <img src="https://deciofranchini-oss.github.io/fintrack/logo.jpg" style="height:130px;object-fit:contain;mix-blend-mode:normal" alt="Family FinTrack">
+      <img src="https://deciofranchini-oss.github.io/fintrack/logo.png" style="height:130px;object-fit:contain;mix-blend-mode:normal" alt="Family FinTrack">
     </div>
     <p style="text-align:center">Configure sua conexão com o Supabase para começar.</p>
     <div class="form-group"><label>Supabase URL</label><input type="url" id="supabaseUrl" placeholder="https://xxxx.supabase.co" autocomplete="off"></div>
@@ -424,7 +424,7 @@
   <div class="sb-header">
     <div class="sb-logo-wrap">
       <img id="sidebarLogoImg"
-           src="https://deciofranchini-oss.github.io/fintrack/logo.jpg"
+           src="https://deciofranchini-oss.github.io/fintrack/logo.png"
            alt="Family FinTrack"
            class="sb-logo-img"
            style="width:100%;height:100%;object-fit:contain;display:block;filter:brightness(0) invert(1)">
@@ -524,6 +524,15 @@
 
   </div><!-- /sidebar-nav -->
 
+  <!-- Footer: always visible, pinned to bottom — NEVER clipped -->
+  <div class="sb-footer">
+    <div class="sb-divider"></div>
+    <button class="nav-item sb-logout" onclick="doLogout()">
+      <span class="ni-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </span>Sair
+    </button>
+  </div>
 
 </nav>
 
@@ -1879,7 +1888,7 @@
         </button>
         <div class="cfg-sec-body" id="cfgSec_sobre">
           <div class="cfg-row" style="gap:12px">
-            <img id="settingsLogoImg" src="https://deciofranchini-oss.github.io/fintrack/logo.jpg" alt="Family FinTrack" style="height:32px;object-fit:contain">
+            <img id="settingsLogoImg" src="https://deciofranchini-oss.github.io/fintrack/logo.png" alt="Family FinTrack" style="height:32px;object-fit:contain">
             <div>
               <div style="font-weight:700;font-size:.9rem">Family FinTrack</div>
               <div style="font-size:.72rem;color:var(--muted)">Família inteligente, finanças sob controle</div>
@@ -2017,10 +2026,10 @@
 <!-- EMAILJS CONFIG MODAL -->
 
   <!-- ═══════════ LOGIN SCREEN ═══════════ -->
-  <div id="loginScreen" style="display:none;position:fixed;inset:0;background:linear-gradient(135deg,#0d3d2b 0%,#1e5c42 60%,#0d3d2b 100%);z-index:9999;align-items:center;justify-content:center;flex-direction:column;padding:24px">
-    <div style="width:100%;max-width:400px;background:#fff;border-radius:20px;padding:36px 32px;box-shadow:0 24px 80px rgba(0,0,0,.35)">
+  <div id="loginScreen" class="ft-login-screen" style="display:none;position:fixed;inset:0;background:linear-gradient(135deg,#0d3d2b 0%,#1e5c42 60%,#0d3d2b 100%);z-index:9999;align-items:center;justify-content:center;flex-direction:column;padding:24px;contain:layout paint style;isolation:isolate">
+    <div class="ft-login-card" style="width:100%;max-width:400px;background:#fff;border-radius:20px;padding:36px 32px;box-shadow:0 24px 80px rgba(0,0,0,.35);backface-visibility:hidden;-webkit-backface-visibility:hidden">
       <div style="text-align:center;margin-bottom:28px">
-        <img id="loginLogoImg" src="https://deciofranchini-oss.github.io/fintrack/logo.jpg" alt="Logo" class="login-logo-anim" style="width:200px;height:auto;object-fit:contain;margin-bottom:12px">
+        <img id="loginLogoImg" src="https://deciofranchini-oss.github.io/fintrack/logo.png" alt="Logo" class="login-logo-anim" style="width:200px;height:auto;object-fit:contain;margin-bottom:12px">
         <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#9ca3af">Família inteligente,  Finanças sob controle</div>
       </div>
       <div id="loginFormArea">
@@ -2028,11 +2037,11 @@
         <!-- Login method toggle -->
         <div style="display:flex;background:#f3f4f6;border-radius:10px;padding:3px;margin-bottom:20px;gap:2px">
           <button id="loginTabPassword" onclick="switchLoginTab('password')"
-            style="flex:1;padding:8px;border:none;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;transition:all .2s;background:linear-gradient(135deg,#1e5c42,#2a6049);color:#fff;font-family:inherit">
+            style="flex:1;padding:8px;border:none;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;background:linear-gradient(135deg,#1e5c42,#2a6049);color:#fff;font-family:inherit">
             🔑 Senha
           </button>
           <button id="loginTabMagic" onclick="switchLoginTab('magic')"
-            style="flex:1;padding:8px;border:none;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;transition:all .2s;background:transparent;color:#6b7280;font-family:inherit">
+            style="flex:1;padding:8px;border:none;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;background:transparent;color:#6b7280;font-family:inherit">
             ✉️ Link por E-mail
           </button>
         </div>
@@ -2042,15 +2051,13 @@
           <div class="form-group" style="margin-bottom:16px">
             <label style="font-size:.8rem;font-weight:600;color:#374151;margin-bottom:4px;display:block">E-mail</label>
             <input type="email" id="loginEmail" placeholder="seu@email.com"
-              style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;transition:border .15s;box-sizing:border-box"
-              onfocus="this.style.borderColor='#2a6049'" onblur="this.style.borderColor='#e5e7eb'"
+              style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;box-sizing:border-box"
               onkeydown="if(event.key==='Enter')document.getElementById('loginPassword').focus()">
           </div>
           <div class="form-group" style="margin-bottom:20px;position:relative">
             <label style="font-size:.8rem;font-weight:600;color:#374151;margin-bottom:4px;display:block">Senha</label>
             <input type="password" id="loginPassword" placeholder="••••••••"
-              style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;transition:border .15s;box-sizing:border-box;padding-right:44px"
-              onfocus="this.style.borderColor='#2a6049'" onblur="this.style.borderColor='#e5e7eb'"
+              style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;box-sizing:border-box;padding-right:44px"
               onkeydown="if(event.key==='Enter')doLogin()">
             <button onclick="toggleLoginPwd()" style="position:absolute;right:12px;bottom:11px;background:none;border:none;cursor:pointer;font-size:1rem;color:#9ca3af">👁</button>
           </div>
@@ -2059,7 +2066,7 @@
             <label for="rememberMe" style="font-size:.82rem;color:#6b7280;cursor:pointer;user-select:none">Lembrar meu e-mail e senha</label>
           </div>
           <button onclick="doLogin()" id="loginBtn"
-            style="width:100%;padding:13px;background:linear-gradient(135deg,#1e5c42,#2a6049);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:600;cursor:pointer;transition:all .15s;font-family:inherit">
+            style="width:100%;padding:13px;background:linear-gradient(135deg,#1e5c42,#2a6049);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:600;cursor:pointer;font-family:inherit">
             Entrar
           </button>
           <div style="text-align:center;margin-top:10px">
@@ -2077,12 +2084,11 @@
           <div class="form-group" style="margin-bottom:20px">
             <label style="font-size:.8rem;font-weight:600;color:#374151;margin-bottom:4px;display:block">E-mail</label>
             <input type="email" id="magicEmail" placeholder="seu@email.com"
-              style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;transition:border .15s;box-sizing:border-box"
-              onfocus="this.style.borderColor='#2a6049'" onblur="this.style.borderColor='#e5e7eb'"
+              style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;box-sizing:border-box"
               onkeydown="if(event.key==='Enter')doMagicLink()">
           </div>
           <button onclick="doMagicLink()" id="magicLinkBtn"
-            style="width:100%;padding:13px;background:linear-gradient(135deg,#1e5c42,#2a6049);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:600;cursor:pointer;transition:all .15s;font-family:inherit">
+            style="width:100%;padding:13px;background:linear-gradient(135deg,#1e5c42,#2a6049);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:600;cursor:pointer;font-family:inherit">
             ✉️ Enviar Link de Acesso
           </button>
           <!-- Sent confirmation state -->
@@ -2135,14 +2141,14 @@
         <div class="form-group" style="margin-bottom:12px">
           <label style="font-size:.8rem;font-weight:600;color:#374151;margin-bottom:4px;display:block">Nova senha</label>
           <input type="password" id="recoveryPwd1" placeholder="Mínimo 8 caracteres" autocomplete="new-password"
-            style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;transition:border .15s;box-sizing:border-box"
+            style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;box-sizing:border-box"
             onfocus="this.style.borderColor='#2a6049'" onblur="this.style.borderColor='#e5e7eb'"
             onkeydown="if(event.key==='Enter')document.getElementById('recoveryPwd2').focus()">
         </div>
         <div class="form-group" style="margin-bottom:20px">
           <label style="font-size:.8rem;font-weight:600;color:#374151;margin-bottom:4px;display:block">Confirmar senha</label>
           <input type="password" id="recoveryPwd2" placeholder="Repita a nova senha" autocomplete="new-password"
-            style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;transition:border .15s;box-sizing:border-box"
+            style="width:100%;padding:11px 14px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:.9rem;outline:none;box-sizing:border-box"
             onfocus="this.style.borderColor='#2a6049'" onblur="this.style.borderColor='#e5e7eb'"
             onkeydown="if(event.key==='Enter')doRecoveryPwd()">
         </div>
@@ -4993,7 +4999,7 @@
     <!-- Header -->
     <div class="wz-header">
       <div class="wz-logo">
-        <img id="wzLogoImg" src="https://deciofranchini-oss.github.io/fintrack/logo.jpg" alt="Family FinTrack" style="height:28px;object-fit:contain">
+        <img id="wzLogoImg" src="https://deciofranchini-oss.github.io/fintrack/logo2.png" alt="Family FinTrack" style="height:28px;object-fit:contain">
       </div>
       <button class="wz-close-btn" onclick="_wzDismiss()" title="Pular configuração">✕</button>
     </div>
