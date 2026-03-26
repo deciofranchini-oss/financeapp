@@ -24,7 +24,7 @@ body{font-family:var(--font-sans);background:var(--bg);color:var(--text);height:
 .sidebar-logo{padding:0;border-bottom:1px solid var(--border);overflow:hidden;}
 .sidebar-logo-mark{display:flex;align-items:center;gap:10px;margin-bottom:2px;}
 .logo-icon{width:34px;height:34px;background:var(--accent);border-radius:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.9rem;font-weight:600;font-family:var(--font-serif);letter-spacing:-.02em;flex-shrink:0;}
-.sidebar-logo h1{font-family:var(--font-serif);font-size:1.25rem;font-weight:600;color:var(--text);letter-spacing:-.02em;line-height:1;}
+.sidebar-logo h1{font-family:var(--font-serif);font-size: 1.8rem;font-weight:600;color:var(--text);letter-spacing:-.02em;line-height:1;}
 .sidebar-logo p{font-size:.7rem;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;padding-left:44px;}
 .sidebar-nav{flex:1;padding:10px 12px;overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;}
 .nav-section{margin-bottom:14px;}
@@ -495,6 +495,34 @@ input[type="color"]{padding:4px;height:38px;cursor:pointer;}
   font-size: .85rem; color: var(--muted); transition: background .12s;
 }
 .cat-none-option:hover { background: var(--bg2); }
+
+/* ─── CAT PICKER SEARCH ─── */
+.cat-search-wrap {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 2;
+  background: var(--surface);
+}
+.cat-search-icon { font-size: .85rem; color: var(--muted); flex-shrink: 0; line-height: 1; }
+.cat-search-input {
+  flex: 1; min-width: 0;
+  border: 1px solid var(--border2); border-radius: 6px;
+  padding: 5px 8px; font-size: .82rem;
+  background: var(--bg2); color: var(--text);
+  font-family: var(--font-sans);
+  outline: none; transition: border-color .15s;
+}
+.cat-search-input:focus { border-color: var(--accent); background: var(--surface); }
+.cat-search-input::placeholder { color: var(--muted); }
+.cat-search-clear {
+  display: none; /* shown via JS when input has value */
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: .8rem; padding: 2px 4px;
+  border-radius: 4px; line-height: 1; flex-shrink: 0;
+  transition: color .12s, background .12s;
+}
+.cat-search-clear:hover { color: var(--text); background: var(--bg2); }
 
 /* ─── PAYEE GROUPS ─── */
 .payee-group-wrap { border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; margin-bottom: 14px; }
@@ -1310,5 +1338,125 @@ body.tx-compact .tx-table .badge{
     text-align:right !important;
     font-size:1.05rem;
     font-weight:700;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   AUDIT PAGE — UX melhorada
+══════════════════════════════════════════════════════════════════════ */
+
+/* Linha colorida por status */
+.audit-tr-confirmed td { border-left: none; }
+.audit-tr-pending td:first-child  { border-left: 3px solid var(--amber); }
+.audit-tr-error   td:first-child  { border-left: 3px solid var(--red);   }
+
+/* KPI counters clicáveis — feedback visual */
+.audit-counter { transition: box-shadow .15s, transform .1s; }
+.audit-counter:hover { transform: translateY(-1px); }
+.audit-counter:active { transform: translateY(0); }
+
+/* Filtro de mês alinhado com os demais selects */
+#auditMonthFilter::-webkit-calendar-picker-indicator { opacity: .6; cursor: pointer; }
+
+/* Tabela: header sticky em scroll vertical */
+#auditTable thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface2);
+  z-index: 1;
+}
+
+
+/* === THEME UPDATE === */
+.topbar, .header, .app-header {
+  background: linear-gradient(135deg, #0E3B2B 0%, #145238 52%, #1C6A49 100%) !important;
+  color: #F7FAF8;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+}
+
+.page-titlebar {
+  background: #305E4E !important;
+  color: #F7FAF8;
+}
+
+.fx-bar {
+  background: #F4FBF7;
+  color: #23483B;
+  border-bottom: 1px solid #D8EADF;
+}
+
+
+
+/* === 2026-03-26 FINAL MOBILE TX WIDTH REBALANCE === */
+@media (max-width: 720px){
+  #page-transactions #txBody tr.tx-row-clickable{
+    grid-template-columns: minmax(38px, 10%) minmax(0, 60%) minmax(82px, 20%) !important;
+    gap: 10px !important;
+    align-items: center !important;
+  }
+
+  #page-transactions #txBody td.tx-v2-date{
+    width: auto !important;
+    min-width: 38px !important;
+    max-width: 10% !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    align-items: flex-start !important;
+    justify-content: center !important;
+    text-align: left !important;
+  }
+
+  #page-transactions #txBody td.tx-v2-body{
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    padding-right: 6px !important;
+    overflow: hidden !important;
+  }
+
+  #page-transactions #txBody td.tx-v2-right{
+    width: auto !important;
+    min-width: 82px !important;
+    max-width: 20% !important;
+    padding-right: 0 !important;
+    white-space: nowrap !important;
+  }
+
+  #page-transactions .tx-v2-title{
+    display: -webkit-box !important;
+    -webkit-box-orient: vertical !important;
+    -webkit-line-clamp: 2 !important;
+    line-clamp: 2 !important;
+    white-space: normal !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    max-width: none !important;
+    line-height: 1.12 !important;
+  }
+
+  #page-transactions .tx-v2-mobile-meta{
+    display: block !important;
+    max-width: none !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  #page-transactions .tx-v2-account-line{
+    display: block !important;
+    max-width: none !important;
+    min-width: 0 !important;
+  }
+
+  #page-transactions .tx-v2-account-line .tx-v2-acct-pill{
+    max-width: 100% !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  #page-transactions .tx-v2-amt-wrap{
+    width: 100% !important;
+    align-items: flex-end !important;
   }
 }
