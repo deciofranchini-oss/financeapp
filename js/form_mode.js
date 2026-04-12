@@ -390,7 +390,7 @@ async function txAiAnalyze() {
   if (analyzeBtn) { analyzeBtn.disabled = true; analyzeBtn.textContent = '⏳ Analisando…'; }
 
   try {
-    const apiKey = await getAppSetting('gemini_api_key', '').catch(() => '');
+    const apiKey = await getGeminiApiKey().catch(() => '');
     if (!apiKey || !apiKey.startsWith('AIza')) {
       throw new Error('Chave Gemini não configurada. Acesse Configurações → IA para adicionar.');
     }
@@ -449,24 +449,13 @@ Responda SOMENTE com JSON válido, sem explicações:
   "confidence": "high"
 }`;
 
-  const model = window.RECEIPT_AI_MODEL || 'gemini-2.5-flash-lite';
+  const model = (typeof getGeminiModel === 'function') ? await getGeminiModel() : (window.RECEIPT_AI_MODEL || 'gemini-2.5-flash');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 300, temperature: 0.1 },
-    }),
+  const data = await geminiRetryFetch(url, {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: 300, temperature: 0.1 },
   });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `HTTP ${resp.status}`);
-  }
-  const data = await resp.json();
-  let raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  raw = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();
-  try { return JSON.parse(raw); } catch(_) { throw new Error('Resposta inválida da IA'); }
+  return _parseGeminiJSON(data);
 }
 
 function _txAiApplyResult(r) {
@@ -509,7 +498,7 @@ function _txAiApplyResult(r) {
   }
   if (r.date) {
     const dateEl = document.getElementById('txDate');
-    if (dateEl) dateEl.value = r.date;
+    if (dateEl) dateEl.value = (r.date||'').slice(0,10);
   }
   if (r.memo) {
     const memoEl = document.getElementById('txMemo');
@@ -660,15 +649,25 @@ function loadAlertPrefsIntoProfile() {
   if (soundEl) soundEl.checked = sound;
 }
 
-function saveAlertPrefsFromProfile() {
+async function saveAlertPrefsFromProfile() {
   const style    = document.getElementById('myProfileAlertStyle')?.value    || 'toast';
   const duration = document.getElementById('myProfileAlertDuration')?.value || '3200';
   const sound    = !!(document.getElementById('myProfileAlertSound')?.checked);
+  // 1. Salvar localmente (imediato)
   try {
     localStorage.setItem(ALERT_STYLE_KEY(),    style);
     localStorage.setItem(ALERT_DURATION_KEY(), duration);
     localStorage.setItem(ALERT_SOUND_KEY(),    String(sound));
   } catch(_) {}
+  // 2. Persistir no Supabase (sincroniza entre dispositivos)
+  if (typeof saveAppSetting === 'function') {
+    const uid = window.currentUser?.id || 'local';
+    await Promise.all([
+      saveAppSetting(`pref_${uid}_alert_style`,    style).catch(()=>{}),
+      saveAppSetting(`pref_${uid}_alert_duration`, duration).catch(()=>{}),
+      saveAppSetting(`pref_${uid}_alert_sound`,    sound).catch(()=>{}),
+    ]);
+  }
 }
 
 // ── Override toast() to respect user alert style pref ─────────────────────

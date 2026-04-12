@@ -224,6 +224,8 @@ async function confirmTxClipImport() {
 }
 
 async function loadTransactions(){
+  // Restore collapsed/expanded state of filter panel
+  if (typeof _txRestoreFilterPanel === 'function') _txRestoreFilterPanel();
   try {
     const result = await DB.transactions.load({
       filter:    state.txFilter,
@@ -250,6 +252,47 @@ async function loadTransactions(){
     renderTransactions();
   } catch(e) { toast(e.message,'error'); }
 }
+// ── Dream selector helper ────────────────────────────────────────────────────
+async function _populateTxDreamSelect(selectedId = null) {
+  const group = document.getElementById('txDreamGroup');
+  const sel   = document.getElementById('txDreamId');
+  if (!group || !sel) return;
+
+  // Show only when dreams module is enabled
+  const dreamsOn = (typeof isModuleEnabled === 'function') && isModuleEnabled('dreams');
+  group.style.display = dreamsOn ? '' : 'none';
+  if (!dreamsOn) return;
+
+  try {
+    const { data } = await famQ(
+      sb.from('dreams').select('id,title,dream_type').eq('status','active').order('title')
+    );
+    const dreams = data || [];
+    sel.innerHTML = '<option value="">— Nenhum sonho —</option>' +
+      dreams.map(d => {
+        const emoji = { viagem:'✈️', imovel:'🏠', veiculo:'🚗', educacao:'🎓',
+          saude:'💊', negocio:'💼', aposentadoria:'🌅', familia:'👨‍👩‍👧',
+          lazer:'🎉', outro:'🌟' }[d.dream_type] || '🌟';
+        const sel_ = d.id === selectedId ? ' selected' : '';
+        return `<option value="${d.id}"${sel_}>${emoji} ${(d.title||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')}</option>`;
+      }).join('');
+  } catch(e) {
+    console.warn('[tx dream select]', e.message);
+    group.style.display = 'none';
+  }
+}
+
+// FX endpoint — must be declared before any async function that uses it
+const FX_API_BASE = (typeof window !== 'undefined' && window.FX_API_BASE)
+  ? window.FX_API_BASE
+  : 'https://api.frankfurter.dev/v1';
+
+// ── Module-level state — declared at TOP to avoid let/const TDZ errors ─────
+// (function declarations are hoisted; let/const are NOT — they must come first)
+let _txDetailId   = null;   // id da transação aberta no detail/modal
+let _txSwipeBound = false;  // swipe listener bound guard
+const _tagsState  = { tags: [], allTags: [], similarTags: [], activeIdx: -1 };
+
 let _filterTxDebounceTimer = null;
 function filterTransactions(immediate = false){
   state.txFilter.search=document.getElementById('txSearch').value;
@@ -283,14 +326,37 @@ function filterTransactions(immediate = false){
 
 // ── Collapsible filter panel ──────────────────────────────────────────────
 function _txToggleFilters() {
-  const panel = document.getElementById('tx-filters-panel');
-  const btn   = document.getElementById('txFilterToggle');
+  const panel  = document.getElementById('tx-filters-panel');
+  const btn    = document.getElementById('txFilterToggle');
+  const hdr    = document.getElementById('tx-filters-panel-header');
   if (!panel) return;
   const isOpen = panel.classList.contains('open');
-  panel.classList.toggle('open', !isOpen);
-  if (btn) btn.classList.toggle('active', !isOpen);
+  const nowOpen = !isOpen;
+  panel.classList.toggle('open', nowOpen);
+  if (btn) btn.classList.toggle('active', nowOpen);
+  if (hdr) hdr.setAttribute('aria-expanded', String(nowOpen));
+  // Persist state
+  try { localStorage.setItem('tx_filters_open', String(nowOpen)); } catch(_) {}
 }
 window._txToggleFilters = _txToggleFilters;
+
+// Restore filter panel state on load
+function _txRestoreFilterPanel() {
+  try {
+    const saved = localStorage.getItem('tx_filters_open');
+    // Default: open if there are active filters, collapsed otherwise
+    const panel = document.getElementById('tx-filters-panel');
+    const btn   = document.getElementById('txFilterToggle');
+    const hdr   = document.getElementById('tx-filters-panel-header');
+    if (!panel) return;
+    // If user explicitly saved a preference, use it; otherwise default closed
+    const shouldOpen = saved === 'true';
+    panel.classList.toggle('open', shouldOpen);
+    if (btn) btn.classList.toggle('active', shouldOpen);
+    if (hdr) hdr.setAttribute('aria-expanded', String(shouldOpen));
+  } catch(_) {}
+}
+window._txRestoreFilterPanel = _txRestoreFilterPanel;
 
 function _txUpdateFilterBadge() {
   const btn = document.getElementById('txFilterToggle');
@@ -301,8 +367,44 @@ function _txUpdateFilterBadge() {
     ...(state.txFilter.memberIds || [])
   ].filter(Boolean).length;
   btn.classList.toggle('has-filters', activeCount > 0);
+
+  // ── Account filter badge ──────────────────────────────────────────────────
+  const badge    = document.getElementById('txAccountBadge');
+  const badgeLbl = document.getElementById('txAccountBadgeLabel');
+  const acctId   = state.txFilter.account || '';
+  if (badge) {
+    if (acctId) {
+      // Find account name from state
+      const acct = (state.accounts || []).find(a => a.id === acctId);
+      const name = acct ? acct.name : 'Conta filtrada';
+      if (badgeLbl) badgeLbl.textContent = name;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+  // Update the header badge showing active filter count
+  const _headerBadge = document.getElementById('tx-filters-badge');
+  const _headerTitle = document.getElementById('tx-filters-panel-title');
+  if (_headerBadge) {
+    _headerBadge.textContent = activeCount || '';
+    _headerBadge.classList.toggle('visible', activeCount > 0);
+  }
+  if (_headerTitle) {
+    _headerTitle.textContent = activeCount > 0 ? `Filtros ativos` : 'Filtros';
+    _headerTitle.style.color = activeCount > 0 ? 'var(--accent)' : 'var(--text2)';
+  }
+
+}window._txUpdateFilterBadge = _txUpdateFilterBadge;
+
+function clearTxAccountFilter() {
+  const sel = document.getElementById('txAccount');
+  if (sel) { sel.value = ''; sel.classList.remove('is-active'); }
+  state.txFilter.account = '';
+  _txUpdateFilterBadge();
+  loadTransactions();
 }
-window._txUpdateFilterBadge = _txUpdateFilterBadge;
+window.clearTxAccountFilter = clearTxAccountFilter;
 
 function populateTxMonthFilter() {
   const sel = document.getElementById('txMonth');
@@ -396,6 +498,30 @@ async function buildAccountRunningBalanceMap(accountId) {
   });
   return map;
 }
+
+// ── quickToggleTxStatus: toggle confirmed ↔ pending without opening modal ──
+async function quickToggleTxStatus(txId, newStatus) {
+  if (!txId) return;
+  const btn = document.querySelector(`[data-tx-id="${txId}"] .tx-status-toggle-btn`);
+  if (btn) { btn.style.opacity = '0.5'; btn.disabled = true; }
+  try {
+    const { error } = await sb.from('transactions').update({ status: newStatus })
+      .eq('id', txId).eq('family_id', famId());
+    if (error) throw error;
+    // Update state cache
+    const tx = (state.transactions || []).find(t => t.id === txId);
+    if (tx) tx.status = newStatus;
+    toast(newStatus === 'confirmed' ? '✅ Transação confirmada' : '⏳ Marcada como pendente', 'success');
+    // Refresh the list in place
+    if (typeof loadTransactions === 'function') await loadTransactions();
+    if (state.currentPage === 'dashboard' && typeof loadDashboard === 'function') loadDashboard();
+  } catch(e) {
+    toast('Erro ao atualizar status: ' + (e.message || e), 'error');
+    if (btn) { btn.style.opacity = '1'; btn.disabled = false; }
+  }
+}
+window.quickToggleTxStatus = quickToggleTxStatus;
+
 function txRow(t, showAccount=true, runningBalance=null) {
   const isPending = (t.status||'confirmed') === 'pending';
 
@@ -487,30 +613,41 @@ function txRow(t, showAccount=true, runningBalance=null) {
           onchange="toggleReconcileCheck('${t.id}',this)">
       </label>
     </td>`;
-    return `<tr class="tx-row-clickable${isPending?' tx-pending':''}${reconciledCls}${checkedCls}" data-tx-id="${t.id}" onclick="openTxDetail('${t.id}')">
+    return `<tr class="tx-row-clickable${isPending?' tx-pending':''}${reconciledCls}${checkedCls}" data-tx-id="${t.id}" onclick="openTxDetail('${t.id}')" style="cursor:pointer">
       ${checkboxCell}
       <td class="tx-v2-date">${dateStr}${pendDot}</td>
       <td class="tx-v2-body">
         <div class="tx-v2-title">${titleCategoryIconHtml}<span class="tx-v2-desc-text">${esc(t.description||'—')}</span>${attach}${reconcileBadge}</div>
         ${detailLines}
       </td>
-      <td class="tx-v2-right">
+      <td class="tx-v2-right" style="position:relative">
         <div class="tx-v2-amt-wrap">${amtHtml}</div>
         ${balHtml}
+        <button class="tx-edit-btn" title="Editar transação"
+          onclick="event.stopPropagation();editTransaction('${t.id}')"
+          aria-label="Editar">✏️</button>
       </td>
     </tr>`;
   }
 
   // ── Modo normal ──
-  return `<tr class="tx-row-clickable${isPending?' tx-pending':''}${isReconciled?' tx-reconciled':''}" data-tx-id="${t.id}" onclick="openTxDetail('${t.id}')">
+  return `<tr class="tx-row-clickable${isPending?' tx-pending':''}${isReconciled?' tx-reconciled':''}" data-tx-id="${t.id}" onclick="openTxDetail('${t.id}')" style="cursor:pointer">
     <td class="tx-v2-date">${dateStr}${pendDot}</td>
     <td class="tx-v2-body">
       <div class="tx-v2-title">${titleCategoryIconHtml}<span class="tx-v2-desc-text">${esc(t.description||'—')}</span>${attach}${reconcileBadge}</div>
       ${detailLines}
     </td>
-    <td class="tx-v2-right">
+    <td class="tx-v2-right" style="position:relative">
       <div class="tx-v2-amt-wrap">${amtHtml}</div>
       ${balHtml}
+      <button class="tx-status-toggle-btn" title="${isPending ? 'Marcar como confirmada' : 'Marcar como pendente'}"
+        onclick="event.stopPropagation();quickToggleTxStatus('${t.id}','${isPending?'confirmed':'pending'}')"
+        aria-label="${isPending ? 'Confirmar' : 'Pendente'}"
+        style="opacity:${isPending?'1':'0'};pointer-events:${isPending?'auto':'auto'}"
+      >${isPending ? '✅' : '⏳'}</button>
+      <button class="tx-edit-btn" title="Editar transação"
+        onclick="event.stopPropagation();editTransaction('${t.id}')"
+        aria-label="Editar">✏️</button>
     </td>
   </tr>`;
 }
@@ -579,12 +716,22 @@ async function confirmReconcileMode() {
   const confirmBtn = document.getElementById('btnConfirmReconcile');
   if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Salvando…'; }
   try {
-    // Batch: update all checked as reconciled + confirmed
-    const { error } = await famQ(
+    let error = null;
+    ({ error } = await famQ(
       sb.from('transactions')
         .update({ is_reconciled: true, status: 'confirmed' })
         .in('id', ids)
-    );
+    ));
+    if (error && (error.message?.includes('is_reconciled') || error.code === '42703')) {
+      const { error: e2 } = await famQ(
+        sb.from('transactions').update({ status: 'confirmed' }).in('id', ids)
+      );
+      if (e2) throw e2;
+      toast(`✓ ${ids.length} transaç${ids.length !== 1 ? 'ões confirmadas' : 'ão confirmada'} (execute reconciliation_migration.sql para habilitar marcação)`, 'warning');
+      exitReconcileMode(true);
+      await loadTransactions();
+      return;
+    }
     if (error) throw error;
     toast(`✓ ${ids.length} transaç${ids.length !== 1 ? 'ões reconciliadas' : 'ão reconciliada'}`, 'success');
     exitReconcileMode(true);
@@ -703,8 +850,8 @@ function renderTransactions(){
     let html = '';
     let lastDate = null;
     let bandIndex = 0;
-    const TODAY_STR = new Date().toISOString().slice(0,10);
-    const YESTERDAY_STR = new Date(Date.now()-86400000).toISOString().slice(0,10);
+    const TODAY_STR = (typeof localDateStr==='function'?localDateStr():new Date().toISOString().slice(0,10));
+    const YESTERDAY_STR = (()=>{const d=new Date();d.setDate(d.getDate()-1);return typeof localDateStr==='function'?localDateStr(d):d.toISOString().slice(0,10);})();
     // Pre-compute per-day totals for the summary
     const dayTotals = {};
     txList.forEach(tx => {
@@ -850,13 +997,270 @@ function toggleTxGroup(k) {
 }
 
 function changePage(dir){state.txPage+=dir;loadTransactions();}
+
+// ══ Tags Field — chips visuais com autocomplete ══════════════════════════════
+
+// Coletar todas as tags usadas no histórico de transações
+async function _loadAllTags() {
+  try {
+    const { data } = await famQ(
+      sb.from('transactions').select('tags').not('tags', 'is', null).limit(500)
+    );
+    const freq = {};
+    (data || []).forEach(t => {
+      (t.tags || []).forEach(tag => {
+        const k = tag.trim().toLowerCase();
+        if (k) freq[k] = (freq[k] || 0) + 1;
+      });
+    });
+    // Ordenar por frequência
+    _tagsState.allTags = Object.entries(freq)
+      .sort((a, b) => b[1] - a[1])
+      .map(([tag, count]) => ({ tag, count }));
+  } catch(e) {
+    _tagsState.allTags = [];
+  }
+}
+
+// Buscar tags de transações com descrição ou beneficiário similar
+async function _loadSimilarTags(description, payeeId) {
+  _tagsState.similarTags = [];
+  if (!description && !payeeId) return;
+  try {
+    let q = famQ(sb.from('transactions').select('tags,description,payee_id'))
+      .not('tags', 'is', null);
+    if (payeeId) {
+      q = q.eq('payee_id', payeeId);
+    } else if (description && description.length >= 3) {
+      q = q.ilike('description', `%${description.slice(0, 20)}%`);
+    }
+    const { data } = await q.limit(100);
+    const freq = {};
+    (data || []).forEach(t => {
+      (t.tags || []).forEach(tag => {
+        const k = tag.trim().toLowerCase();
+        if (k) freq[k] = (freq[k] || 0) + 1;
+      });
+    });
+    _tagsState.similarTags = Object.entries(freq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([tag, count]) => ({ tag, count }));
+  } catch(e) {}
+}
+
+function _tagsRenderChips() {
+  const chipsEl = document.getElementById('txTagsChips');
+  const hiddenEl = document.getElementById('txTags');
+  if (!chipsEl) return;
+  chipsEl.innerHTML = _tagsState.tags.map((tag, i) => `
+    <span class="tags-chip" title="${esc(tag)}">
+      <span>${esc(tag)}</span>
+      <button class="tags-chip-remove" type="button" onclick="event.stopPropagation();_tagsRemove(${i})">✕</button>
+    </span>`).join('');
+  if (hiddenEl) hiddenEl.value = _tagsState.tags.join(', ');
+}
+
+function _tagsAdd(tag) {
+  const t = tag.trim().toLowerCase();
+  if (!t) return;
+  if (!_tagsState.tags.map(x => x.toLowerCase()).includes(t)) {
+    _tagsState.tags.push(tag.trim());
+    _tagsRenderChips();
+  }
+  const inp = document.getElementById('txTagsInput');
+  if (inp) { inp.value = ''; inp.focus(); }
+  _tagsHideSuggestions();
+}
+
+function _tagsRemove(idx) {
+  _tagsState.tags.splice(idx, 1);
+  _tagsRenderChips();
+}
+
+function _tagsHideSuggestions() {
+  const el = document.getElementById('txTagsSuggestions');
+  if (el) el.style.display = 'none';
+  _tagsState.activeIdx = -1;
+}
+
+function _tagsShowSuggestions(query) {
+  const el = document.getElementById('txTagsSuggestions');
+  if (!el) return;
+  const q = (query || '').trim().toLowerCase();
+  const existing = _tagsState.tags.map(t => t.toLowerCase());
+
+  // Similar tags (de transações com mesma descrição/beneficiário)
+  const similar = _tagsState.similarTags
+    .filter(s => !existing.includes(s.tag) && (!q || s.tag.includes(q)))
+    .slice(0, 4);
+
+  // Todas as tags filtradas por query
+  const all = _tagsState.allTags
+    .filter(s => !existing.includes(s.tag) && s.tag.includes(q || ''))
+    .filter(s => !similar.find(x => x.tag === s.tag))
+    .slice(0, 6);
+
+  if (!similar.length && !all.length && !q) {
+    el.style.display = 'none';
+    return;
+  }
+
+  let html = '';
+  if (similar.length) {
+    html += `<div class="tags-sug-section">Sugeridas para esta transação</div>`;
+    html += similar.map((s, i) => `
+      <div class="tags-sug-item" data-tag="${esc(s.tag)}" onclick="_tagsAdd('${esc(s.tag)}')" onmouseenter="_tagsSetActive(${i})">
+        <span style="font-size:.8rem">✨</span>
+        <span class="tags-sug-tag">${esc(s.tag)}</span>
+        <span class="tags-sug-similar">${s.count}× similar</span>
+      </div>`).join('');
+  }
+  if (all.length) {
+    html += `<div class="tags-sug-section">${q ? 'Corresponde a' : 'Mais usadas'}</div>`;
+    html += all.map((s, i) => `
+      <div class="tags-sug-item" data-tag="${esc(s.tag)}" onclick="_tagsAdd('${esc(s.tag)}')" onmouseenter="_tagsSetActive(${similar.length + i})">
+        <span style="font-size:.8rem">🏷</span>
+        <span class="tags-sug-tag">${esc(s.tag)}</span>
+        <span class="tags-sug-count">${s.count}×</span>
+      </div>`).join('');
+  }
+  if (!html && q) {
+    html = `<div class="tags-sug-item" data-tag="${esc(q)}" onclick="_tagsAdd('${esc(q)}')">
+      <span>➕</span><span class="tags-sug-tag">Criar tag "${esc(q)}"</span>
+    </div>`;
+  }
+
+  el.innerHTML = html;
+  el.style.display = html ? '' : 'none';
+  _tagsState.activeIdx = -1;
+}
+
+function _tagsSetActive(idx) {
+  _tagsState.activeIdx = idx;
+  document.querySelectorAll('#txTagsSuggestions .tags-sug-item').forEach((el, i) => {
+    el.classList.toggle('active', i === idx);
+  });
+}
+
+function _initTagsField(existingTags) {
+  _tagsState.tags = (existingTags || []).filter(Boolean);
+  _tagsState.activeIdx = -1;
+  _tagsRenderChips();
+
+  const inp = document.getElementById('txTagsInput');
+  const field = document.getElementById('txTagsField');
+  if (!inp) return;
+
+  inp.value = '';
+
+  // Click sur le wrapper → focus l'input
+  if (field) field.onclick = (e) => { if (e.target !== inp) inp.focus(); };
+
+  inp.oninput = () => {
+    const val = inp.value;
+    if (val.endsWith(',') || val.endsWith(' ') || val.endsWith(';')) {
+      const tag = val.slice(0, -1).trim();
+      if (tag) _tagsAdd(tag);
+    } else {
+      _tagsShowSuggestions(val.trim());
+    }
+  };
+
+  inp.onkeydown = (e) => {
+    const items = document.querySelectorAll('#txTagsSuggestions .tags-sug-item');
+    const sug = document.getElementById('txTagsSuggestions');
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      if (_tagsState.activeIdx >= 0 && items[_tagsState.activeIdx]) {
+        const tag = items[_tagsState.activeIdx].dataset.tag;
+        if (tag) _tagsAdd(tag);
+      } else if (inp.value.trim()) {
+        _tagsAdd(inp.value.trim());
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      _tagsSetActive(Math.min(_tagsState.activeIdx + 1, items.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      _tagsSetActive(Math.max(_tagsState.activeIdx - 1, 0));
+    } else if (e.key === 'Escape') {
+      _tagsHideSuggestions();
+    } else if (e.key === 'Backspace' && !inp.value && _tagsState.tags.length) {
+      _tagsRemove(_tagsState.tags.length - 1);
+    }
+  };
+
+  inp.onfocus = () => {
+    _loadAllTags().then(() => _tagsShowSuggestions(inp.value.trim()));
+    // Carregar similares com base nos campos já preenchidos
+    const desc = document.getElementById('txDesc')?.value?.trim();
+    const payeeId = document.getElementById('txPayeeId')?.value;
+    _loadSimilarTags(desc, payeeId).then(() => _tagsShowSuggestions(inp.value.trim()));
+  };
+
+  inp.onblur = () => {
+    // Delay para permitir click nos itens
+    setTimeout(() => {
+      if (inp.value.trim()) _tagsAdd(inp.value.trim());
+      _tagsHideSuggestions();
+    }, 200);
+  };
+}
+
+// Obter tags do campo visual (não do hidden input)
+function _getTagsFieldValue() {
+  return [..._tagsState.tags];
+}
+
+// Expor no window para uso em onclick
+window._tagsAdd    = _tagsAdd;
+window._tagsRemove = _tagsRemove;
+window._tagsSetActive = _tagsSetActive;
+
+
+// ── swapTxAccounts: invert origin ↔ destination accounts in transfer ──────
+function swapTxAccounts() {
+  const srcSel = document.getElementById('txAccountId');
+  const dstSel = document.getElementById('txTransferTo');
+  if (!srcSel || !dstSel) return;
+  const srcVal = srcSel.value;
+  const dstVal = dstSel.value;
+  if (!srcVal || !dstVal) return;
+  // Swap
+  srcSel.value = dstVal;
+  dstSel.value = srcVal;
+  srcSel.dispatchEvent(new Event('change'));
+  dstSel.dispatchEvent(new Event('change'));
+  // Brief visual feedback
+  const btn = document.querySelector('#txSwapAccountsBtn button');
+  if (btn) {
+    btn.style.background = 'var(--accent-lt,rgba(42,96,73,.1))';
+    btn.style.borderColor = 'var(--accent)';
+    btn.style.color = 'var(--accent)';
+    setTimeout(() => {
+      btn.style.background = 'var(--surface2)';
+      btn.style.borderColor = 'var(--border)';
+      btn.style.color = 'var(--text2)';
+    }, 350);
+  }
+}
+window.swapTxAccounts = swapTxAccounts;
+
+
 async function openTransactionModal(id=''){
+  try {
   // Ensure family composition is loaded so the member picker renders with actual members
   if (typeof loadFamilyComposition === 'function' && typeof _fmc !== 'undefined' && !_fmc.loaded) {
     await loadFamilyComposition().catch(() => {});
   }
   resetTxModal();
-  document.getElementById('txDate').value=new Date().toISOString().slice(0,10);
+  document.getElementById('txDate').value=(typeof localDateStr==='function'?localDateStr():new Date().toISOString().slice(0,10));
+  // Show split button and +1 button in footer (new tx only)
+  const _spBtn = document.getElementById('txSplitOpenBtn');
+  if (_spBtn) _spBtn.style.display = '';
+  const _addBtn = document.getElementById('txSaveAndAddBtn');
+  if (_addBtn) _addBtn.style.display = '';
   document.getElementById('txModalTitle').textContent='Nova Transação';
   if(id) {
     editTransaction(id);
@@ -871,15 +1275,366 @@ async function openTransactionModal(id=''){
         _onTxSourceAccountChange(filteredAccId);
       }
     }
+    // Popular objetivo e sonho — nova transação começa sem vínculo
+    if (typeof populateObjectiveSelect === 'function') {
+      populateObjectiveSelect('txObjectiveId', null).catch(() => {});
+    }
+    _populateTxDreamSelect(null).catch(() => {});
     openModal('txModal');
+  // Check existing reimbursement link for this transaction
+  if (typeof checkReimbOnOpen === 'function') {
+    const _txId = document.getElementById('txId')?.value;
+    if (_txId) checkReimbOnOpen(_txId).catch(()=>{});
+  }
   if (typeof initTxFormMode === 'function') initTxFormMode();
   }
+  } catch(e) {
+    console.error('[openTransactionModal]', e);
+    toast('Erro ao abrir formulário: ' + e.message, 'error');
+  }
 }
+// ══════════════════════════════════════════════════════════════════════════════
+//  SMART AI SUGGESTIONS ENGINE — v2
+//  Single Gemini call returns payee + category + account + member together.
+//  Also triggers when payee is selected (to suggest category).
+//  Supports both 'tx' (transaction) and 'sc' (scheduled) contexts.
+// ══════════════════════════════════════════════════════════════════════════════
+
+const _aiSuggest = {
+  timer:   { tx: null, sc: null },
+  pending: { tx: null, sc: null },  // { payee, category, account, member }
+  loading: { tx: false, sc: false },
+};
+
+// Keep legacy vars to avoid breaking any external references
+let _aiPayeeTimer = null, _aiPayeePending = null;
+let _aiAccountTimer = null, _aiAccountPending = null;
+let _aiMemberTimer = null, _aiMemberPending = null;
+
+// ── Entry points (called from HTML oninput / onblur) ─────────────────────────
+
+function _aiSmartDebounce(val, ctx = 'tx') {
+  if (_aiSuggest.timer[ctx]) clearTimeout(_aiSuggest.timer[ctx]);
+  _aiHideSuggestPanel(ctx);
+  if (!val || val.trim().length < 4) return;
+  _aiSuggest.timer[ctx] = setTimeout(() => _aiSmartRun(val.trim(), ctx), 750);
+}
+
+function _aiSmartTrigger(val, ctx = 'tx') {
+  if (!val || val.trim().length < 4) return;
+  if (_aiSuggest.timer[ctx]) { clearTimeout(_aiSuggest.timer[ctx]); _aiSuggest.timer[ctx] = null; }
+  _aiSmartRun(val.trim(), ctx);
+}
+
+// ── Core: build context and call Gemini (or fallback) ────────────────────────
+
+async function _aiSmartRun(desc, ctx) {
+  if (_aiSuggest.loading[ctx]) return;
+
+  // Don't suggest fields already filled
+  const payeeAlreadySet = !!document.getElementById(ctx + 'PayeeId')?.value;
+  const catAlreadySet   = !!(ctx === 'tx'
+    ? document.getElementById('txCategoryId')?.value
+    : document.getElementById('scCategoryId')?.value);
+  const accAlreadySet   = !!document.getElementById(ctx === 'tx' ? 'txAccountId' : 'scAccountId')?.value;
+  const memberAlreadySet = ctx === 'tx'
+    ? document.querySelectorAll('#txFamilyMemberPicker .fmc-pick-chip').length > 0
+    : false;
+
+  if (payeeAlreadySet && catAlreadySet && accAlreadySet && memberAlreadySet) return;
+
+  _aiSuggest.loading[ctx] = true;
+  try {
+    const apiKey = await getGeminiApiKey().catch(() => '');
+    if (apiKey?.startsWith('AIza')) {
+      await _aiSmartGemini(desc, ctx, { payeeAlreadySet, catAlreadySet, accAlreadySet, memberAlreadySet });
+    } else {
+      _aiSmartFallback(desc, ctx, { payeeAlreadySet, catAlreadySet, accAlreadySet, memberAlreadySet });
+    }
+  } catch (_) {
+    _aiSmartFallback(desc, ctx, { payeeAlreadySet, catAlreadySet, accAlreadySet, memberAlreadySet });
+  } finally {
+    _aiSuggest.loading[ctx] = false;
+  }
+}
+
+async function _aiSmartGemini(desc, ctx, flags) {
+  const payees    = (state.payees    || []).slice(0, 100).map(p => p.name);
+  const cats      = (state.categories || []).filter(c => c.type !== 'transferencia').slice(0, 80).map(c => c.name);
+  const accounts  = (state.accounts  || []).slice(0, 20).map(a => a.name);
+  const members   = typeof getFamilyMembers === 'function' ? getFamilyMembers().map(m => m.name) : [];
+
+  // Build a minimal recent history snapshot for smarter matching
+  const recentSnap = (state.transactions || []).slice(0, 60)
+    .filter(t => t.description)
+    .map(t => {
+      const cat = (state.categories || []).find(c => c.id === t.category_id)?.name;
+      const acc = (state.accounts   || []).find(a => a.id === t.account_id)?.name;
+      const pay = (state.payees     || []).find(p => p.id === t.payee_id)?.name;
+      return [t.description, pay, cat, acc].filter(Boolean).join('|');
+    }).slice(0, 30).join('\n');
+
+  const prompt = `You are a financial assistant helping fill a transaction form.
+
+Transaction description typed by user: "${desc}"
+
+Available data:
+PAYEES: ${payees.join(', ') || 'none'}
+CATEGORIES: ${cats.join(', ') || 'none'}
+ACCOUNTS: ${accounts.join(', ') || 'none'}
+FAMILY MEMBERS: ${members.join(', ') || 'none'}
+
+Recent transaction history (desc|payee|category|account):
+${recentSnap || 'none'}
+
+Based on the description and history, suggest the BEST match for each field.
+If no good match exists for a field, use null.
+Respond ONLY with valid JSON, no explanation:
+{
+  "payee": "exact name from PAYEES list or null",
+  "category": "exact name from CATEGORIES list or null",
+  "account": "exact name from ACCOUNTS list or null",
+  "member": "exact name from FAMILY MEMBERS list or null",
+  "confidence": "high|medium|low"
+}`;
+
+  const apiKey = await getGeminiApiKey();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
+
+  let result;
+  try {
+    const json = await geminiRetryFetch(url, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 80, temperature: 0 },
+    });
+    result = _parseGeminiJSON(json);
+  } catch (_) {
+    _aiSmartFallback(desc, ctx, flags);
+    return;
+  }
+
+  _aiSmartApplySuggestions(result, ctx, flags);
+}
+
+function _aiSmartFallback(desc, ctx, flags) {
+  // Pure client-side fallback — frequency analysis on recent transactions
+  const words = desc.toLowerCase().split(/\s+/).filter(w => w.length >= 3);
+  if (!words.length) return;
+
+  const recent = (state.transactions || []).slice(0, 300);
+  const payeeScores = {}, catScores = {}, accScores = {}, memberScores = {};
+
+  for (const tx of recent) {
+    if (!tx.description) continue;
+    const txWords = tx.description.toLowerCase().split(/\s+/);
+    const matchCount = words.filter(w => txWords.some(tw => tw.includes(w) || w.includes(tw))).length;
+    if (!matchCount) continue;
+    const weight = matchCount;
+    if (tx.payee_id)    payeeScores[tx.payee_id]   = (payeeScores[tx.payee_id]   || 0) + weight;
+    if (tx.category_id) catScores[tx.category_id]  = (catScores[tx.category_id]  || 0) + weight;
+    if (tx.account_id)  accScores[tx.account_id]   = (accScores[tx.account_id]   || 0) + weight;
+    const mids = tx.family_member_ids?.length ? tx.family_member_ids : (tx.family_member_id ? [tx.family_member_id] : []);
+    for (const mid of mids) memberScores[mid] = (memberScores[mid] || 0) + weight;
+  }
+
+  const topPayee  = Object.entries(payeeScores).sort((a,b)=>b[1]-a[1])[0];
+  const topCat    = Object.entries(catScores).sort((a,b)=>b[1]-a[1])[0];
+  const topAcc    = Object.entries(accScores).sort((a,b)=>b[1]-a[1])[0];
+  const topMember = Object.entries(memberScores).sort((a,b)=>b[1]-a[1])[0];
+
+  const payeeObj  = topPayee?.[1] >= 1 ? (state.payees    || []).find(p => p.id === topPayee[0])  : null;
+  const catObj    = topCat?.[1]   >= 1 ? (state.categories|| []).find(c => c.id === topCat[0])    : null;
+  const accObj    = topAcc?.[1]   >= 1 ? (state.accounts  || []).find(a => a.id === topAcc[0])    : null;
+  const members   = typeof getFamilyMembers === 'function' ? getFamilyMembers() : [];
+  const memberObj = topMember?.[1] >= 2 ? members.find(m => m.id === topMember[0]) : null;
+
+  _aiSmartApplySuggestions({
+    payee:    payeeObj?.name   || null,
+    category: catObj?.name    || null,
+    account:  accObj?.name    || null,
+    member:   memberObj?.name || null,
+    confidence: 'medium',
+  }, ctx, flags);
+}
+
+function _aiSmartApplySuggestions(result, ctx, flags) {
+  const suggestions = [];
+
+  // Payee suggestion
+  if (!flags.payeeAlreadySet && result.payee) {
+    const matched = (state.payees || []).find(p =>
+      p.name.toLowerCase() === result.payee.toLowerCase() ||
+      p.name.toLowerCase().includes(result.payee.toLowerCase())
+    );
+    if (matched) {
+      suggestions.push({
+        type: 'payee', icon: '👤', label: 'Beneficiário',
+        value: matched.name, id: matched.id,
+        apply: () => {
+          selectPayee(matched.id, matched.name, ctx);
+          // After selecting payee, trigger category suggestion from payee history
+          if (ctx === 'tx' && typeof suggestCategoryForPayee === 'function') {
+            suggestCategoryForPayee(matched.id);
+          }
+        },
+      });
+    }
+  }
+
+  // Category suggestion
+  if (!flags.catAlreadySet && result.category) {
+    const matched = (state.categories || []).find(c =>
+      c.name.toLowerCase() === result.category.toLowerCase() ||
+      c.name.toLowerCase().includes(result.category.toLowerCase())
+    );
+    if (matched) {
+      suggestions.push({
+        type: 'category', icon: matched.icon || '📂', label: 'Categoria',
+        value: matched.name, id: matched.id, color: matched.color,
+        apply: () => {
+          if (ctx === 'tx') {
+            setCatPickerValue(matched.id);
+            hideCatSuggestion();
+          } else if (ctx === 'sc' && typeof setCatPickerValue === 'function') {
+            setCatPickerValue(matched.id, 'sc');
+          }
+        },
+      });
+    }
+  }
+
+  // Account suggestion
+  if (!flags.accAlreadySet && result.account) {
+    const accSelId = ctx === 'tx' ? 'txAccountId' : 'scAccountId';
+    const matched = (state.accounts || []).find(a =>
+      a.name.toLowerCase() === result.account.toLowerCase() ||
+      a.name.toLowerCase().includes(result.account.toLowerCase())
+    );
+    if (matched) {
+      suggestions.push({
+        type: 'account', icon: matched.icon || '🏦', label: 'Conta',
+        value: matched.name, id: matched.id,
+        apply: () => {
+          const sel = document.getElementById(accSelId);
+          if (sel) { sel.value = matched.id; sel.dispatchEvent(new Event('change')); }
+        },
+      });
+    }
+  }
+
+  // Member suggestion (tx only for now)
+  if (ctx === 'tx' && !flags.memberAlreadySet && result.member) {
+    const members = typeof getFamilyMembers === 'function' ? getFamilyMembers() : [];
+    const matched = members.find(m =>
+      m.name.toLowerCase() === result.member.toLowerCase() ||
+      m.name.toLowerCase().includes(result.member.toLowerCase())
+    );
+    if (matched) {
+      suggestions.push({
+        type: 'member', icon: '👤', label: 'Membro',
+        value: matched.name, id: matched.id,
+        apply: () => {
+          if (typeof renderFmcMultiPicker === 'function') {
+            renderFmcMultiPicker('txFamilyMemberPicker', { selected: [matched.id] });
+          }
+        },
+      });
+    }
+  }
+
+  if (!suggestions.length) return;
+
+  _aiSuggest.pending[ctx] = suggestions;
+  _aiRenderSuggestPanel(ctx, suggestions);
+}
+
+// ── Render the suggestion panel ───────────────────────────────────────────────
+
+function _aiRenderSuggestPanel(ctx, suggestions) {
+  const panelId = ctx + 'AiSuggestionsPanel';
+  const chipsId = ctx + 'AiSuggestChips';
+  const panel = document.getElementById(panelId);
+  const chips = document.getElementById(chipsId);
+  if (!panel || !chips) return;
+
+  chips.innerHTML = suggestions.map((s, i) => {
+    const colorStyle = s.color ? `border-left: 3px solid ${s.color}` : '';
+    return `<div class="ai-suggest-chip" style="${colorStyle}">
+      <span class="ai-suggest-chip-label">${s.label}</span>
+      <button class="ai-suggest-chip-value" onclick="_aiApplySuggestion('${ctx}',${i})"
+        title="Aplicar sugestão">
+        ${s.icon} ${esc(s.value)}
+      </button>
+      <button class="ai-suggest-chip-dismiss" onclick="_aiDismissSuggestion('${ctx}',${i})"
+        title="Ignorar">✕</button>
+    </div>`;
+  }).join('');
+
+  panel.style.display = 'block';
+}
+
+function _aiHideSuggestPanel(ctx) {
+  const panel = document.getElementById(ctx + 'AiSuggestionsPanel');
+  if (panel) panel.style.display = 'none';
+  _aiSuggest.pending[ctx] = null;
+}
+
+function _aiApplySuggestion(ctx, idx) {
+  const suggestions = _aiSuggest.pending[ctx];
+  if (!suggestions?.[idx]) return;
+  suggestions[idx].apply();
+  // Remove this chip from the panel
+  suggestions.splice(idx, 1);
+  if (!suggestions.length) {
+    _aiHideSuggestPanel(ctx);
+  } else {
+    _aiRenderSuggestPanel(ctx, suggestions);
+  }
+}
+
+function _aiDismissSuggestion(ctx, idx) {
+  const suggestions = _aiSuggest.pending[ctx];
+  if (!suggestions) return;
+  suggestions.splice(idx, 1);
+  if (!suggestions.length) {
+    _aiHideSuggestPanel(ctx);
+  } else {
+    _aiRenderSuggestPanel(ctx, suggestions);
+  }
+}
+
+function _aiDismissAll(ctx) {
+  _aiHideSuggestPanel(ctx);
+}
+
+// ── Legacy compatibility shims (kept so old HTML references still work) ───────
+
+function _aiPayeeDebounce(val)       { _aiSmartDebounce(val, 'tx'); }
+function _aiAccountDebounce(val)     { /* absorbed into _aiSmartDebounce */ }
+function _aiMemberDebounce(val)      { /* absorbed into _aiSmartDebounce */ }
+function _aiSuggestPayeeFromDesc(v)  { _aiSmartTrigger(v, 'tx'); }
+function _applyAiPayeeSuggestion()   { /* legacy — now handled by chip buttons */ }
+function _dismissAiPayeeSuggestion() { _aiHideSuggestPanel('tx'); }
+function _applyAiAccountSuggestion() { /* legacy */ }
+function _dismissAiAccountSuggestion(){ _aiHideSuggestPanel('tx'); }
+function _applyAiMemberSuggestion()  { /* legacy */ }
+function _dismissAiMemberSuggestion(){ _aiHideSuggestPanel('tx'); }
+
+// ── Trigger from payee selection (category suggestion based on payee history) ─
+
+function _aiSuggestFromPayee(payeeId, ctx) {
+  if (!payeeId || ctx !== 'tx') return;
+  // suggestCategoryForPayee already called by selectPayee → handled there
+}
+
+
 function resetTxModal(){
-  ['txId','txDesc','txMemo','txTags'].forEach(f=>document.getElementById(f).value='');
+  try {
+  ['txId','txDesc','txMemo','txTags'].forEach(f=>{ const el=document.getElementById(f); if(el) el.value=''; });
+  _initTagsField([]); // Inicializar campo de tags vazio para nova transação
   const stEl=document.getElementById('txStatus'); if(stEl) stEl.value='confirmed';
   setAmtField('txAmount', 0);
-  document.getElementById('txTypeField').value='expense';
+  const _ttf=document.getElementById('txTypeField'); if(_ttf) _ttf.value='expense';
   _hideTxCurrencyPanel();
   setTxType('expense');clearPayeeField('tx');hideCatSuggestion();setCatPickerValue(null);
   // Always populate full currency list on open — user can pick currency before selecting account
@@ -887,11 +1642,11 @@ function resetTxModal(){
   // Reset attachment — clear pending file AND all UI state
   window._txPendingFile = null;
   window._txPendingName = null;
-  document.getElementById('txAttachUrl').value = '';
-  document.getElementById('txAttachNameHidden').value = '';
+  const _attUrl=document.getElementById('txAttachUrl'); if(_attUrl) _attUrl.value='';
+  const _attNm=document.getElementById('txAttachNameHidden'); if(_attNm) _attNm.value='';
   try { document.getElementById('txAttachFile').value = ''; } catch(e) {}
-  document.getElementById('txAttachPreview').style.display = 'none';
-  document.getElementById('txAttachArea').style.display = '';
+  const _attPrev=document.getElementById('txAttachPreview'); if(_attPrev) _attPrev.style.display='none';
+  const _attArea=document.getElementById('txAttachArea'); if(_attArea) _attArea.style.display='';
   // Reset IA de recibo
   if (typeof resetReceiptAI === 'function') resetReceiptAI();
   const oldThumb = document.getElementById('txAttachThumb');
@@ -899,8 +1654,8 @@ function resetTxModal(){
   // Reset IOF
   const iofCb = document.getElementById('txIsInternational');
   if(iofCb) iofCb.checked = false;
-  document.getElementById('txIofMirrorInfo').classList.remove('visible');
-  document.getElementById('txIofGroup').style.display='none';
+  document.getElementById('txIofMirrorInfo')?.classList.remove('visible');
+  const _iofGrp=document.getElementById('txIofGroup'); if(_iofGrp) _iofGrp.style.display='none';
   // Render family member multi-picker (cleared state)
   if (typeof renderFmcMultiPicker === 'function') {
     renderFmcMultiPicker('txFamilyMemberPicker', { selected: [] });
@@ -909,10 +1664,18 @@ function resetTxModal(){
   _dismissAiPayeeSuggestion();
   _dismissAiAccountSuggestion();
   _dismissAiMemberSuggestion();
+  // Reset objetivo e sonho
+  const _objSel = document.getElementById('txObjectiveId');
+  if (_objSel) _objSel.value = '';
+  const _drmSel = document.getElementById('txDreamId');
+  if (_drmSel) _drmSel.value = '';
+  // Reset splits de categoria e membro
+  if (typeof txSplitReset === 'function') txSplitReset();
+  } catch(e) { console.error('[resetTxModal]', e); }
 }
 async function editTransaction(id){
   const{data,error}=await sb.from('transactions').select('*').eq('id',id).single();if(error){toast(error.message,'error');return;}
-  document.getElementById('txId').value=data.id;document.getElementById('txDate').value=data.date;setAmtField('txAmount', data.amount);document.getElementById('txDesc').value=data.description||'';document.getElementById('txAccountId').value=data.account_id||'';setCatPickerValue(data.category_id||null);document.getElementById('txMemo').value=data.memo||'';document.getElementById('txTags').value=(data.tags||[]).join(', ');setPayeeField(data.payee_id||null,'tx');
+  document.getElementById('txId').value=data.id;document.getElementById('txDate').value=(data.date||'').slice(0,10);setAmtField('txAmount', data.amount);document.getElementById('txDesc').value=data.description||'';document.getElementById('txAccountId').value=data.account_id||'';setCatPickerValue(data.category_id||null);document.getElementById('txMemo').value=data.memo||'';document.getElementById('txTags').value=(data.tags||[]).join(', ');_initTagsField(data.tags||[]);setPayeeField(data.payee_id||null,'tx');
   // Load attachment if exists
   if (data.attachment_url) {
     document.getElementById('txAttachUrl').value        = data.attachment_url;
@@ -949,6 +1712,15 @@ async function editTransaction(id){
   window._pendingAmortDebtId = null;
   const _dab = document.getElementById('debtAmortizationBanner');
   if (_dab) { _dab.style.display = 'none'; _dab.innerHTML = ''; }
+  // Carregar objetivo e sonho vinculados
+  if (typeof populateObjectiveSelect === 'function') {
+    populateObjectiveSelect('txObjectiveId', data.objective_id || null).catch(() => {});
+  }
+  _populateTxDreamSelect(data.dream_id || null).catch(() => {});
+  // Carregar splits de categoria e membro
+  if (typeof txSplitLoad === 'function') {
+    txSplitLoad(data.category_splits || [], data.member_shares || []);
+  }
   openModal('txModal');
   if (typeof initTxFormMode === 'function') initTxFormMode();
 }
@@ -980,6 +1752,13 @@ function setTxType(type){
   const isCardPayment = type==='card_payment';
   const isPureTransfer = type==='transfer';
   document.getElementById('txTransferToGroup').style.display=isTransfer?'':'none';
+  const _swapBtn=document.getElementById('txSwapAccountsBtn');
+  if(_swapBtn) _swapBtn.style.display=isTransfer?'flex':'none';
+  // Reembolso button: visible only for expense/income (not transfers)
+  const _reimbBtn=document.getElementById('txReimbBtn');
+  if(_reimbBtn) {
+    _reimbBtn.style.display=isTransfer?'none':'flex';
+  }
   document.getElementById('txPayeeGroup').style.display=isTransfer?'none':'';
   // Show category for expense, income and card_payment; hide only for pure transfer
   document.getElementById('txCategoryGroup').style.display=isPureTransfer?'none':'';
@@ -1005,10 +1784,7 @@ function setTxType(type){
 
 // ── FX / Exchange-rate helpers ─────────────────────────────────────────────
 
-// frankfurter.dev/v1: free, no key, CORS-correct, ECB data
-// Endpoint: GET https://api.frankfurter.dev/v1/YYYY-MM-DD?base=EUR&to=BRL
-// FX_API_BASE is set by fx_rates.js (loaded before this file); fallback here for safety
-const FX_API_BASE = window.FX_API_BASE || 'https://api.frankfurter.dev/v1';
+// FX_API_BASE moved to top of file — see early declarations
 
 function _getTransferCurrencies() {
   const srcId  = document.getElementById('txAccountId').value;
@@ -1090,10 +1866,17 @@ function _hideTxCurrencyPanel() {
 function _rebuildTxCurrencySelect(accountCur, selectedCur) {
   const sel = document.getElementById('txCurrencySelect');
   if (!sel) return;
-  const CURRENCIES = ['BRL','USD','EUR','GBP','AED','ARS','CAD','CHF','JPY','MXN','CLP','COP','PEN','UYU'];
-  const list = [...new Set([accountCur, ...CURRENCIES])];
+  // Lista completa sempre visível — usuário pode escolher qualquer moeda
+  const CURRENCIES = [
+    'BRL','USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD',
+    'AED','ARS','CLP','COP','MXN','PEN','UYU','BOB','PYG',
+    'CNY','HKD','SGD','KRW','INR','THB','IDR','MYR','PHP',
+    'ZAR','EGP','TRY','SEK','NOK','DKK','PLN','CZK','HUF',
+  ];
+  const list = [...new Set([accountCur || 'BRL', ...CURRENCIES])];
+  const picked = selectedCur || accountCur || 'BRL';
   sel.innerHTML = list.map(c =>
-    `<option value="${c}"${c===(selectedCur||accountCur)?' selected':''}>${c}</option>`
+    `<option value="${c}"${c === picked ? ' selected' : ''}>${c}</option>`
   ).join('');
 }
 
@@ -1191,8 +1974,8 @@ async function fetchTxCurrencyRate() {
   if (sugg) sugg.style.display = 'none';
 
   try {
-    let txDate = document.getElementById('txDate')?.value || new Date().toISOString().slice(0,10);
-    const todayStr = new Date().toISOString().slice(0,10);
+    let txDate = document.getElementById('txDate')?.value || (typeof localDateStr==='function'?localDateStr():new Date().toISOString().slice(0,10));
+    const todayStr = (typeof localDateStr==='function'?localDateStr():new Date().toISOString().slice(0,10));
     if (txDate > todayStr) txDate = todayStr;
 
     const url = `${FX_API_BASE}/${txDate}?base=${fetchFrom}&to=${fetchTo}`;
@@ -1434,8 +2217,52 @@ async function _txDupConfirm({ payeeName, catLabel, amtFmt, dateLabel, level = '
   });
 }
 
+
 // ── Duplicate transaction guard ─────────────────────────────────────────────
 let _txSaving = false; // re-entrancy guard against concurrent double-clicks
+
+
+// ── saveTransactionAndAddNew: save current tx then immediately open new form ──
+
+// ── clearAllTxFilters: reset all tx filters and reload ──────────────────────
+function clearAllTxFilters() {
+  // Reset filter state
+  state.txFilter = { month: '', account: '', type: '', status: '', categoryId: '', memberIds: [] };
+  // Reset UI controls
+  const controls = [
+    ['txMonth',''],['txAccount',''],['txCategoryFilter',''],
+    ['txType',''],['txStatusFilter',''],['txMemberPicker',''],
+  ];
+  controls.forEach(([id, val]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  });
+  // Hide account badge
+  const badge = document.getElementById('txAccountBadge');
+  if (badge) badge.style.display = 'none';
+  // Update filter toggle badge
+  if (typeof _txUpdateFilterBadge === 'function') _txUpdateFilterBadge();
+  // Reload
+  if (typeof loadTransactions === 'function') loadTransactions();
+  if (typeof toast === 'function') toast('Filtros limpos', 'info');
+}
+window.clearAllTxFilters = clearAllTxFilters;
+
+async function saveTransactionAndAddNew() {
+  // Guard: only works for NEW transactions (not edits)
+  const currentId = document.getElementById('txId')?.value;
+  if (currentId) { await saveTransaction(); return; }
+
+  // Save the current transaction
+  await saveTransaction();
+
+  // After save, re-open the modal for a new entry
+  // Small delay ensures the previous save completes and toasts are shown
+  setTimeout(() => {
+    if (typeof openTransactionModal === 'function') openTransactionModal();
+  }, 300);
+}
+window.saveTransactionAndAddNew = saveTransactionAndAddNew;
 
 async function saveTransaction(){
   // ── Duplicate detection ──────────────────────────────────────────────────
@@ -1506,12 +2333,32 @@ async function saveTransaction(){
     }
   }
   _txSaving = true;
+  if (window.Cursor) Cursor.show('Salvando transação…', 'save');
   // ── End duplicate detection ──────────────────────────────────────────────
 
   const id=document.getElementById('txId').value,type=document.getElementById('txTypeField').value;
   let amount=getAmtField('txAmount');
   const isTransfer = type==='transfer' || type==='card_payment';
   const isCardPayment = type==='card_payment';
+
+  // ── Validation: transfer must be between different accounts ──
+  if (isTransfer) {
+    const srcAccId = document.getElementById('txAccountId')?.value;
+    const dstAccId = document.getElementById('txTransferTo')?.value;
+    if (!dstAccId) {
+      toast('Selecione a conta de destino.', 'error');
+      _txSaving = false;
+      if (window.Cursor) Cursor.hide();
+      return;
+    }
+    if (srcAccId && dstAccId && srcAccId === dstAccId) {
+      toast('A conta de origem e a conta de destino não podem ser a mesma.', 'error');
+      _txSaving = false;
+      if (window.Cursor) Cursor.hide();
+      return;
+    }
+  }
+
   if(type==='expense')amount=-Math.abs(amount);
   else if(type==='income')amount=Math.abs(amount);
   else if(isTransfer)amount=-Math.abs(amount); // debit origin account
@@ -1525,7 +2372,10 @@ async function saveTransaction(){
       if (fxRate > 0) pairedAmount = Math.abs(amount) * fxRate;
     }
   }
-  const tags=document.getElementById('txTags').value.split(',').map(s=>s.trim()).filter(Boolean);
+  // Ler tags do campo visual (chips) — o hidden input é sincronizado pelos chips
+  const tags = _getTagsFieldValue().length
+    ? _getTagsFieldValue()
+    : (document.getElementById('txTags').value||'').split(',').map(s=>s.trim()).filter(Boolean);
 
   // Determine attachment fields for the DB record
   // Rules:
@@ -1563,16 +2413,31 @@ async function saveTransaction(){
   const txDescEl = document.getElementById('txDesc');
   let autoTxDesc = txDescEl?.value?.trim() || '';
   if (!autoTxDesc) {
-    // Auto-generate from payee name + category name
-    const payeeName    = document.getElementById('txPayeeName')?.value?.trim() || '';
-    const catLabel     = document.getElementById('catPickerLabel')?.textContent?.trim() || '';
-    const cleanCat     = catLabel.replace(/^—.*—$/, '').trim();
-    if (payeeName && cleanCat && cleanCat.length > 0) {
-      autoTxDesc = payeeName + ' — ' + cleanCat;
-    } else if (payeeName) {
-      autoTxDesc = payeeName;
-    } else if (typeof ensureTransactionDescription === 'function') {
-      autoTxDesc = (await ensureTransactionDescription(txDescEl)).trim();
+    if (isTransfer) {
+      // Auto-generate transfer/card-payment description from account names
+      const _srcAccId = document.getElementById('txAccountId')?.value;
+      const _dstAccId = document.getElementById('txTransferTo')?.value;
+      const _srcAcc   = (state.accounts || []).find(a => a.id === _srcAccId);
+      const _dstAcc   = (state.accounts || []).find(a => a.id === _dstAccId);
+      const _srcName  = _srcAcc?.name || 'Origem';
+      const _dstName  = _dstAcc?.name || 'Destino';
+      if (isCardPayment) {
+        autoTxDesc = `Pagamento Cartão ${_dstName}`;
+      } else {
+        autoTxDesc = `Transferência ${_srcName} para ${_dstName}`;
+      }
+    } else {
+      // Auto-generate from payee name + category name
+      const payeeName    = document.getElementById('txPayeeName')?.value?.trim() || '';
+      const catLabel     = document.getElementById('catPickerLabel')?.textContent?.trim() || '';
+      const cleanCat     = catLabel.replace(/^—.*—$/, '').trim();
+      if (payeeName && cleanCat && cleanCat.length > 0) {
+        autoTxDesc = payeeName + ' — ' + cleanCat;
+      } else if (payeeName) {
+        autoTxDesc = payeeName;
+      } else if (typeof ensureTransactionDescription === 'function') {
+        autoTxDesc = (await ensureTransactionDescription(txDescEl)).trim();
+      }
     }
     if (txDescEl && autoTxDesc) txDescEl.value = autoTxDesc;
   }
@@ -1606,11 +2471,18 @@ async function saveTransaction(){
         return ids[0] || null;
       }
       return document.getElementById('txFamilyMember')?.value || null;
-    })()
+    })(),
+    objective_id: document.getElementById('txObjectiveId')?.value || null,
+    dream_id:     document.getElementById('txDreamId')?.value || null,
+    // Splits de categoria e membro
+    category_splits: typeof txSplitGetCategorySplits === 'function' ? txSplitGetCategorySplits() : [],
+    member_shares:   typeof txSplitGetMemberShares   === 'function' ? txSplitGetMemberShares()   : [],
   };
-  if(!data.date||!data.account_id){toast(t('tx.err_date_account'),'error');return;}
+  if(!data.date||!data.account_id){if(window.Cursor)Cursor.hide();_txSaving=false;toast(t('tx.err_date_account'),'error');return;}
   // Beneficiário obrigatório para não-transferências
   if(!isTransfer && !data.payee_id) {
+    if(window.Cursor) Cursor.hide();
+    _txSaving = false;
     toast('Beneficiário / Fonte é obrigatório.','error');
     // Switch to Principal tab to show the field
     if(typeof switchTxTab==='function') {
@@ -1622,6 +2494,8 @@ async function saveTransaction(){
   }
   // Categoria obrigatória para não-transferências
   if(!isTransfer && !data.category_id) {
+    if(window.Cursor) Cursor.hide();
+    _txSaving = false;
     toast('Categoria é obrigatória.','error');
     if(typeof switchTxTab==='function') {
       const btn = document.querySelector('[data-tab="txCtxPrincipal"]');
@@ -1629,6 +2503,9 @@ async function saveTransaction(){
     }
     return;
   }
+  // Track dream_id to create contribution after save
+  const _txDreamIdSelected = document.getElementById('txDreamId')?.value || null;
+
   let err,txResult;
   if(id){
     ({error:err}=await sb.from('transactions').update(data).eq('id',id));
@@ -1685,11 +2562,11 @@ async function saveTransaction(){
         toast('Transferência salva, mas erro ao criar lançamento de entrada: ' + pairedErr.message, 'warning');
       } else if(pairedResult?.id) {
         // Back-link origin row to paired row (best-effort)
-        await sb.from('transactions').update({linked_transfer_id: pairedResult.id}).eq('id', txResult.id).then(()=>{}).catch(()=>{});
+        try { await sb.from('transactions').update({linked_transfer_id: pairedResult.id}).eq('id', txResult.id).then(()=>{}); } catch(_) {};
       }
     }
   }
-  if(err){_txSaving = false; toast(err.message,'error');return;}
+  if(err){_txSaving = false; if(window.Cursor) Cursor.hide(); toast(err.message,'error');return;}
 
   // Create IOF mirror transaction if international (new transactions only)
   // Keep this BEFORE attachment upload. Otherwise an attachment upload failure would
@@ -1711,6 +2588,7 @@ async function saveTransaction(){
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Salvar'; }
     if (!uploadedUrl) {
       // Upload failed — transaction was saved. Existing attachment is preserved; warn the user.
+      if(window.Cursor) Cursor.hide(); _txSaving = false;
       toast('⚠️ Transação salva, mas o anexo não foi enviado. Verifique o bucket "fintrack-attachments" no Supabase.', 'error');
       closeModal('txModal');
       if(!id && savedId) {
@@ -1728,7 +2606,28 @@ async function saveTransaction(){
   if (!id && txResult?.id && window._pendingAmortDebtId && typeof postDebtAmortizationEntry === 'function') {
     await postDebtAmortizationEntry(data.amount, data.date, txResult.id).catch(() => {});
   }
+  // Create dream contribution if dream was selected (new transactions only)
+  if (!id && _txDreamIdSelected && savedId) {
+    try {
+      const _drmAmt = Math.abs(parseFloat(data.brl_amount || data.amount) || 0);
+      if (_drmAmt > 0) {
+        await sb.from('dream_contributions').insert({
+          dream_id:   _txDreamIdSelected,
+          family_id:  famId(),
+          amount:     _drmAmt,
+          date:       data.date || (typeof localDateStr==='function'?localDateStr():new Date().toISOString().slice(0,10)),
+          type:       'transaction',
+          notes:      `Vinculado à transação`,
+          created_at: new Date().toISOString(),
+        });
+      }
+    } catch(drmErr) {
+      console.warn('[dream contribution]', drmErr.message);
+    }
+  }
+
   _txSaving = false; // release guard
+  if (window.Cursor) Cursor.flash(id ? 'Atualizado!' : 'Transação salva!');
   toast(id?'✓ Atualizado!':'✓ Transação salva!','success');
   // Notify user on new transaction if enabled
   if (!id && savedId && typeof notifyOnTransaction === 'function') {
@@ -1752,7 +2651,7 @@ async function duplicateTransaction(id) {
 
 function _openTxAsCopy(orig) {
   // Build a prefilled "new" transaction from orig — no ID, today's date
-  const today = new Date().toISOString().slice(0,10);
+  const today = (typeof localDateStr==='function'?localDateStr():new Date().toISOString().slice(0,10));
   resetTxModal();
   document.getElementById('txDate').value = today;
   document.getElementById('txDesc').value = (orig.description || '') + ' (cópia)';
@@ -1762,6 +2661,11 @@ function _openTxAsCopy(orig) {
   setPayeeField(orig.payee_id || null, 'tx');
   document.getElementById('txMemo').value = orig.memo || '';
   document.getElementById('txTags').value = (orig.tags || []).join(', ');
+  // Copiar objetivo vinculado
+  if (typeof populateObjectiveSelect === 'function') {
+    populateObjectiveSelect('txObjectiveId', orig.objective_id || null).catch(() => {});
+  }
+  _initTagsField(orig.tags || []);
   const stEl = document.getElementById('txStatus');
   if (stEl) stEl.value = orig.status || 'confirmed';
   const type = orig.is_transfer
@@ -1782,346 +2686,6 @@ function _openTxAsCopy(orig) {
   openModal('txModal');
   if (typeof initTxFormMode === 'function') initTxFormMode();
 }
-// ══════════════════════════════════════════════════════════════════════════════
-//  SMART AI SUGGESTIONS ENGINE — v2
-//  Single Gemini call returns payee + category + account + member together.
-//  Also triggers when payee is selected (to suggest category).
-//  Supports both 'tx' (transaction) and 'sc' (scheduled) contexts.
-// ══════════════════════════════════════════════════════════════════════════════
-
-const _aiSuggest = {
-  timer:   { tx: null, sc: null },
-  pending: { tx: null, sc: null },  // { payee, category, account, member }
-  loading: { tx: false, sc: false },
-};
-
-// Keep legacy vars to avoid breaking any external references
-let _aiPayeeTimer = null, _aiPayeePending = null;
-let _aiAccountTimer = null, _aiAccountPending = null;
-let _aiMemberTimer = null, _aiMemberPending = null;
-
-// ── Entry points (called from HTML oninput / onblur) ─────────────────────────
-
-function _aiSmartDebounce(val, ctx = 'tx') {
-  if (_aiSuggest.timer[ctx]) clearTimeout(_aiSuggest.timer[ctx]);
-  _aiHideSuggestPanel(ctx);
-  if (!val || val.trim().length < 4) return;
-  _aiSuggest.timer[ctx] = setTimeout(() => _aiSmartRun(val.trim(), ctx), 750);
-}
-
-function _aiSmartTrigger(val, ctx = 'tx') {
-  if (!val || val.trim().length < 4) return;
-  if (_aiSuggest.timer[ctx]) { clearTimeout(_aiSuggest.timer[ctx]); _aiSuggest.timer[ctx] = null; }
-  _aiSmartRun(val.trim(), ctx);
-}
-
-// ── Core: build context and call Gemini (or fallback) ────────────────────────
-
-async function _aiSmartRun(desc, ctx) {
-  if (_aiSuggest.loading[ctx]) return;
-
-  // Don't suggest fields already filled
-  const payeeAlreadySet = !!document.getElementById(ctx + 'PayeeId')?.value;
-  const catAlreadySet   = !!(ctx === 'tx'
-    ? document.getElementById('txCategoryId')?.value
-    : document.getElementById('scCategoryId')?.value);
-  const accAlreadySet   = !!document.getElementById(ctx === 'tx' ? 'txAccountId' : 'scAccountId')?.value;
-  const memberAlreadySet = ctx === 'tx'
-    ? document.querySelectorAll('#txFamilyMemberPicker .fmc-pick-chip').length > 0
-    : false;
-
-  if (payeeAlreadySet && catAlreadySet && accAlreadySet && memberAlreadySet) return;
-
-  _aiSuggest.loading[ctx] = true;
-  try {
-    const apiKey = await getAppSetting('gemini_api_key', '').catch(() => '');
-    if (apiKey?.startsWith('AIza')) {
-      await _aiSmartGemini(desc, ctx, { payeeAlreadySet, catAlreadySet, accAlreadySet, memberAlreadySet });
-    } else {
-      _aiSmartFallback(desc, ctx, { payeeAlreadySet, catAlreadySet, accAlreadySet, memberAlreadySet });
-    }
-  } catch (_) {
-    _aiSmartFallback(desc, ctx, { payeeAlreadySet, catAlreadySet, accAlreadySet, memberAlreadySet });
-  } finally {
-    _aiSuggest.loading[ctx] = false;
-  }
-}
-
-async function _aiSmartGemini(desc, ctx, flags) {
-  const payees    = (state.payees    || []).slice(0, 100).map(p => p.name);
-  const cats      = (state.categories || []).filter(c => c.type !== 'transferencia').slice(0, 80).map(c => c.name);
-  const accounts  = (state.accounts  || []).slice(0, 20).map(a => a.name);
-  const members   = typeof getFamilyMembers === 'function' ? getFamilyMembers().map(m => m.name) : [];
-
-  // Build a minimal recent history snapshot for smarter matching
-  const recentSnap = (state.transactions || []).slice(0, 60)
-    .filter(t => t.description)
-    .map(t => {
-      const cat = (state.categories || []).find(c => c.id === t.category_id)?.name;
-      const acc = (state.accounts   || []).find(a => a.id === t.account_id)?.name;
-      const pay = (state.payees     || []).find(p => p.id === t.payee_id)?.name;
-      return [t.description, pay, cat, acc].filter(Boolean).join('|');
-    }).slice(0, 30).join('\n');
-
-  const prompt = `You are a financial assistant helping fill a transaction form.
-
-Transaction description typed by user: "${desc}"
-
-Available data:
-PAYEES: ${payees.join(', ') || 'none'}
-CATEGORIES: ${cats.join(', ') || 'none'}
-ACCOUNTS: ${accounts.join(', ') || 'none'}
-FAMILY MEMBERS: ${members.join(', ') || 'none'}
-
-Recent transaction history (desc|payee|category|account):
-${recentSnap || 'none'}
-
-Based on the description and history, suggest the BEST match for each field.
-If no good match exists for a field, use null.
-Respond ONLY with valid JSON, no explanation:
-{
-  "payee": "exact name from PAYEES list or null",
-  "category": "exact name from CATEGORIES list or null",
-  "account": "exact name from ACCOUNTS list or null",
-  "member": "exact name from FAMILY MEMBERS list or null",
-  "confidence": "high|medium|low"
-}`;
-
-  const apiKey = await getAppSetting('gemini_api_key', '');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 80, temperature: 0 },
-    }),
-  });
-  if (!resp.ok) { _aiSmartFallback(desc, ctx, flags); return; }
-
-  const json = await resp.json();
-  let raw = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-  // Strip markdown code fences if present
-  raw = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();
-
-  let result;
-  try { result = JSON.parse(raw); } catch (_) { _aiSmartFallback(desc, ctx, flags); return; }
-
-  _aiSmartApplySuggestions(result, ctx, flags);
-}
-
-function _aiSmartFallback(desc, ctx, flags) {
-  // Pure client-side fallback — frequency analysis on recent transactions
-  const words = desc.toLowerCase().split(/\s+/).filter(w => w.length >= 3);
-  if (!words.length) return;
-
-  const recent = (state.transactions || []).slice(0, 300);
-  const payeeScores = {}, catScores = {}, accScores = {}, memberScores = {};
-
-  for (const tx of recent) {
-    if (!tx.description) continue;
-    const txWords = tx.description.toLowerCase().split(/\s+/);
-    const matchCount = words.filter(w => txWords.some(tw => tw.includes(w) || w.includes(tw))).length;
-    if (!matchCount) continue;
-    const weight = matchCount;
-    if (tx.payee_id)    payeeScores[tx.payee_id]   = (payeeScores[tx.payee_id]   || 0) + weight;
-    if (tx.category_id) catScores[tx.category_id]  = (catScores[tx.category_id]  || 0) + weight;
-    if (tx.account_id)  accScores[tx.account_id]   = (accScores[tx.account_id]   || 0) + weight;
-    const mids = tx.family_member_ids?.length ? tx.family_member_ids : (tx.family_member_id ? [tx.family_member_id] : []);
-    for (const mid of mids) memberScores[mid] = (memberScores[mid] || 0) + weight;
-  }
-
-  const topPayee  = Object.entries(payeeScores).sort((a,b)=>b[1]-a[1])[0];
-  const topCat    = Object.entries(catScores).sort((a,b)=>b[1]-a[1])[0];
-  const topAcc    = Object.entries(accScores).sort((a,b)=>b[1]-a[1])[0];
-  const topMember = Object.entries(memberScores).sort((a,b)=>b[1]-a[1])[0];
-
-  const payeeObj  = topPayee?.[1] >= 1 ? (state.payees    || []).find(p => p.id === topPayee[0])  : null;
-  const catObj    = topCat?.[1]   >= 1 ? (state.categories|| []).find(c => c.id === topCat[0])    : null;
-  const accObj    = topAcc?.[1]   >= 1 ? (state.accounts  || []).find(a => a.id === topAcc[0])    : null;
-  const members   = typeof getFamilyMembers === 'function' ? getFamilyMembers() : [];
-  const memberObj = topMember?.[1] >= 2 ? members.find(m => m.id === topMember[0]) : null;
-
-  _aiSmartApplySuggestions({
-    payee:    payeeObj?.name   || null,
-    category: catObj?.name    || null,
-    account:  accObj?.name    || null,
-    member:   memberObj?.name || null,
-    confidence: 'medium',
-  }, ctx, flags);
-}
-
-function _aiSmartApplySuggestions(result, ctx, flags) {
-  const suggestions = [];
-
-  // Payee suggestion
-  if (!flags.payeeAlreadySet && result.payee) {
-    const matched = (state.payees || []).find(p =>
-      p.name.toLowerCase() === result.payee.toLowerCase() ||
-      p.name.toLowerCase().includes(result.payee.toLowerCase())
-    );
-    if (matched) {
-      suggestions.push({
-        type: 'payee', icon: '👤', label: 'Beneficiário',
-        value: matched.name, id: matched.id,
-        apply: () => {
-          selectPayee(matched.id, matched.name, ctx);
-          // After selecting payee, trigger category suggestion from payee history
-          if (ctx === 'tx' && typeof suggestCategoryForPayee === 'function') {
-            suggestCategoryForPayee(matched.id);
-          }
-        },
-      });
-    }
-  }
-
-  // Category suggestion
-  if (!flags.catAlreadySet && result.category) {
-    const matched = (state.categories || []).find(c =>
-      c.name.toLowerCase() === result.category.toLowerCase() ||
-      c.name.toLowerCase().includes(result.category.toLowerCase())
-    );
-    if (matched) {
-      suggestions.push({
-        type: 'category', icon: matched.icon || '📂', label: 'Categoria',
-        value: matched.name, id: matched.id, color: matched.color,
-        apply: () => {
-          if (ctx === 'tx') {
-            setCatPickerValue(matched.id);
-            hideCatSuggestion();
-          } else if (ctx === 'sc' && typeof setCatPickerValue === 'function') {
-            setCatPickerValue(matched.id, 'sc');
-          }
-        },
-      });
-    }
-  }
-
-  // Account suggestion
-  if (!flags.accAlreadySet && result.account) {
-    const accSelId = ctx === 'tx' ? 'txAccountId' : 'scAccountId';
-    const matched = (state.accounts || []).find(a =>
-      a.name.toLowerCase() === result.account.toLowerCase() ||
-      a.name.toLowerCase().includes(result.account.toLowerCase())
-    );
-    if (matched) {
-      suggestions.push({
-        type: 'account', icon: matched.icon || '🏦', label: 'Conta',
-        value: matched.name, id: matched.id,
-        apply: () => {
-          const sel = document.getElementById(accSelId);
-          if (sel) { sel.value = matched.id; sel.dispatchEvent(new Event('change')); }
-        },
-      });
-    }
-  }
-
-  // Member suggestion (tx only for now)
-  if (ctx === 'tx' && !flags.memberAlreadySet && result.member) {
-    const members = typeof getFamilyMembers === 'function' ? getFamilyMembers() : [];
-    const matched = members.find(m =>
-      m.name.toLowerCase() === result.member.toLowerCase() ||
-      m.name.toLowerCase().includes(result.member.toLowerCase())
-    );
-    if (matched) {
-      suggestions.push({
-        type: 'member', icon: '👤', label: 'Membro',
-        value: matched.name, id: matched.id,
-        apply: () => {
-          if (typeof renderFmcMultiPicker === 'function') {
-            renderFmcMultiPicker('txFamilyMemberPicker', { selected: [matched.id] });
-          }
-        },
-      });
-    }
-  }
-
-  if (!suggestions.length) return;
-
-  _aiSuggest.pending[ctx] = suggestions;
-  _aiRenderSuggestPanel(ctx, suggestions);
-}
-
-// ── Render the suggestion panel ───────────────────────────────────────────────
-
-function _aiRenderSuggestPanel(ctx, suggestions) {
-  const panelId = ctx + 'AiSuggestionsPanel';
-  const chipsId = ctx + 'AiSuggestChips';
-  const panel = document.getElementById(panelId);
-  const chips = document.getElementById(chipsId);
-  if (!panel || !chips) return;
-
-  chips.innerHTML = suggestions.map((s, i) => {
-    const colorStyle = s.color ? `border-left: 3px solid ${s.color}` : '';
-    return `<div class="ai-suggest-chip" style="${colorStyle}">
-      <span class="ai-suggest-chip-label">${s.label}</span>
-      <button class="ai-suggest-chip-value" onclick="_aiApplySuggestion('${ctx}',${i})"
-        title="Aplicar sugestão">
-        ${s.icon} ${esc(s.value)}
-      </button>
-      <button class="ai-suggest-chip-dismiss" onclick="_aiDismissSuggestion('${ctx}',${i})"
-        title="Ignorar">✕</button>
-    </div>`;
-  }).join('');
-
-  panel.style.display = 'block';
-}
-
-function _aiHideSuggestPanel(ctx) {
-  const panel = document.getElementById(ctx + 'AiSuggestionsPanel');
-  if (panel) panel.style.display = 'none';
-  _aiSuggest.pending[ctx] = null;
-}
-
-function _aiApplySuggestion(ctx, idx) {
-  const suggestions = _aiSuggest.pending[ctx];
-  if (!suggestions?.[idx]) return;
-  suggestions[idx].apply();
-  // Remove this chip from the panel
-  suggestions.splice(idx, 1);
-  if (!suggestions.length) {
-    _aiHideSuggestPanel(ctx);
-  } else {
-    _aiRenderSuggestPanel(ctx, suggestions);
-  }
-}
-
-function _aiDismissSuggestion(ctx, idx) {
-  const suggestions = _aiSuggest.pending[ctx];
-  if (!suggestions) return;
-  suggestions.splice(idx, 1);
-  if (!suggestions.length) {
-    _aiHideSuggestPanel(ctx);
-  } else {
-    _aiRenderSuggestPanel(ctx, suggestions);
-  }
-}
-
-function _aiDismissAll(ctx) {
-  _aiHideSuggestPanel(ctx);
-}
-
-// ── Legacy compatibility shims (kept so old HTML references still work) ───────
-
-function _aiPayeeDebounce(val)       { _aiSmartDebounce(val, 'tx'); }
-function _aiAccountDebounce(val)     { /* absorbed into _aiSmartDebounce */ }
-function _aiMemberDebounce(val)      { /* absorbed into _aiSmartDebounce */ }
-function _aiSuggestPayeeFromDesc(v)  { _aiSmartTrigger(v, 'tx'); }
-function _applyAiPayeeSuggestion()   { /* legacy — now handled by chip buttons */ }
-function _dismissAiPayeeSuggestion() { _aiHideSuggestPanel('tx'); }
-function _applyAiAccountSuggestion() { /* legacy */ }
-function _dismissAiAccountSuggestion(){ _aiHideSuggestPanel('tx'); }
-function _applyAiMemberSuggestion()  { /* legacy */ }
-function _dismissAiMemberSuggestion(){ _aiHideSuggestPanel('tx'); }
-
-// ── Trigger from payee selection (category suggestion based on payee history) ─
-
-function _aiSuggestFromPayee(payeeId, ctx) {
-  if (!payeeId || ctx !== 'tx') return;
-  // suggestCategoryForPayee already called by selectPayee → handled there
-}
-
-
 async function deleteTransaction(id){
   if(!confirm('Excluir transação?'))return;
   // 1. Null out any scheduled_occurrence that references this transaction
@@ -2144,10 +2708,15 @@ async function deleteTransaction(id){
 }
 
 /* ── Transaction Detail Drawer ── */
-let _txDetailId = null;
-
 async function openTxDetail(id) {
+  // Guard: evitar dupla abertura (onclick inline + delegation simultâneos)
+  // Timeout reduzido para 150ms — o guard mais longo bloqueava cliques legítimos
+  if (window._txDetailOpening === id) return;
+  window._txDetailOpening = id;
+  setTimeout(() => { window._txDetailOpening = null; }, 150);
+
   _txDetailId = id;
+  window._txDetailId = id; // keep global in sync
 
   // Always fetch fresh from DB to get attachment_name and all joined fields
   const { data, error } = await sb.from('transactions')
@@ -2163,6 +2732,10 @@ async function openTxDetail(id) {
   const amtClass  = isIncome ? 'amount-pos' : 'amount-neg';
   const typeLabel = t.is_card_payment ? '💳 Pgto. Cartão' : t.is_transfer ? '🔄 Transferência' : isIncome ? '📈 Receita' : '📉 Despesa';
   const catColor  = t.categories?.color || 'var(--muted)';
+  // Resolver nome do objetivo (se vinculado)
+  const _objName = t.objective_id
+    ? ((window._objList || []).find(o => o.id === t.objective_id)?.name || '🎯 Objetivo vinculado')
+    : null;
   const accColor  = t.accounts?.color   || 'var(--accent)';
 
   // ── Attachment block ─────────────────────────────────────────────────────
@@ -2226,6 +2799,12 @@ async function openTxDetail(id) {
   const metaRows = [];
   if (t.memo)         metaRows.push(['Memo', esc(t.memo)]);
   if (t.tags?.length) metaRows.push(['Tags', t.tags.map(tag => `<span class="badge badge-muted">${esc(tag)}</span>`).join(' ')]);
+  if (_objName)       metaRows.push(['🎯 Objetivo', `<span style="font-weight:700;color:var(--accent)">${esc(_objName)}</span>`]);
+  // Dream: resolve from _drm cache if available
+  const _drmName = t.dream_id
+    ? ((typeof _drm !== 'undefined' && _drm.dreams || []).find(d => d.id === t.dream_id)?.title || '🌟 Sonho vinculado')
+    : null;
+  if (_drmName)       metaRows.push(['🌟 Sonho', `<span style="font-weight:700;color:#f59e0b">${esc(_drmName)}</span>`]);
   if (t.family_composition) {
     const m = t.family_composition;
     const age = typeof _fmcCalcAge === 'function' ? _fmcCalcAge(m.birth_date) : null;
@@ -2316,7 +2895,6 @@ async function toggleTxDetailStatus() {
 // ─────────────────────────────────────────────
 // Mobile UX: swipe to confirm + compact view
 // ─────────────────────────────────────────────
-let _txSwipeBound = false;
 
 function enhanceTransactionsMobileLayout(){
   const page = document.getElementById('page-transactions');
@@ -2391,36 +2969,85 @@ function initTxMobileUX(){
   // Bind once using event delegation
   if(_txSwipeBound) return;
   _txSwipeBound = true;
-  let startX=0, startY=0, targetEl=null, tracking=false;
+
+  let startX=0, startY=0, targetEl=null, tracking=false, didSwipe=false;
+  let _swipeAxis = null; // null | 'h' | 'v' — declared early to avoid TDZ within closure
+
+  // ── Delegated CLICK: iOS Safari exige cursor:pointer ou listener explícito
+  //    no elemento para disparar click. Adicionamos delegation como garantia.
+  document.addEventListener('click', (ev) => {
+    const row = ev.target.closest?.('.tx-row-clickable');
+    if (!row) return;
+    if (didSwipe) { didSwipe = false; return; } // swipe não abre modal
+    const id = row.getAttribute('data-tx-id');
+    if (id && typeof openTxDetail === 'function') openTxDetail(id);
+  });
 
   document.addEventListener('touchstart', (ev)=>{
     const row = ev.target.closest?.('.tx-row-clickable');
     if(!row) return;
-    // Only enable swipe on small screens
-    if(window.innerWidth>720) return;
-    tracking=true;
+    if(window.innerWidth>720) return; // swipe só em mobile
+    // Não iniciar se tocar no botão de reconciliação ou link interno
+    if(ev.target.closest?.('.reconcile-chk-label,.dcc-toggle,.tx-v2-btns,.btn,a,button')) return;
+    tracking=true; didSwipe=false; _swipeAxis=null;
     targetEl=row;
     const t=ev.touches[0];
     startX=t.clientX; startY=t.clientY;
   }, {passive:true});
 
+  // touchmove — passive:false apenas quando swipe horizontal confirmado.
+  // Lógica em duas fases:
+  //   Fase 1 (primeiros 8px): ainda ambíguo — NÃO chamar preventDefault()
+  //     para que o scroll vertical do browser funcione normalmente.
+  //   Fase 2 (horizontal dominante confirmado): bloquear scroll e animar swipe.
   document.addEventListener('touchmove', (ev)=>{
-    if(!tracking||!targetEl) return;
-    const t=ev.touches[0];
-    const dx=t.clientX-startX; const dy=t.clientY-startY;
-    if(Math.abs(dy) > Math.abs(dx)) return; // vertical scroll wins
+    // Sem tracking ativo → deixar scroll livre (não chamar preventDefault)
+    if(!tracking || !targetEl) return;
 
-    // Allow both directions: right = confirm, left = back to pending
-    const clamped = Math.max(-90, Math.min(dx, 90));
-    targetEl.style.transition='none';
-    targetEl.style.transform=`translateX(${clamped}px)`;
+    const t  = ev.touches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
 
-    if(clamped > 0){
-      targetEl.style.background='var(--green-lt,#dcfce7)';
-    } else if(clamped < 0){
-      targetEl.style.background='var(--amber-lt,#fffbeb)';
+    // Fase de detecção de eixo (aguardar 8px de movimento)
+    if(_swipeAxis === null) {
+      if(adx < 8 && ady < 8) return; // movimento muito pequeno — aguardar
+      _swipeAxis = ady > adx ? 'v' : 'h';
     }
-  }, {passive:true});
+
+    // Eixo vertical → abandonar tracking e liberar scroll
+    if(_swipeAxis === 'v') {
+      tracking    = false;
+      _swipeAxis  = null;
+      targetEl.style.transition = 'transform 150ms ease';
+      targetEl.style.transform  = 'translateX(0px)';
+      targetEl.style.background = '';
+      targetEl = null;
+      return;
+    }
+
+    // Eixo horizontal confirmado → bloquear scroll e animar
+    ev.preventDefault();
+
+    const clamped = Math.max(-100, Math.min(dx, 100));
+    targetEl.style.transition = 'none';
+    // Garantir que overflow:hidden do pai não corte o transform
+    targetEl.style.position  = 'relative';
+    targetEl.style.zIndex    = '1';
+    targetEl.style.transform  = `translateX(${clamped}px)`;
+
+    if(clamped > 8){
+      targetEl.style.background = 'var(--green-lt,#dcfce7)';
+      targetEl.style.boxShadow  = 'inset 4px 0 0 var(--green,#22c55e)';
+    } else if(clamped < -8){
+      targetEl.style.background = 'var(--amber-lt,#fffbeb)';
+      targetEl.style.boxShadow  = 'inset -4px 0 0 var(--amber,#f59e0b)';
+    } else {
+      targetEl.style.background = '';
+      targetEl.style.boxShadow  = '';
+    }
+  }, {passive:false}); // passive:false necessário para poder chamar preventDefault()
 
   document.addEventListener('touchend', async (ev)=>{
     if(!tracking||!targetEl) return;
@@ -2428,28 +3055,33 @@ function initTxMobileUX(){
     const dx = (targetEl.style.transform||'').match(/translateX\(([-0-9.]+)px\)/);
     const moved = dx ? parseFloat(dx[1]) : 0;
 
-    // Reset visuals with animation
-    targetEl.style.transition='transform 180ms ease, background 180ms ease';
+    // Reset visuals com animação
+    targetEl.style.transition='transform 200ms ease, background 200ms ease, box-shadow 200ms ease';
     targetEl.style.transform='translateX(0px)';
     targetEl.style.background='';
+    targetEl.style.boxShadow='';
 
-    tracking=false;
+    tracking=false; _swipeAxis=null;
     const el=targetEl; targetEl=null;
 
     if(!id) return;
-    if(Math.abs(moved) < 60) return;
 
+    // Movimento muito pequeno = tap (não swipe) → click handler cuida
+    if(Math.abs(moved) < 40) return;
+
+    // Swipe confirmado
+    didSwipe = true;
     const isPending = el.classList.contains('tx-pending');
 
     try {
       if(moved > 0) {
-        // Swipe right: pending -> confirmed
+        // Swipe direita: pendente → confirmada
         if(!isPending) return;
         el.classList.add('tx-confirm-anim');
         setTimeout(()=>el.classList.remove('tx-confirm-anim'), 650);
         await setTransactionStatus(id, 'confirmed');
       } else {
-        // Swipe left: confirmed -> pending
+        // Swipe esquerda: confirmada → pendente
         if(isPending) return;
         el.classList.add('tx-pending-anim');
         setTimeout(()=>el.classList.remove('tx-pending-anim'), 650);
@@ -2460,7 +3092,7 @@ function initTxMobileUX(){
     }
   }, {passive:true});
 
-  // Compact view: apply class based on preference
+  // Compact view
   applyTxCompactPreference();
 }
 
@@ -2489,7 +3121,7 @@ async function convertTxToScheduled(txId) {
   el('ctsDesc').value    = t.description || '';
   el('ctsAmount').value  = Math.abs(t.amount || 0).toFixed(2).replace('.', ',');
   el('ctsAccount').textContent = t.accounts?.name || '—';
-  el('ctsDate').value    = t.date || new Date().toISOString().slice(0,10);
+  el('ctsDate').value    = (t.date||'').slice(0,10) || (typeof localDateStr==='function'?localDateStr():new Date().toISOString().slice(0,10));
   el('ctsMemo').value    = t.memo || '';
   el('ctsType').value    = t.is_transfer ? 'transfer' : (t.amount < 0 ? 'expense' : 'income');
 
@@ -2684,3 +3316,794 @@ function getPeriodColor(period) {
     default: return '#1F6B4F';
   }
 }
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window._aiDismissAll                       = _aiDismissAll;
+window._txDetailAction                     = _txDetailAction;
+window._txDupConfirm                       = _txDupConfirm;
+window.confirmReconcileMode                = confirmReconcileMode;
+window.confirmTxClipImport                 = confirmTxClipImport;
+window.editTransaction                     = editTransaction;
+window.enterReconcileMode                  = enterReconcileMode;
+window.exitReconcileMode                   = exitReconcileMode;
+window.fetchSuggestedFxRate                = fetchSuggestedFxRate;
+window.fetchTxCurrencyRate                 = fetchTxCurrencyRate;
+window.filterTransactions                  = filterTransactions;
+window.loadTransactions                    = loadTransactions;
+window.openTransactionModal                = openTransactionModal;
+window.openTxClipboardImport               = openTxClipboardImport;
+window.openTxDetail                        = openTxDetail;
+window.populateTxMonthFilter               = populateTxMonthFilter;
+window.renderTransactions                  = renderTransactions;
+window.saveConvertToScheduled              = saveConvertToScheduled;
+window.saveTransaction                     = saveTransaction;
+window.setTxType                           = setTxType;
+window.setTxView                           = setTxView;
+window.sortTx                              = sortTx;
+window.txClipPasteFromClipboard            = txClipPasteFromClipboard;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  VALORES A RECEBER — Módulo completo
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Mark confirmed income as pending (move to A Receber) ──────────────────
+async function markTxUnreceived(txId) {
+  if (!txId) return;
+  const tx = (state.transactions||[]).find(t => t.id === txId) || {};
+  if ((tx.amount||0) < 0) { toast('Apenas receitas podem ser marcadas como "a receber".','warning'); return; }
+  if ((tx.status||'confirmed') === 'pending') { toast('Esta receita já está pendente.','info'); return; }
+  if (!confirm('Mover para "A Receber"?\nA receita ficará pendente até ser marcada como recebida.')) return;
+  try {
+    const fid2 = typeof famId==='function' ? famId() : currentUser?.family_id;
+    const { error } = await sb.from('transactions')
+      .update({ status:'pending', updated_at:new Date().toISOString() })
+      .eq('id', txId).eq('family_id', fid2);
+    if (error) throw error;
+    const local = (state.transactions||[]).find(t=>t.id===txId);
+    if (local) local.status = 'pending';
+    toast('📬 Movido para "A Receber".','info');
+    closeModal('txDetailModal');
+    await loadAccounts(); await loadTransactions();
+    if (typeof _updateReceivablesBadge==='function') _updateReceivablesBadge().catch(()=>{});
+    if (state.currentPage==='dashboard') loadDashboard();
+    if (state.currentPage==='receivables') loadReceivables();
+  } catch(e) { toast('Erro: '+e.message,'error'); }
+}
+window.markTxUnreceived = markTxUnreceived;
+
+// ── Open receipt modal (from A Receber list) ──────────────────────────────
+function markTxReceived(txId) {
+  // Get tx data from loaded state
+  const tx = (state.transactions||[]).find(t=>t.id===txId);
+  _openReceiptModal({
+    type:        'pending_tx',
+    id:          txId,
+    description: tx?.description || '—',
+    amount:      tx?.amount || 0,
+    currency:    tx?.currency || 'BRL',
+    date:        tx?.date || new Date().toISOString().slice(0,10),
+    accountId:   tx?.account_id || '',
+    payeeName:   tx?.payees?.name || '',
+    memo:        tx?.memo || '',
+  });
+}
+window.markTxReceived = markTxReceived;
+
+// ── Receipt modal ─────────────────────────────────────────────────────────
+function _openReceiptModal(opts) {
+  let modal = document.getElementById('receiptModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'receiptModal';
+    modal.className = 'modal-overlay';
+    modal.style.cssText = 'display:none;z-index:1000';
+    modal.innerHTML = '<div class="modal-box" id="receiptModalBox" style="max-width:480px;width:96vw"></div>';
+    modal.onclick = e => { if (e.target===modal) _closeReceiptModal(); };
+    document.body.appendChild(modal);
+  }
+
+  const box = document.getElementById('receiptModalBox');
+  const today = new Date().toISOString().slice(0,10);
+  const absAmt = Math.abs(opts.amount || 0);
+
+  // Build account options
+  const accs = state.accounts || [];
+  const accOpts = accs.map(a =>
+    '<option value="'+esc(a.id)+'" '+(a.id===opts.accountId?'selected':'')+'>'+
+      esc(a.name)+(a.currency&&a.currency!=='BRL'?' ('+a.currency+')':'')+'</option>'
+  ).join('');
+
+  box.innerHTML =
+    '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid var(--border)">' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        '<div style="width:34px;height:34px;border-radius:10px;background:#dcfce7;display:flex;align-items:center;justify-content:center;font-size:1.1rem">✅</div>' +
+        '<div>' +
+          '<div style="font-size:.9rem;font-weight:800;color:var(--text)">Registrar Recebimento</div>' +
+          '<div style="font-size:.72rem;color:var(--muted)">'+esc(opts.description)+(opts.payeeName?' · '+esc(opts.payeeName):'')+'</div>' +
+        '</div>' +
+      '</div>' +
+      '<button onclick="_closeReceiptModal()" class="modal-close">✕</button>' +
+    '</div>' +
+    '<div style="padding:16px 18px;display:flex;flex-direction:column;gap:14px">' +
+
+      // Account
+      '<div>' +
+        '<label style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">🏦 Conta de destino</label>' +
+        '<select id="rcptAccount" style="width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:10px;font-size:.85rem;font-family:inherit;background:var(--surface);color:var(--text)">' +
+          (accs.length ? accOpts : '<option value="">Nenhuma conta</option>') +
+        '</select>' +
+      '</div>' +
+
+      // Date
+      '<div>' +
+        '<label style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">📅 Data do recebimento</label>' +
+        '<input type="date" id="rcptDate" value="'+today+'" ' +
+          'style="width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:10px;font-size:.85rem;font-family:inherit;background:var(--surface);color:var(--text);box-sizing:border-box">' +
+      '</div>' +
+
+      // Amount
+      '<div>' +
+        '<label style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">💰 Valor recebido</label>' +
+        '<div style="position:relative">' +
+          '<span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:.8rem;color:var(--muted);pointer-events:none">R$</span>' +
+          '<input type="number" id="rcptAmount" value="'+absAmt.toFixed(2)+'" min="0" step="0.01" ' +
+            'style="width:100%;padding:9px 12px 9px 34px;border:1.5px solid var(--border);border-radius:10px;font-size:.9rem;font-weight:700;font-family:inherit;background:var(--surface);color:var(--text);box-sizing:border-box">' +
+        '</div>' +
+        (absAmt > 0 ? '<div style="font-size:.7rem;color:var(--muted);margin-top:4px">Valor original: '+fmt(absAmt)+' — ajuste se houver juros ou correção</div>' : '') +
+      '</div>' +
+
+      // Memo
+      '<div>' +
+        '<label style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:5px">📝 Observação (opcional)</label>' +
+        '<input type="text" id="rcptMemo" value="'+esc(opts.memo||'')+'" placeholder="Ex: Recebido com juros de mora, parcela 3/6…" ' +
+          'style="width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:10px;font-size:.84rem;font-family:inherit;background:var(--surface);color:var(--text);box-sizing:border-box">' +
+      '</div>' +
+
+    '</div>' +
+    '<div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">' +
+      '<button onclick="_closeReceiptModal()" class="btn btn-ghost">Cancelar</button>' +
+      '<button id="rcptConfirmBtn" onclick="_confirmReceival()" class="btn btn-primary" style="background:#16a34a;border-color:#16a34a">✅ Confirmar Recebimento</button>' +
+    '</div>';
+
+  // Store context
+  modal._opts = opts;
+  modal.style.display = 'flex';
+  setTimeout(() => document.getElementById('rcptDate')?.focus(), 100);
+}
+window._openReceiptModal = _openReceiptModal;
+
+function _closeReceiptModal() {
+  const m = document.getElementById('receiptModal');
+  if (m) m.style.display = 'none';
+}
+window._closeReceiptModal = _closeReceiptModal;
+
+async function _confirmReceival() {
+  const modal    = document.getElementById('receiptModal');
+  const opts     = modal?._opts;
+  if (!opts) return;
+
+  const accountId = document.getElementById('rcptAccount')?.value;
+  const date      = document.getElementById('rcptDate')?.value;
+  const amount    = parseFloat(document.getElementById('rcptAmount')?.value) || 0;
+  const memo      = document.getElementById('rcptMemo')?.value?.trim() || '';
+  const btn       = document.getElementById('rcptConfirmBtn');
+
+  if (!accountId) { toast('Selecione uma conta.','warning'); return; }
+  if (!date)      { toast('Informe a data.','warning'); return; }
+  if (amount <= 0){ toast('Informe um valor válido.','warning'); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando…'; }
+
+  const fid = typeof famId==='function' ? famId() : null;
+
+  try {
+    if (opts.type === 'pending_tx') {
+      // ── Case A: pending income transaction ─────────────────────────────
+      const updFields = {
+        status:     'confirmed',
+        account_id: accountId,
+        date,
+        amount,
+        brl_amount: typeof toBRL==='function' ? toBRL(amount, opts.currency||'BRL') : amount,
+        memo:       memo || null,
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await sb.from('transactions')
+        .update(updFields).eq('id', opts.id).eq('family_id', fid);
+      if (error) throw error;
+
+    } else if (opts.type === 'ar_record') {
+      // ── Case B: scheduled_ar_record ────────────────────────────────────
+      // 1. Create a real confirmed transaction
+      const txData = {
+        family_id:    fid,
+        date,
+        description:  opts.description,
+        amount,
+        brl_amount:   typeof toBRL==='function' ? toBRL(amount, opts.currency||'BRL') : amount,
+        currency:     opts.currency || 'BRL',
+        account_id:   accountId,
+        category_id:  opts.categoryId || null,
+        payee_id:     opts.payeeId    || null,
+        status:       'confirmed',
+        is_transfer:  false,
+        memo:         memo || null,
+        created_at:   new Date().toISOString(),
+        updated_at:   new Date().toISOString(),
+      };
+      const { error: txErr } = await sb.from('transactions').insert(txData);
+      if (txErr) throw txErr;
+
+      // 2. Mark ar_record as received
+      const { error: arErr } = await sb.from('scheduled_ar_records')
+        .update({ status:'received', received_at:new Date().toISOString(), updated_at:new Date().toISOString() })
+        .eq('id', opts.id).eq('family_id', fid);
+      if (arErr) console.warn('[receival] ar_record update:', arErr.message);
+    }
+
+    _closeReceiptModal();
+    toast('✅ Recebimento registrado!', 'success');
+    await loadAccounts();
+    if (typeof _updateReceivablesBadge==='function') _updateReceivablesBadge().catch(()=>{});
+    if (state.currentPage==='receivables') await loadReceivables();
+    if (state.currentPage==='transactions') await loadTransactions();
+    if (state.currentPage==='dashboard')   loadDashboard();
+    if (state.currentPage==='scheduled')   { if(typeof loadScheduled==='function') loadScheduled(); }
+
+  } catch(e) {
+    toast('Erro: '+e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '✅ Confirmar Recebimento'; }
+  }
+}
+window._confirmReceival = _confirmReceival;
+
+// ── Update badge ──────────────────────────────────────────────────────────
+async function _updateReceivablesBadge() {
+  try {
+    const fid = typeof famId==='function' ? famId() : currentUser?.family_id;
+    if (!fid || !sb) return;
+    const { count } = await sb.from('transactions')
+      .select('id',{count:'exact',head:true})
+      .eq('family_id',fid).eq('status','pending').gte('amount',0).eq('is_transfer',false);
+    const badge = document.getElementById('receivablesBadge');
+    if (!badge) return;
+    if (count > 0) { badge.textContent=count; badge.style.display=''; }
+    else badge.style.display='none';
+  } catch(_) {}
+}
+window._updateReceivablesBadge = _updateReceivablesBadge;
+
+// ── Load receivables page ─────────────────────────────────────────────────
+async function loadReceivables() {
+  const container = document.getElementById('receivablesBody');
+  const totalEl   = document.getElementById('receivablesTotalAmt');
+  const countEl   = document.getElementById('receivablesCount');
+  const overEl    = document.getElementById('receivablesOverdueAmt');
+  if (!container) return;
+
+  _recvCurrentFilter = 'all';
+  _recvAllRows = [];
+  // Reset filter tabs
+  document.querySelectorAll('.recv-ftab').forEach(b => b.classList.remove('active'));
+  const allTab = document.getElementById('recvFiltAll');
+  if (allTab) allTab.classList.add('active');
+  container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">⏳ Carregando…</div>';
+  if (!sb || !currentUser) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Aguardando conexão…</div>';
+    return;
+  }
+
+  const fid = typeof famId === 'function' ? famId() : null;
+  if (!fid) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Aguardando dados da família…</div>';
+    return;
+  }
+
+  try {
+    // ── Source 1: pending income transactions ─────────────────────────────
+    const { data: txData, error: txErr } = await sb.from('transactions')
+      .select('id,date,description,amount,brl_amount,currency,account_id,category_id,payee_id,accounts!transactions_account_id_fkey(name),categories(name,color,icon),payees(name)')
+      .eq('family_id', fid)
+      .eq('status', 'pending')
+      .gte('amount', 0)
+      .eq('is_transfer', false)
+      .order('date', { ascending: true });
+    if (txErr) throw txErr;
+    const txRows = (txData || []).map(r => ({ ...r, _src: 'tx' }));
+
+    // ── Source 2: scheduled AR records (pending) ──────────────────────────
+    let arRows = [];
+    try {
+      const { data: arData } = await sb.from('scheduled_ar_records')
+        .select('id,date,description,amount,memo,status,sc_id,scheduled_transactions(account_id,payee_id,category_id,accounts!scheduled_transactions_account_id_fkey(name),payees(name),categories(name,color,icon))')
+        .eq('family_id', fid)
+        .eq('status', 'pending')
+        .order('date', { ascending: true });
+      arRows = (arData || []).map(r => ({
+        id:          r.id,
+        date:        r.date,
+        description: r.description,
+        amount:      r.amount,
+        brl_amount:  r.amount,
+        currency:    'BRL',
+        memo:        r.memo,
+        payees:      r.scheduled_transactions?.payees || null,
+        categories:  r.scheduled_transactions?.categories || null,
+        accounts:    r.scheduled_transactions?.['accounts!scheduled_transactions_account_id_fkey'] || null,
+        _src:        'ar',
+        _arId:       r.id,
+      }));
+    } catch(arErr) {
+      console.warn('[receivables] AR records query failed:', arErr?.message);
+    }
+
+    // ── Merge and sort by date ─────────────────────────────────────────────
+    const rows = [...txRows, ...arRows].sort((a, b) => a.date.localeCompare(b.date));
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Load patrimonio flags for TX rows (which transactions are marked as patrimônio)
+    window._recvPatMap = window._recvPatMap || {};
+    if (txRows.length) {
+      try {
+        const txIds = txRows.map(r => r.id);
+        const { data: patData } = await sb.from('transactions')
+          .select('id,include_in_patrimonio')
+          .in('id', txIds);
+        (patData || []).forEach(r => {
+          window._recvPatMap[r.id] = !!r.include_in_patrimonio;
+        });
+      } catch(_) {}
+    }
+    const total   = rows.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+    const overdue = rows.filter(r => r.date < today).reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+
+    const onTime = total - overdue;
+    if (countEl) countEl.textContent = rows.length;
+    if (totalEl) totalEl.textContent = typeof fmt === 'function' ? fmt(total) : total.toFixed(2);
+    if (typeof _syncReceivablesBadge === 'function') _syncReceivablesBadge(rows.length);
+    if (overEl)  overEl.textContent  = typeof fmt === 'function' ? fmt(overdue) : overdue.toFixed(2);
+    const overWrap   = document.getElementById('receivablesOverdueWrap');
+    const okKpi      = document.getElementById('receivablesKpiOk');
+    const onTimeAmtEl = document.getElementById('receivablesOnTimeAmt');
+    if (overWrap)    overWrap.style.display   = overdue > 0 ? '' : 'none';
+    if (onTimeAmtEl) onTimeAmtEl.textContent  = typeof fmt === 'function' ? fmt(onTime) : onTime.toFixed(2);
+    if (okKpi)       okKpi.style.display      = overdue > 0 ? '' : 'none'; // hide if no overdue
+
+    if (!rows.length) {
+      container.innerHTML =
+        '<div style="text-align:center;padding:48px 20px">' +
+        '<div style="font-size:3rem;margin-bottom:14px">📭</div>' +
+        '<div style="font-size:1rem;font-weight:800;color:var(--text)">Nenhum valor a receber</div>' +
+        '<div style="font-size:.82rem;color:var(--muted);margin-top:8px;line-height:1.6">' +
+        'Receitas pendentes de transações ou <strong>Programados marcados como "Não Recebido"</strong> aparecem aqui.</div>' +
+        '<div style="margin-top:20px"><button onclick="navigate(\'transactions\')" ' +
+        'style="font-family:var(--font-sans);font-size:.82rem;font-weight:700;padding:10px 20px;' +
+        'background:var(--accent);color:#fff;border:none;border-radius:10px;cursor:pointer">' +
+        'Ver Transações →</button></div></div>';
+      return;
+    }
+
+    // Store rows globally so filter buttons can re-render without re-fetching
+    _recvAllRows = rows;
+    _recvRenderFiltered();
+
+  } catch(e) {
+    container.innerHTML =
+      '<div style="color:var(--red);padding:24px;font-size:.84rem;text-align:center">❌ ' +
+      (typeof esc === 'function' ? esc(e.message) : e.message) + '</div>';
+  }
+}
+
+/* ── A Receber — filter and quick-add helpers ────────────────────────────── */
+let _recvCurrentFilter = 'all';
+let _recvAllRows = [];
+
+function _recvFilter(filter, btnEl) {
+  _recvCurrentFilter = filter;
+  // Update only tabs in the same container as the clicked button
+  // (avoids cross-contamination between modal tabs and page tabs)
+  const container = btnEl?.closest('#receivablesModal, #page-receivables') || document;
+  container.querySelectorAll('.recv-ftab').forEach(b => b.classList.remove('active'));
+  if (btnEl) btnEl.classList.add('active');
+  // Re-render with filter
+  _recvRenderFiltered();
+}
+window._recvFilter = _recvFilter;
+
+function _recvRenderFiltered() {
+  const container = document.getElementById('receivablesBody');
+  if (!container) return;
+  const today = new Date().toISOString().slice(0, 10);
+
+  let rows = _recvAllRows;
+  switch(_recvCurrentFilter) {
+    case 'overdue':  rows = rows.filter(r => r.date < today); break;
+    case 'today':    rows = rows.filter(r => r.date === today); break;
+    case 'upcoming': rows = rows.filter(r => r.date > today); break;
+    case 'tx':       rows = rows.filter(r => r._src === 'tx'); break;
+    case 'ar':       rows = rows.filter(r => r._src === 'ar'); break;
+  }
+
+  if (!rows.length) {
+    const labels = { overdue:'em atraso', today:'para hoje', upcoming:'a vencer', tx:'de transações', ar:'de programados' };
+    const lbl = labels[_recvCurrentFilter] || '';
+    container.innerHTML =
+      '<div style="text-align:center;padding:48px 20px">' +
+      '<div style="font-size:3rem;margin-bottom:14px">' + (_recvCurrentFilter === 'all' ? '📭' : '🔍') + '</div>' +
+      '<div style="font-size:.95rem;font-weight:800;color:var(--text)">Nenhum valor' + (lbl ? ' ' + lbl : '') + '</div>' +
+      '<div style="font-size:.82rem;color:var(--muted);margin-top:8px;line-height:1.6">' +
+        (_recvCurrentFilter === 'all'
+          ? 'Use os botões acima para adicionar receitas pendentes, ou marque uma transação de receita como "Pendente".'
+          : 'Nenhum registro neste filtro.') +
+      '</div>' +
+      '<div style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">' +
+        '<button onclick="_recvAddManual()" style="font-family:var(--font-sans);font-size:.8rem;font-weight:700;padding:9px 18px;background:var(--accent);color:#fff;border:none;border-radius:10px;cursor:pointer">✏️ Lançar manual</button>' +
+        '<button onclick="navigate(\'transactions\')" style="font-family:var(--font-sans);font-size:.8rem;font-weight:600;padding:9px 18px;background:var(--surface2);color:var(--text2);border:1.5px solid var(--border);border-radius:10px;cursor:pointer">Ver Transações</button>' +
+      '</div></div>';
+    return;
+  }
+
+  container.innerHTML = _buildRecv(rows, today);
+}
+
+async function _recvAddManual() {
+  // Open transaction modal pre-filled as income + pending
+  if (typeof openTransactionModal === 'function') {
+    openTransactionModal(null);
+    await new Promise(r => setTimeout(r, 150));
+    if (typeof setTxType === 'function') setTxType('income');
+    const statusEl = document.getElementById('txStatus');
+    if (statusEl) { statusEl.value = 'pending'; statusEl.dispatchEvent(new Event('change')); }
+    toast('💡 Preencha a receita — ela ficará como Pendente em A Receber', 'info');
+  } else {
+    navigate('transactions');
+  }
+}
+window._recvAddManual = _recvAddManual;
+
+function _recvToggleDebtor(i) {
+  const detail = document.getElementById('recvDebtor_detail_' + i);
+  const chev   = document.getElementById('recvDebtorChev_' + i);
+  if (!detail) return;
+  const open = detail.style.display !== 'none';
+  detail.style.display = open ? 'none' : '';
+  if (chev) chev.style.transform = open ? '' : 'rotate(180deg)';
+}
+window._recvToggleDebtor = _recvToggleDebtor;
+
+function _recvAddFromTx() {
+  navigate('transactions');
+  setTimeout(() => {
+    toast('💡 Abra uma transação de receita e clique em 📬 para movê-la para A Receber', 'info');
+  }, 400);
+}
+window._recvAddFromTx = _recvAddFromTx;
+
+window.loadReceivables = loadReceivables;
+
+function _buildRecv(rows, today) {
+  const now   = new Date(today);
+  const fmtV  = v => typeof fmt === 'function' ? fmt(v) : 'R$ ' + parseFloat(v).toFixed(2);
+  const escV  = s => typeof esc === 'function' ? esc(s) : String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const fmtD  = d => typeof fmtDate === 'function' ? fmtDate(d) : d;
+  const total = rows.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+
+  function daysOld(dateStr) {
+    return Math.round((now - new Date(dateStr)) / 86400000);
+  }
+
+  function dLabel(dateStr) {
+    const d = daysOld(dateStr);
+    if (d < 0)  return Math.abs(d) + 'd para vencer';
+    if (d === 0) return 'Vence hoje';
+    return d + 'd em atraso';
+  }
+
+  function dColor(dateStr) {
+    const d = daysOld(dateStr);
+    if (d < 0)  return 'var(--accent)';
+    if (d === 0) return '#d97706';
+    if (d <= 7)  return '#ea580c';
+    return '#dc2626';
+  }
+
+  // ── Aging buckets ───────────────────────────────────────────────────────
+  const buckets = [
+    { label:'A vencer',        color:'#16a34a', items: rows.filter(r => r.date > today) },
+    { label:'Vence hoje',      color:'#d97706', items: rows.filter(r => r.date === today) },
+    { label:'1–7 dias',        color:'#ea580c', items: rows.filter(r => { const d=daysOld(r.date); return d>=1&&d<=7; }) },
+    { label:'8–30 dias',       color:'#dc2626', items: rows.filter(r => { const d=daysOld(r.date); return d>=8&&d<=30; }) },
+    { label:'+30 dias',        color:'#7f1d1d', items: rows.filter(r => daysOld(r.date) > 30) },
+  ].filter(b => b.items.length);
+  const maxAge = buckets.reduce((m, b) => Math.max(m, b.items.reduce((s, r) => s + (parseFloat(r.amount)||0), 0)), 1);
+
+  // ── By debtor ───────────────────────────────────────────────────────────
+  const byPayee = {};
+  rows.forEach(r => {
+    const k = r.payee_id || '__none__';
+    if (!byPayee[k]) byPayee[k] = { name: r.payees?.name || 'Sem devedor', total: 0, count: 0, ids: [] };
+    byPayee[k].total += parseFloat(r.amount) || 0;
+    byPayee[k].count++;
+    byPayee[k].ids.push(r.id);
+  });
+  const debtors = Object.values(byPayee).sort((a, b) => b.total - a.total);
+  const maxD = debtors[0]?.total || 1;
+
+  let html = '';
+
+  // ── Card helper ─────────────────────────────────────────────────────────
+  function card(icon, title, sub, body) {
+    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:14px">' +
+      '<div style="padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border);' +
+        'display:flex;align-items:center;justify-content:space-between">' +
+        '<div style="font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--accent)">' +
+          icon + ' ' + title + '</div>' +
+        '<div style="font-size:.71rem;color:var(--muted)">' + sub + '</div>' +
+      '</div>' +
+      '<div style="padding:4px 0">' + body + '</div>' +
+      '</div>';
+  }
+
+  // ── Aging card ──────────────────────────────────────────────────────────
+  const agingRows = buckets.map(b => {
+    const bAmt = b.items.reduce((s, r) => s + (parseFloat(r.amount)||0), 0);
+    const bW   = (bAmt / maxAge * 100).toFixed(1);
+    const pct  = total > 0 ? (bAmt / total * 100).toFixed(0) : 0;
+    return '<div style="display:grid;grid-template-columns:110px 1fr auto;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--border)">' +
+      '<div style="font-size:.77rem;font-weight:700;color:' + b.color + '">' + b.label + '</div>' +
+      '<div style="display:flex;align-items:center;gap:6px">' +
+        '<div style="flex:1;height:5px;border-radius:3px;background:var(--border)">' +
+          '<div style="height:100%;width:' + bW + '%;background:' + b.color + ';border-radius:3px"></div></div>' +
+        '<span style="font-size:.62rem;color:var(--muted)">' + b.items.length + '×</span>' +
+      '</div>' +
+      '<div style="text-align:right">' +
+        '<div style="font-size:.8rem;font-weight:800;color:' + b.color + '">' + fmtV(bAmt) + '</div>' +
+        '<div style="font-size:.6rem;color:var(--muted)">' + pct + '%</div>' +
+      '</div></div>';
+  }).join('');
+
+  const overdueN = rows.filter(r => r.date < today).length;
+  html += card('⏱', 'Antiguidade', overdueN + ' em atraso', agingRows);
+
+  // ── By debtor card — tap to expand / collapse transactions ───────────────
+  const debtorRows = debtors.map((d, i) => {
+    const bW     = (d.total / maxD * 100).toFixed(1);
+    const pct    = total > 0 ? (d.total / total * 100).toFixed(1) : 0;
+    const idsStr = d.ids.join(',');
+    const detailId = 'recvDebtor_detail_' + i;
+
+    // Inline transactions for this debtor
+    const dRows = rows.filter(r => (r.payee_id || '__none__') === Object.keys(byPayee)[i]);
+    const detailHtml = dRows.map(r => {
+      const dl  = daysOld(r.date);
+      const dc  = dColor(r.date);
+      const lab = dLabel(r.date);
+      const catIcon = r.categories?.icon || '💰';
+      const receiveBtn = r._src === 'ar'
+        ? '<button onclick="event.stopPropagation();_scArReceive(\'' + escV(r._arId) + '\')" style="font-family:var(--font-sans);font-size:.62rem;font-weight:700;color:#fff;background:#16a34a;border:none;border-radius:5px;padding:3px 7px;cursor:pointer;flex-shrink:0">✅</button>'
+        : '<button onclick="event.stopPropagation();markTxReceived(\'' + escV(r.id) + '\')" style="font-family:var(--font-sans);font-size:.62rem;font-weight:700;color:#fff;background:#16a34a;border:none;border-radius:5px;padding:3px 7px;cursor:pointer;flex-shrink:0">✅</button>';
+      const editBtn = r._src !== 'ar'
+        ? '<button onclick="event.stopPropagation();openTxDetail(\'' + escV(r.id) + '\')" style="font-family:var(--font-sans);font-size:.62rem;color:var(--muted);background:transparent;border:1px solid var(--border);border-radius:5px;padding:3px 6px;cursor:pointer;flex-shrink:0">✏️</button>'
+        : '';
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 16px 8px 40px;border-bottom:1px solid var(--border);background:var(--surface2)">' +
+        '<span style="font-size:.9rem;flex-shrink:0">' + catIcon + '</span>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:.8rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escV(r.description || '—') + '</div>' +
+          '<div style="font-size:.66rem;color:var(--muted);margin-top:1px;display:flex;gap:6px;flex-wrap:wrap">' +
+            '<span>📅 ' + fmtD(r.date) + '</span>' +
+            '<span style="color:' + dc + ';font-weight:600">⏱ ' + lab + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div style="font-size:.8rem;font-weight:800;color:var(--accent);white-space:nowrap">+' + fmtV(r.amount) + '</div>' +
+        '<div style="display:flex;gap:3px">' + receiveBtn + editBtn + '</div>' +
+        '</div>';
+    }).join('');
+
+    return '<div>' +
+      '<div onclick="_recvToggleDebtor(' + i + ')" style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none">' +
+        '<div style="width:22px;text-align:center;flex-shrink:0;font-size:.68rem;font-weight:800;color:var(--muted)">' + (i+1) + '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="display:flex;justify-content:space-between;margin-bottom:3px">' +
+            '<span style="font-size:.83rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escV(d.name) + '</span>' +
+            '<span style="font-size:.83rem;font-weight:800;color:var(--accent);white-space:nowrap;margin-left:8px">+' + fmtV(d.total) + '</span>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px">' +
+            '<div style="flex:1;height:4px;border-radius:2px;background:var(--border)">' +
+              '<div style="height:100%;width:' + bW + '%;background:var(--accent);border-radius:2px"></div></div>' +
+            '<span style="font-size:.6rem;color:var(--muted)">' + pct + '% · ' + d.count + ' lançamento' + (d.count>1?'s':'') + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<svg id="recvDebtorChev_' + i + '" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="flex-shrink:0;color:var(--muted);transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>' +
+      '</div>' +
+      '<div id="' + detailId + '" style="display:none">' + detailHtml + '</div>' +
+      '</div>';
+  }).join('');
+
+  html += card('👤', 'Por Devedor — toque para ver lançamentos', debtors.length + ' devedor' + (debtors.length > 1 ? 'es' : ''), debtorRows);
+
+  // ── Statistical consolidation by payee (accumulated receivables) ────────────
+  if (debtors.length > 0) {
+    const totalPending = total;
+    const topDebtors   = debtors.slice(0, 5);
+    const topDebtorsTotal = topDebtors.reduce((s, d) => s + d.total, 0);
+    const othersTotal    = total - topDebtorsTotal;
+
+    // Risk classification
+    const riskRows = topDebtors.map((d, i) => {
+      const share = total > 0 ? (d.total / total * 100).toFixed(0) : 0;
+      const concentrated = share > 50;
+      const riskColor = concentrated ? '#dc2626' : share > 30 ? '#d97706' : 'var(--accent)';
+      const oldest = rows.filter(r => (r.payee_id || '__none__') === (Object.keys(byPayee)[i] || '__none__'))
+        .reduce((oldest, r) => r.date < oldest ? r.date : oldest, today);
+      const daysPending = Math.round((new Date(today) - new Date(oldest)) / 86400000);
+      const concentration = concentrated ? '⚠ Concentrado' : share > 30 ? '● Relevante' : '● Normal';
+      return '<div style="display:grid;grid-template-columns:1fr auto auto auto;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border)">' +
+        '<div style="min-width:0">' +
+          '<div style="font-size:.82rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escV(d.name) + '</div>' +
+          '<div style="font-size:.65rem;color:var(--muted);margin-top:1px">' + d.count + ' lançamento' + (d.count>1?'s':'') + ' · ' + daysPending + 'd pendente</div>' +
+        '</div>' +
+        '<div style="font-size:.62rem;font-weight:700;padding:1px 6px;border-radius:100px;background:' + riskColor + '18;color:' + riskColor + ';white-space:nowrap">' + concentration + '</div>' +
+        '<div style="font-size:.7rem;color:var(--muted);text-align:right">' + share + '%</div>' +
+        '<div style="font-size:.82rem;font-weight:800;color:var(--accent);text-align:right;white-space:nowrap">+' + fmtV(d.total) + '</div>' +
+      '</div>';
+    }).join('');
+
+    // Concentration warning
+    const maxShare = debtors.length > 0 ? (debtors[0].total / total * 100) : 0;
+    const concentrationWarning = maxShare > 50
+      ? '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:9px;padding:8px 12px;margin:10px 14px 0;font-size:.74rem;color:#dc2626;font-weight:600">⚠️ <strong>' + debtors[0].name + '</strong> concentra ' + maxShare.toFixed(0) + '% das pendências — alto risco de inadimplência</div>'
+      : '';
+
+    const summaryFooter = '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 14px;background:var(--surface2);font-size:.72rem;color:var(--muted)">' +
+      '<span>' + debtors.length + ' fonte' + (debtors.length>1?'s pagadoras':'') + ' · ' + rows.length + ' recebimento' + (rows.length>1?'s':'') + ' pendente' + (rows.length>1?'s':'') + '</span>' +
+      '<span style="font-weight:800;color:var(--accent)">Total: +' + fmtV(total) + '</span>' +
+    '</div>';
+
+    html += card('📊', 'Consolidação por Fonte', 'concentração de risco',
+      concentrationWarning + riskRows + summaryFooter);
+  }
+
+  // ── Detail rows: overdue then upcoming ──────────────────────────────────
+  function txRow(r) {
+    const catIcon  = r.categories?.icon  || '💰';
+    const catColor = r.categories?.color || 'var(--accent)';
+    const dl       = dLabel(r.date);
+    const dc       = dColor(r.date);
+    // _recvPatMap is loaded asynchronously; default to false if not ready
+    const _rMap = window._recvPatMap || {};
+    const inPat = !!_rMap[r.id];
+
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border)">' +
+      '<div style="width:32px;height:32px;border-radius:8px;background:' + catColor + '18;border:1.5px solid ' + catColor + '40;' +
+        'display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0">' + catIcon + '</div>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:.83rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+          escV(r.description || '—') + '</div>' +
+        '<div style="font-size:.68rem;color:var(--muted);margin-top:2px;display:flex;gap:8px;flex-wrap:wrap">' +
+          '<span>📅 ' + fmtD(r.date) + '</span>' +
+          '<span style="color:' + dc + ';font-weight:600">⏱ ' + dl + '</span>' +
+          (r.payees?.name ? '<span>👤 ' + escV(r.payees.name) + '</span>' : '') +
+          (r.accounts?.name ? '<span>🏦 ' + escV(r.accounts.name) + '</span>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div style="flex-shrink:0;text-align:right">' +
+        '<div style="font-size:.88rem;font-weight:800;color:var(--accent)">+' + fmtV(r.amount) + '</div>' +
+        '<div style="display:flex;gap:4px;margin-top:4px;justify-content:flex-end">' +
+          (r._src === 'ar'
+            ? '<button onclick="_scArReceive(\'' + escV(r._arId) + '\')" ' +
+                'style="font-family:var(--font-sans);font-size:.65rem;font-weight:700;color:#fff;background:#16a34a;' +
+                'border:none;border-radius:6px;padding:3px 7px;cursor:pointer">✅ Receber</button>'
+            : '<button onclick="markTxReceived(\'' + escV(r.id) + '\')" ' +
+                'style="font-family:var(--font-sans);font-size:.65rem;font-weight:700;color:#fff;background:#16a34a;' +
+                'border:none;border-radius:6px;padding:3px 7px;cursor:pointer">✅ Receber</button>' +
+              '<button onclick="openTxDetail(\'' + escV(r.id) + '\')" ' +
+                'style="font-family:var(--font-sans);font-size:.65rem;color:var(--muted);background:transparent;' +
+                'border:1px solid var(--border);border-radius:6px;padding:3px 6px;cursor:pointer">✏️</button>') +
+        '</div>' +
+        '<label style="display:flex;align-items:center;gap:4px;margin-top:4px;justify-content:flex-end;cursor:pointer" title="Incluir no patrimônio">' +
+          '<input type="checkbox" ' + (inPat ? 'checked' : '') + ' onchange="_recvTogglePatrimonio(\'' + escV(r.id) + '\',this.checked)" ' +
+            'style="width:11px;height:11px;accent-color:var(--accent);cursor:pointer">' +
+          '<span style="font-size:.58rem;color:var(--muted)">🏦 Patrim.</span>' +
+        '</label>' +
+      '</div></div>';
+  }
+
+  const overdueRows  = rows.filter(r => r.date <  today);
+  const upcomingRows = rows.filter(r => r.date >= today);
+
+  if (overdueRows.length) {
+    html += card('⚠️', 'Em Atraso · ' + overdueRows.length, fmtV(overdueRows.reduce((s,r)=>s+(parseFloat(r.amount)||0),0)), overdueRows.map(txRow).join(''));
+  }
+  if (upcomingRows.length) {
+    html += card('⏳', 'Aguardando · ' + upcomingRows.length, fmtV(upcomingRows.reduce((s,r)=>s+(parseFloat(r.amount)||0),0)), upcomingRows.map(txRow).join(''));
+  }
+
+  return html;
+}
+
+async function _recvMarkAllReceived(idsStr) {
+  const ids = String(idsStr).split(',').filter(Boolean);
+  if (!ids.length) return;
+  if (ids.length === 1) { markTxReceived(ids[0]); return; }
+  if (!confirm('Registrar ' + ids.length + ' valores como recebidos?\nSerão confirmados na conta original.')) return;
+  try {
+    const fid = typeof famId === 'function' ? famId() : null;
+    const { error } = await sb.from('transactions')
+      .update({ status:'confirmed', updated_at: new Date().toISOString() })
+      .in('id', ids).eq('family_id', fid);
+    if (error) throw error;
+    toast('✅ ' + ids.length + ' valores confirmados!', 'success');
+    await loadReceivables();
+    if (typeof _updateReceivablesBadge === 'function') _updateReceivablesBadge().catch(() => {});
+    if (state.currentPage === 'dashboard') loadDashboard();
+  } catch(e) { toast('Erro: ' + e.message, 'error'); }
+}
+window._recvMarkAllReceived = _recvMarkAllReceived;
+
+async function _recvTogglePatrimonio(txId, include) {
+  if (_recvPatMap) _recvPatMap[txId] = include;
+  try {
+    const fid = typeof famId === 'function' ? famId() : null;
+    const { error } = await sb.from('transactions')
+      .update({ include_in_patrimonio: include, updated_at: new Date().toISOString() })
+      .eq('id', txId).eq('family_id', fid);
+    if (error && (error.message?.includes('include_in_patrimonio') || error.code === '42703')) {
+      toast(include ? '🏦 Marcado (execute a migration para persistir)' : 'Desmarcado', 'info');
+      return;
+    }
+    if (error) throw error;
+    toast(include ? '🏦 Incluído no patrimônio' : 'Removido do patrimônio', 'info');
+  } catch(e) { toast('Erro: ' + e.message, 'error'); }
+}
+window._recvTogglePatrimonio = _recvTogglePatrimonio;
+
+async function _updateReceivablesBadge() {
+  try {
+    const fid = typeof famId === 'function' ? famId() : currentUser?.family_id;
+    if (!fid || !sb) return;
+    const { count } = await sb.from('transactions')
+      .select('id', { count:'exact', head:true })
+      .eq('family_id', fid).eq('status', 'pending').gte('amount', 0).eq('is_transfer', false);
+    const badge = document.getElementById('receivablesBadge');
+    if (!badge) return;
+    if ((count || 0) > 0) { badge.textContent = count; badge.style.display = ''; }
+    else badge.style.display = 'none';
+  } catch(_) {}
+}
+window._updateReceivablesBadge = _updateReceivablesBadge;
+
+// Client-side cache for include_in_patrimonio (avoids SELECT on potentially missing column)
+var _recvPatMap = {};
+
+/* ── A Receber modal (opened from Programados page) ──────────────────────── */
+function openReceivablesModal() {
+  const modal = document.getElementById('receivablesModal');
+  if (!modal) { navigate('receivables'); return; }
+  modal.style.display = 'flex';
+  requestAnimationFrame(() => modal.classList.add('rm-open'));
+  loadReceivables();
+}
+
+function closeReceivablesModal() {
+  const modal = document.getElementById('receivablesModal');
+  if (!modal) return;
+  modal.classList.remove('rm-open');
+  setTimeout(() => { modal.style.display = 'none'; }, 280);
+}
+
+// Sync the badge on the Programados access button
+function _syncReceivablesBadge(count) {
+  const ids = ['scArBadgeBtn','receivablesBadge','scHeaderArBadge','scMobileArBadge','scTabArBadge'];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = count > 0 ? count : '';
+    const showFlex = id.includes('Header') || id.includes('Mobile') || id === 'scTabArBadge';
+    el.style.display = count > 0 ? (showFlex ? 'inline-flex' : '') : 'none';
+  });
+}
+
+window.openReceivablesModal  = openReceivablesModal;
+window.closeReceivablesModal = closeReceivablesModal;
+window._syncReceivablesBadge = _syncReceivablesBadge;

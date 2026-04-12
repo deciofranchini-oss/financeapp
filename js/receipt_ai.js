@@ -5,8 +5,77 @@
    Custo estimado: ~US$0,001–0,003 por leitura (Haiku)
 ═══════════════════════════════════════════════════════════════════════════ */
 
-const RECEIPT_AI_KEY_SETTING = 'gemini_api_key';
-const RECEIPT_AI_MODEL       = 'gemini-2.5-flash-lite';
+const RECEIPT_AI_KEY_SETTING   = 'gemini_api_key';
+const GEMINI_USE_GLOBAL_SETTING = 'gemini_use_global';
+
+/**
+ * getGeminiApiKey() — resolução centralizada da chave Gemini
+ * Prioridade:
+ *   1. Chave própria da família (family_settings.gemini_api_key)
+ *   2. Chave global do servidor (_globalGeminiKey, injetada no login via app_settings)
+ *   3. '' (funciona só com parser local)
+ *
+ * Todos os módulos que usam Gemini devem chamar esta função.
+ */
+async function getGeminiApiKey() {
+  try {
+    // 1. Chave da família (family_settings.gemini_api_key)
+    const familyKey = await getAppSetting('gemini_api_key', '');
+    const clean = typeof familyKey === 'string' ? familyKey.trim() : '';
+    if (clean && clean.startsWith('AIza')) return clean;
+
+    // 2. Verificar preferência: família optou por não usar global?
+    const useGlobalPref = await getAppSetting(GEMINI_USE_GLOBAL_SETTING, 'true');
+    if (useGlobalPref === 'false') return '';
+
+    // 3. Chave global (carregada no boot via app.js → window._globalGeminiKey)
+    if (typeof window._globalGeminiKey === 'string' && window._globalGeminiKey.startsWith('AIza')) {
+      return window._globalGeminiKey;
+    }
+    // 4. Fallback: buscar diretamente de app_settings se não está em cache
+    if (typeof sb !== 'undefined' && sb) {
+      const { data } = await sb.from('app_settings')
+        .select('value').eq('key', '_global_gemini_key').maybeSingle();
+      const gKey = typeof data?.value === 'string' ? data.value.trim() : '';
+      if (gKey && gKey.startsWith('AIza')) {
+        window._globalGeminiKey = gKey;
+        return gKey;
+      }
+    }
+  } catch(e) {
+    console.warn('[getGeminiApiKey]', e?.message);
+  }
+  return '';
+}
+window.getGeminiApiKey = getGeminiApiKey;
+const GEMINI_MODEL_SETTING     = 'gemini_model';
+const GEMINI_MODEL_DEFAULT     = 'gemini-2.5-flash';   // stable, widely available
+
+// ── RECEIPT_AI_MODEL: dynamic global — reads configured model at call time ──
+// All modules that reference RECEIPT_AI_MODEL as a plain variable automatically
+// pick up the admin-configured model without any code changes.
+// Falls back to GEMINI_MODEL_DEFAULT if not yet configured.
+Object.defineProperty(window, 'RECEIPT_AI_MODEL', {
+  get() {
+    return (window._appSettingsCache && window._appSettingsCache[GEMINI_MODEL_SETTING])
+      || GEMINI_MODEL_DEFAULT;
+  },
+  configurable: true,
+  enumerable:   true,
+});
+
+// async helper — use this when you need to ensure the value is loaded from DB
+async function getGeminiModel() {
+  const fromCache = window._appSettingsCache?.[GEMINI_MODEL_SETTING];
+  if (fromCache) return fromCache;
+  try {
+    const val = (typeof getAppSetting === 'function')
+      ? await getAppSetting(GEMINI_MODEL_SETTING, GEMINI_MODEL_DEFAULT)
+      : GEMINI_MODEL_DEFAULT;
+    return val || GEMINI_MODEL_DEFAULT;
+  } catch(_) { return GEMINI_MODEL_DEFAULT; }
+}
+window.getGeminiModel = getGeminiModel;
 const PDFJS_CDN_JS  = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
 const PDFJS_CDN_WK  = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
@@ -17,26 +86,79 @@ window._receiptAiPending = null; // { base64, mediaType, fileName }
 //  SEÇÃO 1 — CONFIGURAÇÃO DA API KEY
 // ══════════════════════════════════════════════════════════════════════════
 
-async function showAiConfig() {
-  const val = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
-  const inp = document.getElementById('anthropicApiKeyInput');
-  if (inp) { inp.value = val || ''; inp.type = 'password'; }
-  const tog = document.getElementById('aiKeyToggle');
-  if (tog) tog.textContent = '👁';
+function showAiConfig() {
+  // PWA fix: open modal SYNCHRONOUSLY on tap, then load data asynchronously
+  // iOS Safari PWA swallows taps if no synchronous DOM change occurs within ~300ms
   openModal('aiConfigModal');
-}
-
-async function saveAiConfig() {
-  const inp = document.getElementById('anthropicApiKeyInput');
-  const key = (inp?.value || '').trim();
-  if (key && !key.startsWith('AIza')) {
-    toast('Chave inválida — deve começar com AIza…', 'error');
-    return;
+  // Apply role visibility immediately
+  const gSection = document.getElementById('geminiGlobalSection');
+  if (gSection) {
+    const role = window.currentUser?.role || '';
+    gSection.style.display = (role === 'owner' || role === 'admin') ? '' : 'none';
   }
-  await saveAppSetting(RECEIPT_AI_KEY_SETTING, key);
+  // Load data in background after modal is visible
+  (async () => {
+    try {
+      const [val, model, useGlobal, n8nUrl, n8nKey] = await Promise.all([
+        getGeminiApiKey(),
+        getGeminiModel(),
+        getAppSetting(GEMINI_USE_GLOBAL_SETTING, 'true'),
+        getAppSetting('agent_n8n_webhook_url', ''),
+        getAppSetting('agent_n8n_secret_key', ''),
+      ]);
+      const isGlobal = useGlobal !== 'false' && useGlobal !== false;
+      const modeGlobal = document.getElementById('geminiModeGlobal');
+      const modeOwn    = document.getElementById('geminiModeOwn');
+      if (modeGlobal) modeGlobal.checked = isGlobal;
+      if (modeOwn)    modeOwn.checked    = !isGlobal;
+      _onGeminiModeChange();
+      const inp = document.getElementById('anthropicApiKeyInput');
+      if (inp) { inp.value = val || ''; inp.type = 'password'; }
+      const tog = document.getElementById('aiKeyToggle');
+      if (tog) tog.textContent = '👁';
+      const modelSel = document.getElementById('geminiModelSelect');
+      if (modelSel) {
+        const opt = Array.from(modelSel.options).find(o => o.value === model);
+        if (opt) { modelSel.value = model; }
+        else if (model) { const c = new Option(model+' (personalizado)',model); modelSel.add(c); modelSel.value=model; }
+      }
+      const urlEl = document.getElementById('agentN8nWebhookUrl');
+      const keyEl = document.getElementById('agentN8nSecretKey');
+      if (urlEl) urlEl.value = n8nUrl || '';
+      if (keyEl) keyEl.value = n8nKey || '';
+    } catch(e) { console.warn('[showAiConfig]', e?.message); }
+  })();
+}
+async function saveAiConfig() {
+  const inp      = document.getElementById('anthropicApiKeyInput');
+  const modelSel = document.getElementById('geminiModelSelect');
+  const key      = (inp?.value || '').trim();
+  const model    = (modelSel?.value || GEMINI_MODEL_DEFAULT).trim();
+
+  const modeGlobal = document.getElementById('geminiModeGlobal');
+  const useGlobal  = modeGlobal ? modeGlobal.checked : true;
+  await saveAppSetting(GEMINI_USE_GLOBAL_SETTING, useGlobal ? 'true' : 'false');
+
+  // Only validate/save key if using own key mode
+  if (!useGlobal) {
+    if (key && !key.startsWith('AIza')) {
+      toast('Chave inválida — deve começar com AIza…', 'error');
+      return;
+    }
+    await saveAppSetting(RECEIPT_AI_KEY_SETTING, key);
+  }
+  await saveAppSetting(GEMINI_MODEL_SETTING, model);
+  // Save n8n settings
+  const n8nUrl = (document.getElementById('agentN8nWebhookUrl')?.value || '').trim();
+  const n8nKey = (document.getElementById('agentN8nSecretKey')?.value || '').trim();
+  await saveAppSetting('agent_n8n_webhook_url', n8nUrl);
+  await saveAppSetting('agent_n8n_secret_key',  n8nKey);
+  // Update cache immediately so all modules pick up the new model at once
+  if (!window._appSettingsCache) window._appSettingsCache = {};
+  window._appSettingsCache[GEMINI_MODEL_SETTING] = model;
   _updateAiStatusBadge();
   closeModal('aiConfigModal');
-  toast(key ? '✅ Chave Anthropic salva!' : 'Chave removida', key ? 'success' : 'info');
+  toast(key ? '✅ Configuração de IA salva!' : 'Modelo salvo (sem chave)', key ? 'success' : 'info');
 }
 
 function toggleAiKeyVisibility() {
@@ -48,17 +170,44 @@ function toggleAiKeyVisibility() {
 }
 
 async function _updateAiStatusBadge() {
-  const key = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
-  const ok  = !!(key && key.startsWith('AIza'));
-  const dot = document.getElementById('aiStatusDot');
-  const sub = document.getElementById('aiSettingsSub');
+  const key   = await getGeminiApiKey();
+  const model = await getGeminiModel();
+  const ok    = !!(key && key.startsWith('AIza'));
+  const dot   = document.getElementById('aiStatusDot');
+  const sub   = document.getElementById('aiSettingsSub');
   if (dot) {
     dot.style.cssText = `width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${ok ? 'var(--green,#22c55e)' : '#d1d5db'}`;
   }
+  const useGlobalSaved = await getAppSetting(GEMINI_USE_GLOBAL_SETTING, 'true');
+  const isGlobalMode   = useGlobalSaved !== 'false' && useGlobalSaved !== false;
+  const dotGreen = ok || isGlobalMode; // green if own key OK or global mode active
+  if (dot) {
+    dot.style.cssText = `width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${dotGreen ? 'var(--green,#22c55e)' : '#d1d5db'}`;
+  }
   if (sub) sub.textContent = ok
-    ? '✓ Configurado — leitura de recibos com IA ativa'
-    : 'Configure para habilitar leitura automática de recibos';
+    ? `✓ Chave própria · modelo: ${model}`
+    : isGlobalMode
+      ? `✓ IA compartilhada · modelo: ${model}`
+      : 'Configure para habilitar leitura automática de recibos';
 }
+
+// Mostra/oculta seção de chave própria conforme seleção
+window._onGeminiModeChange = function() {
+  const modeOwn   = document.getElementById('geminiModeOwn');
+  const ownSec    = document.getElementById('geminiOwnKeySection');
+  const globalOpt = document.getElementById('geminiGlobalOpt');
+  const ownOpt    = document.getElementById('geminiOwnOpt');
+  const isOwn     = modeOwn?.checked;
+  if (ownSec) ownSec.style.display = isOwn ? '' : 'none';
+  if (globalOpt) {
+    globalOpt.style.borderColor = isOwn ? 'var(--border)' : 'var(--accent)';
+    globalOpt.style.background  = isOwn ? 'var(--surface)' : 'var(--accent-lt)';
+  }
+  if (ownOpt) {
+    ownOpt.style.borderColor = isOwn ? 'var(--accent)' : 'var(--border)';
+    ownOpt.style.background  = isOwn ? 'var(--accent-lt)' : 'var(--surface)';
+  }
+};
 
 // chamado por loadSettings()
 function initAiSettings() { _updateAiStatusBadge(); }
@@ -190,7 +339,7 @@ async function readReceiptWithAI() {
     return;
   }
 
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  const apiKey = await getGeminiApiKey();
   if (!apiKey || !apiKey.startsWith('AIza')) {
     toast(t('ai.no_api_key_config'), 'warning');
     showAiConfig();
@@ -288,36 +437,18 @@ Arquivo: ${pending.fileName}`;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{
-        parts: [
-          { inline_data: { mime_type: pending.mediaType, data: pending.base64 } },
-          { text: prompt },
-        ],
-      }],
-      generationConfig: { maxOutputTokens: 2500, temperature: 0.1 },
-    }),
+  // geminiRetryFetch: auto-injects thinkingConfig for 2.5 models, retries 429/503
+  const data = await geminiRetryFetch(url, {
+    contents: [{
+      parts: [
+        { inline_data: { mime_type: pending.mediaType, data: pending.base64 } },
+        { text: prompt },
+      ],
+    }],
+    generationConfig: { maxOutputTokens: 2500, temperature: 0.1 },
   });
 
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    const msg = err?.error?.message || `HTTP ${resp.status}`;
-    if (resp.status === 400 && msg.includes('API_KEY')) throw new Error('Chave API inválida. Verifique em Configurações.');
-    if (resp.status === 429) throw new Error('Limite de requisições atingido. Aguarde alguns segundos.');
-    throw new Error(msg);
-  }
-
-  const data  = await resp.json();
-  const text  = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const clean = text.replace(/```json|```/g, '').trim();
-
-  let parsed;
-  try { parsed = JSON.parse(clean); }
-  catch { throw new Error('Resposta inválida da IA: ' + text.slice(0, 100)); }
-
+  const parsed = _parseGeminiJSON(data);
   if (parsed.error) throw new Error(parsed.error);
   return parsed;
 }
@@ -333,7 +464,7 @@ function _applyResultToForm(r) {
   // data
   if (r.date) {
     const el = document.getElementById('txDate');
-    if (el) el.value = r.date;
+    if (el) el.value = (r.date||'').slice(0,10);
   }
 
   // valor — negativo para despesa, conforme padrão do app

@@ -373,26 +373,81 @@ function _populatePricesCatFilter() {
     cats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
 }
 
+// Retorna o label do estabelecimento:
+// - Com beneficiário vinculado → mostra APENAS o nome do beneficiário
+// - Sem beneficiário → mostra o nome do estabelecimento (price_stores.name)
+function _storeLabel(s, opts = {}) {
+  const payeeName = s.payees?.name;
+  const storeName = s.name;
+  if (!opts.html) {
+    // texto plano para <option> — só beneficiário, ou store se não houver
+    return payeeName || storeName;
+  }
+  // HTML: beneficiário em destaque; nome interno do store como legenda discreta
+  if (payeeName) {
+    const showSub = storeName && storeName !== payeeName;
+    return esc(payeeName) + (showSub
+      ? ` <span style="font-size:.68rem;color:var(--muted)">· ${esc(storeName)}</span>`
+      : '');
+  }
+  return esc(storeName);
+}
+
 function _populatePricesStoreFilter() {
   const sel = document.getElementById('pricesStoreFilter');
   if (!sel) return;
-  sel.innerHTML = '<option value="">Todos os estabelecimentos</option>' +
-    _px.stores.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+
+  // Distinct por beneficiário: stores com mesmo payee_id aparecem como uma entrada só.
+  // Valor prefixado 'p:<payee_id>' ou 's:<store_id>' para diferenciá-los na filtragem.
+  const seen = new Map();
+  _px.stores.forEach(s => {
+    if (s.payee_id && s.payees?.name) {
+      if (!seen.has('p:' + s.payee_id)) {
+        seen.set('p:' + s.payee_id, { label: s.payees.name, value: 'p:' + s.payee_id });
+      }
+    } else {
+      seen.set('s:' + s.id, { label: s.name, value: 's:' + s.id });
+    }
+  });
+
+  const opts = [...seen.values()]
+    .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR', { sensitivity: 'base' }))
+    .map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`)
+    .join('');
+
+  sel.innerHTML = '<option value="">Todos os beneficiários/estabelecimentos</option>' + opts;
 }
 
 async function _loadPricesData() {
   const fid = _famId();
   if (!fid) return;
-  const [itemsRes, storesRes] = await Promise.all([
+  const [itemsRes, storesRes, histRes] = await Promise.all([
     sb.from('price_items')
       .select('id, name, description, unit, category_id, avg_price, last_price, record_count, categories(name)')
       .eq('family_id', fid).order('name'),
     sb.from('price_stores')
       .select('id, name, address, city, state_uf, zip_code, phone, cnpj, payee_id, payees(id, name, phone, address, city, state_uf, cnpj_cpf, whatsapp, website)')
       .eq('family_id', fid).order('name'),
+    sb.from('price_history')
+      .select('item_id, store_id')
+      .eq('family_id', fid),
   ]);
   _px.items  = itemsRes.data  || [];
   _px.stores = storesRes.data || [];
+  _px._histRaw = histRes.data || [];
+
+  // Construir indice item_id -> Set<store_id> para filtragem rapida
+  _px._itemStoreIndex = {};
+  // Counters for charts: store_id -> count, item_id -> count
+  _px._storeCount = {};
+  _px._itemCount  = {};
+  _px._histRaw.forEach(h => {
+    if (!h.item_id || !h.store_id) return;
+    if (!_px._itemStoreIndex[h.item_id]) _px._itemStoreIndex[h.item_id] = new Set();
+    _px._itemStoreIndex[h.item_id].add(h.store_id);
+    _px._storeCount[h.store_id] = (_px._storeCount[h.store_id] || 0) + 1;
+    _px._itemCount[h.item_id]   = (_px._itemCount[h.item_id]   || 0) + 1;
+  });
 }
 
 function _famId() { return currentUser?.family_id || null; }
@@ -410,7 +465,26 @@ function _renderPricesPage() {
     items = items.filter(i => i.name.toLowerCase().includes(q) || (i.description||'').toLowerCase().includes(q));
   }
   if (_px.catFilter)   items = items.filter(i => i.category_id === _px.catFilter);
-  // Filtros hierárquicos exclusivos de preços
+  // Filtro de estabelecimento/beneficiario (via historico de precos)
+  if (_px.storeFilter) {
+    const filterVal = _px.storeFilter;
+    const idx = _px._itemStoreIndex || {};
+    if (filterVal.startsWith('p:')) {
+      // Filtrar por payee_id: obter todos os store_ids com esse payee
+      const payeeId = filterVal.slice(2);
+      const storeIds = new Set((_px.stores || []).filter(s => s.payee_id === payeeId).map(s => s.id));
+      items = items.filter(i => {
+        const itemStores = idx[i.id];
+        if (!itemStores) return false;
+        for (const sid of itemStores) { if (storeIds.has(sid)) return true; }
+        return false;
+      });
+    } else if (filterVal.startsWith('s:')) {
+      const storeId = filterVal.slice(2);
+      items = items.filter(i => idx[i.id]?.has(storeId));
+    }
+  }
+  // Filtros hierarquicos exclusivos de precos
   items = _pxApplyHierFilter(items);
 
   const countEl = document.getElementById('pricesCount');
@@ -457,6 +531,8 @@ function _renderPricesPage() {
       </div>`;
     return;
   }
+  _renderPricesCharts();
+
   if (_px.groupBy) {
     if (_px.groupBy === 'subcat') { _renderPricesGroupedBySubcat(items); return; }
     _renderPricesGrouped(items);
@@ -466,6 +542,243 @@ function _renderPricesPage() {
 }
 
 function pricesSearch(val)      { _px.search = val;      _renderPricesPage(); }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   PRICES CHARTS — Top lojas e artigos mais registrados
+───────────────────────────────────────────────────────────────────────────── */
+function _renderPricesCharts() {
+  const el = document.getElementById('pricesCharts');
+  if (!el) return;
+
+  const storeCount = _px._storeCount || {};
+  const itemCount  = _px._itemCount  || {};
+  if (!Object.keys(storeCount).length && !Object.keys(itemCount).length) {
+    el.style.display = 'none'; return;
+  }
+
+  // ── Group stores by payee: multiple price_stores with same payee_id merge ──
+  const payeeGroups = {};   // key: 'p:payeeId' or 's:storeId'
+  const storeIdToKey = {};  // store_id → group key
+
+  (_px.stores || []).forEach(s => {
+    const key   = s.payee_id ? ('p:' + s.payee_id) : ('s:' + s.id);
+    const label = s.payees?.name || s.name || 'Desconhecido';
+    if (!payeeGroups[key]) payeeGroups[key] = { label, count: 0, storeIds: [] };
+    else if (!payeeGroups[key].label) payeeGroups[key].label = label;
+    payeeGroups[key].storeIds.push(s.id);
+    storeIdToKey[s.id] = key;
+  });
+
+  // Accumulate history counts into payee groups
+  (_px._histRaw || []).forEach(h => {
+    if (!h.store_id) return;
+    const key = storeIdToKey[h.store_id];
+    if (key && payeeGroups[key]) payeeGroups[key].count++;
+  });
+
+  // Build storeIds lookup for drill-down (store→items)
+  const topStores = Object.entries(payeeGroups)
+    .filter(([, g]) => g.count > 0)
+    .map(([key, g]) => ({ key, name: g.label, count: g.count, storeIds: g.storeIds }))
+    .sort((a, b) => b.count - a.count).slice(0, 10);
+
+  // Top items
+  const itemMap = {};
+  (_px.items || []).forEach(i => { itemMap[i.id] = i.name; });
+  const topItems = Object.entries(itemCount)
+    .map(([id, cnt]) => ({ id, name: itemMap[id] || 'Desconhecido', count: cnt }))
+    .sort((a, b) => b.count - a.count).slice(0, 10);
+
+  const maxStore = topStores[0]?.count || 1;
+  const maxItem  = topItems[0]?.count  || 1;
+
+  const mkStoreBar = ({ key, name, count, storeIds }) => {
+    const pct = (count / maxStore * 100).toFixed(1);
+    const safeKey = esc(key);
+    const safeIds = esc(JSON.stringify(storeIds));
+    return `<div class="px-chart-row" onclick="_pxDrillStore(${JSON.stringify(storeIds)},${JSON.stringify(name)})"
+      style="cursor:pointer;border-radius:9px;padding:6px 8px;margin:-6px -8px;transition:background .12s"
+      onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-size:.79rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(name)}</span>
+        <span style="font-size:.7rem;font-weight:700;color:var(--accent);margin-left:8px;flex-shrink:0">${count}×</span>
+      </div>
+      <div style="height:5px;border-radius:3px;background:var(--border);overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:#2a6049;border-radius:3px;transition:width .4s ease"></div>
+      </div>
+    </div>`;
+  };
+
+  const mkItemBar = ({ id, name, count }) => {
+    const pct = (count / maxItem * 100).toFixed(1);
+    return `<div class="px-chart-row" onclick="_pxDrillItem(${JSON.stringify(id)},${JSON.stringify(name)})"
+      style="cursor:pointer;border-radius:9px;padding:6px 8px;margin:-6px -8px;transition:background .12s"
+      onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-size:.79rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(name)}</span>
+        <span style="font-size:.7rem;font-weight:700;color:#f59e0b;margin-left:8px;flex-shrink:0">${count}×</span>
+      </div>
+      <div style="height:5px;border-radius:3px;background:var(--border);overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:#f59e0b;border-radius:3px;transition:width .4s ease"></div>
+      </div>
+    </div>`;
+  };
+
+  el.style.display = '';
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:4px">
+      ${topStores.length ? `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px">
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:12px">
+          <span style="font-size:1rem">🏪</span>
+          <span style="font-size:.82rem;font-weight:800;color:var(--text)">Lojas mais usadas</span>
+          <span style="font-size:.7rem;color:var(--muted);margin-left:auto">${topStores.length}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${topStores.map(mkStoreBar).join('')}
+        </div>
+        <div style="font-size:.67rem;color:var(--muted);margin-top:10px;text-align:right">Clique para ver detalhes →</div>
+      </div>` : ''}
+      ${topItems.length ? `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px">
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:12px">
+          <span style="font-size:1rem">📦</span>
+          <span style="font-size:.82rem;font-weight:800;color:var(--text)">Artigos mais registrados</span>
+          <span style="font-size:.7rem;color:var(--muted);margin-left:auto">${topItems.length}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${topItems.map(mkItemBar).join('')}
+        </div>
+        <div style="font-size:.67rem;color:var(--muted);margin-top:10px;text-align:right">Clique para ver detalhes →</div>
+      </div>` : ''}
+    </div>`;
+}
+
+// ── Drill-down: store click → query full history for those store IDs ──
+async function _pxDrillStore(storeIds, storeName) {
+  _pxShowDrillModal(storeName, '🏪', [], 'store', true); // show modal with loading state
+  try {
+    const fid = _famId();
+    if (!fid || !sb) return;
+    const { data } = await sb.from('price_history')
+      .select('item_id, store_id, unit_price, quantity, purchased_at')
+      .eq('family_id', fid)
+      .in('store_id', storeIds)
+      .order('purchased_at', { ascending: false })
+      .limit(200);
+    _pxShowDrillModal(storeName, '🏪', data || [], 'store');
+  } catch(e) {
+    toast('Erro ao carregar histórico: ' + e.message, 'error');
+  }
+}
+
+// ── Drill-down: item click → query full history for that item ──
+async function _pxDrillItem(itemId, itemName) {
+  _pxShowDrillModal(itemName, '📦', [], 'item', true); // show modal with loading state
+  try {
+    const fid = _famId();
+    if (!fid || !sb) return;
+    const { data } = await sb.from('price_history')
+      .select('item_id, store_id, unit_price, quantity, purchased_at')
+      .eq('family_id', fid)
+      .eq('item_id', itemId)
+      .order('purchased_at', { ascending: false })
+      .limit(200);
+    _pxShowDrillModal(itemName, '📦', data || [], 'item');
+  } catch(e) {
+    toast('Erro ao carregar histórico: ' + e.message, 'error');
+  }
+}
+
+function _pxShowDrillModal(title, icon, rows, mode, loading = false) {
+  // Build sorted rows (most recent first)
+  const sorted = [...rows].sort((a, b) => {
+    const da = a.purchased_at || ''; const db = b.purchased_at || '';
+    return db.localeCompare(da);
+  });
+
+  const itemMap  = {};
+  (_px.items  || []).forEach(i => { itemMap[i.id]  = i.name; });
+  const storeMap = {};
+  (_px.stores || []).forEach(s => { storeMap[s.id] = s.payees?.name || s.name; });
+
+  const totalAmt = sorted.reduce((s, r) => s + (+(r.unit_price)||0) * (+(r.quantity)||1), 0);
+  const avgPrice = sorted.length ? (sorted.reduce((s, r) => s + (+(r.unit_price)||0), 0) / sorted.length) : 0;
+  const minPrice = sorted.length ? Math.min(...sorted.map(r => +(r.unit_price)||0)) : 0;
+
+  const fmt2 = v => 'R$ ' + (+(v)||0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+  const rowsHtml = sorted.slice(0, 50).map(r => {
+    const date  = r.purchased_at ? new Date(r.purchased_at + 'T12:00:00').toLocaleDateString('pt-BR') : '—';
+    const item  = mode === 'store' ? (itemMap[r.item_id]  || '—') : (storeMap[r.store_id] || '—');
+    const price = +(r.unit_price) || 0;
+    const qty   = +(r.quantity)   || 1;
+    const total = price * qty;
+    return `<div style="display:grid;grid-template-columns:80px 1fr 60px 70px;gap:8px;align-items:center;
+      padding:8px 12px;border-bottom:1px solid var(--border);font-size:.79rem;
+      transition:background .1s" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <span style="color:var(--muted)">${date}</span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--text)">${esc(item)}</span>
+      <span style="text-align:right;color:var(--muted)">×${qty}</span>
+      <span style="text-align:right;font-weight:700;color:var(--accent)">${fmt2(price)}</span>
+    </div>`;
+  }).join('');
+
+  const summary = `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 14px;
+      background:var(--surface2);border-bottom:1px solid var(--border)">
+      <div style="text-align:center">
+        <div style="font-size:.6rem;text-transform:uppercase;font-weight:700;color:var(--muted);letter-spacing:.06em">Registros</div>
+        <div style="font-size:1.1rem;font-weight:800;color:var(--text)">${sorted.length}</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:.6rem;text-transform:uppercase;font-weight:700;color:var(--muted);letter-spacing:.06em">Preço médio</div>
+        <div style="font-size:1.1rem;font-weight:800;color:var(--accent)">${fmt2(avgPrice)}</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:.6rem;text-transform:uppercase;font-weight:700;color:var(--muted);letter-spacing:.06em">Mínimo visto</div>
+        <div style="font-size:1.1rem;font-weight:800;color:#16a34a">${fmt2(minPrice)}</div>
+      </div>
+    </div>`;
+
+  const header = `
+    <div style="display:grid;grid-template-columns:80px 1fr 60px 70px;gap:8px;
+      padding:6px 12px;background:var(--surface2);border-bottom:1.5px solid var(--border);
+      font-size:.67rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)">
+      <span>Data</span><span>${mode === 'store' ? 'Artigo' : 'Loja'}</span>
+      <span style="text-align:right">Qtd</span><span style="text-align:right">Preço</span>
+    </div>`;
+
+  // Reuse the priceItemDetailModal or create inline
+  let modal = document.getElementById('pxDrillModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'pxDrillModal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `<div class="modal" style="max-width:520px">
+      <div class="modal-handle"></div>
+      <div class="modal-header">
+        <span class="modal-title" id="pxDrillTitle"></span>
+        <button class="modal-close" onclick="closeModal('pxDrillModal')">✕</button>
+      </div>
+      <div id="pxDrillBody" style="overflow-y:auto;max-height:65vh"></div>
+    </div>`;
+    modal.onclick = e => { if (e.target === modal) closeModal('pxDrillModal'); };
+    document.body.appendChild(modal);
+  }
+
+  document.getElementById('pxDrillTitle').textContent = icon + ' ' + title;
+  if (loading) {
+    document.getElementById('pxDrillBody').innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted);font-size:.85rem">⏳ Carregando registros…</div>';
+    openModal('pxDrillModal');
+    return;
+  }
+  document.getElementById('pxDrillBody').innerHTML = summary + header + rowsHtml +
+    (sorted.length > 50 ? `<div style="text-align:center;padding:10px;font-size:.75rem;color:var(--muted)">Mostrando 50 de ${sorted.length} registros</div>` : '');
+  openModal('pxDrillModal');
+}
+window._pxDrillStore = _pxDrillStore;
+window._pxDrillItem  = _pxDrillItem;
 function pricesCatFilter(val)   {
   _px.catFilter = val;
   _populatePxSubcatFilter();
@@ -521,16 +834,25 @@ function _renderPricesGrouped(items) {
     // Since items don't carry store directly, group by avg cheapest store from history
     // Fallback: group items by name prefix (letter) or show all under store filter
     // We load per-item store data lazily — for now group by store from _px.stores filter
-    const storeId = _px.storeFilter;
-    if (storeId) {
+    const storeFilterVal = _px.storeFilter;
+    if (storeFilterVal) {
       // If a store filter is active, show items that have history in that store
       // (already filtered) grouped under that store header
-      const store = _px.stores.find(s => s.id === storeId);
+      let label = 'Estabelecimento';
+      if (storeFilterVal.startsWith('p:')) {
+        const payeeId = storeFilterVal.slice(2);
+        const store = _px.stores.find(s => s.payee_id === payeeId);
+        label = store?.payees?.name || 'Beneficiário';
+      } else if (storeFilterVal.startsWith('s:')) {
+        const storeId = storeFilterVal.slice(2);
+        const store = _px.stores.find(s => s.id === storeId);
+        label = store?.name || 'Estabelecimento';
+      }
       listEl.innerHTML = `
         <div class="px-group-section">
           <div class="px-group-header">
             <span class="px-group-dot" style="background:var(--accent)">🏪</span>
-            <span class="px-group-label">${esc(store?.name || 'Estabelecimento')}</span>
+            <span class="px-group-label">${esc(label)}</span>
             <span class="px-group-count">${items.length} ${items.length !== 1 ? 'itens' : 'item'}</span>
           </div>
           <div class="px-grid">${items.map(_pxCardHtml).join('')}</div>
@@ -567,7 +889,7 @@ async function _renderPricesGroupedByStore(items, listEl) {
   items.forEach(item => {
     const storeId = itemToStore[item.id];
     const store = storeId ? storeMap[storeId] : null;
-    const key = store?.name || 'Sem estabelecimento';
+    const key = (store?.payees?.name) || store?.name || 'Sem estabelecimento';
     if (!groups[key]) groups[key] = { items: [] };
     groups[key].items.push(item);
   });
@@ -796,7 +1118,7 @@ async function openPriceItemDetail(itemId) {
   const pidStoreSel = el('pidStoreFilter');
   if (pidStoreSel) {
     pidStoreSel.innerHTML = '<option value="">Todos os estabelecimentos</option>' +
-      _px.stores.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+      _px.stores.map(s => `<option value="${s.id}">${esc(_storeLabel(s))}</option>`).join('');
     pidStoreSel.value = _px.pidStoreFilter || '';
   }
   const histEl = el('pidHistoryList');
@@ -827,7 +1149,7 @@ async function _loadAndRenderPidHistory(itemId) {
     <div class="pid-row">
       <div class="pid-row-date">${dateStr}</div>
       <div class="pid-row-store">
-        <div class="pid-row-store-name">${esc(store?.name || '—')}${payeeName && payeeName !== store?.name ? ` <span style="font-size:.68rem;color:var(--muted)">(${esc(payeeName)})</span>` : ''}</div>
+        <div class="pid-row-store-name">${esc(payeeName || store?.name || '—')}${store?.name && payeeName && payeeName !== store?.name ? ` <span style="font-size:.68rem;color:var(--muted)">· ${esc(store.name)}</span>` : ''}</div>
         ${loc ? `<div class="pid-row-store-addr">${esc(loc)}</div>` : ''}
       </div>
       <div class="pid-row-qty">×${h.quantity ?? 1}</div>
@@ -946,14 +1268,21 @@ function _aprStoreSearch(val) {
   if (hidEl) hidEl.value = '';
   if (!val.trim()) { if (suggest) suggest.style.display = 'none'; return; }
   const q = val.toLowerCase();
-  const matches = _px.stores.filter(s => s.name.toLowerCase().includes(q));
+  const matches = _px.stores.filter(s =>
+    s.name.toLowerCase().includes(q) || (s.payees?.name || '').toLowerCase().includes(q)
+  );
   if (!suggest) return;
   if (!matches.length) { suggest.style.display = 'none'; return; }
   suggest.style.display = '';
   suggest.innerHTML = matches.map(s => {
     const loc = [s.address, s.city].filter(Boolean).join(', ');
-    return `<div class="store-suggest-item" onclick="_aprSelectStore('${s.id}','${esc(s.name).replace(/'/g,"\\'")}')">
-      <strong>${esc(s.name)}</strong>${loc ? `<div style="font-size:.72rem;color:var(--muted)">${esc(loc)}</div>` : ''}
+    const payeeName = s.payees?.name;
+    const label = payeeName && payeeName !== s.name
+      ? `<strong>${esc(payeeName)}</strong> <span style="font-size:.72rem;color:var(--muted)">· ${esc(s.name)}</span>`
+      : `<strong>${esc(s.name)}</strong>`;
+    const selectName = payeeName || s.name;
+    return `<div class="store-suggest-item" onclick="_aprSelectStore('${s.id}','${esc(selectName).replace(/'/g,"\\'")}')">
+      ${label}${loc ? `<div style="font-size:.72rem;color:var(--muted)">${esc(loc)}</div>` : ''}
     </div>`;
   }).join('');
 }
@@ -1095,14 +1424,21 @@ function _pifStoreSearch(val) {
   if (hidEl) hidEl.value = '';
   if (!val.trim()) { if (suggest) suggest.style.display = 'none'; return; }
   const q = val.toLowerCase();
-  const matches = _px.stores.filter(s => s.name.toLowerCase().includes(q));
+  const matches = _px.stores.filter(s =>
+    s.name.toLowerCase().includes(q) || (s.payees?.name || '').toLowerCase().includes(q)
+  );
   if (!suggest) return;
   if (!matches.length) { suggest.style.display = 'none'; return; }
   suggest.style.display = '';
   suggest.innerHTML = matches.map(s => {
     const loc = [s.address, s.city].filter(Boolean).join(', ');
-    return `<div class="store-suggest-item" onclick="_pifSelectStore('${s.id}','${esc(s.name).replace(/'/g,"\\'")}')">
-      <strong>${esc(s.name)}</strong>${loc ? `<div style="font-size:.72rem;color:var(--muted)">${esc(loc)}</div>` : ''}
+    const payeeName = s.payees?.name;
+    const label = payeeName && payeeName !== s.name
+      ? `<strong>${esc(payeeName)}</strong> <span style="font-size:.72rem;color:var(--muted)">· ${esc(s.name)}</span>`
+      : `<strong>${esc(s.name)}</strong>`;
+    const selectName = payeeName || s.name;
+    return `<div class="store-suggest-item" onclick="_pifSelectStore('${s.id}','${esc(selectName).replace(/'/g,"\\'")}')">
+      ${label}${loc ? `<div style="font-size:.72rem;color:var(--muted)">${esc(loc)}</div>` : ''}
     </div>`;
   }).join('');
 }
@@ -1155,7 +1491,7 @@ function _renderStorePayeeMap() {
     const locLine  = locParts.join(', ');
     return `<div class="spm-row" id="spmRow-${store.id}">
       <div class="spm-store">
-        <div class="spm-store-name">${esc(store.name)}</div>
+        <div class="spm-store-name">${esc(store.payees?.name || store.name)}</div>
         ${locLine ? `<div class="spm-store-addr">${esc(locLine)}</div>` : ''}
         ${store.cnpj ? `<div class="spm-store-cnpj">🪪 ${esc(store.cnpj)}</div>` : ''}
       </div>
@@ -1174,7 +1510,7 @@ function _renderStorePayeeMap() {
 
 async function saveStorePayeeLink(storeId, payeeId) {
   const { error } = await sb.from('price_stores')
-    .update({ payee_id: payeeId || null, updated_at: new Date().toISOString() })
+    .update({ payee_id: payeeId || null })
     .eq('id', storeId);
   if (error) { toast('Erro ao salvar vínculo: ' + error.message, 'error'); return; }
 
@@ -1280,15 +1616,21 @@ function _rpmStoreSearch(val) {
   if (si) si.style.display = 'none';
   if (!val.trim()) { if (suggest) suggest.style.display = 'none'; return; }
   const q = val.toLowerCase();
-  const matches = _px.stores.filter(s => s.name.toLowerCase().includes(q));
+  const matches = _px.stores.filter(s =>
+    s.name.toLowerCase().includes(q) || (s.payees?.name || '').toLowerCase().includes(q)
+  );
   if (!suggest) return;
   if (!matches.length) { suggest.style.display = 'none'; return; }
   suggest.style.display = '';
   suggest.innerHTML = matches.map(s => {
     const loc = [s.address, s.city].filter(Boolean).join(', ');
-    const payeeLine = s.payees ? ` <span style="font-size:.68rem;color:var(--muted)">· ${esc(s.payees.name)}</span>` : '';
-    return `<div class="store-suggest-item" onclick="_rpmSelectStore('${s.id}','${esc(s.name).replace(/'/g,"\\'")}')">
-      <strong>${esc(s.name)}</strong>${payeeLine}
+    const payeeName = s.payees?.name;
+    const label = payeeName && payeeName !== s.name
+      ? `<strong>${esc(payeeName)}</strong> <span style="font-size:.68rem;color:var(--muted)">· ${esc(s.name)}</span>`
+      : `<strong>${esc(s.name)}</strong>`;
+    const selectName = payeeName || s.name;
+    return `<div class="store-suggest-item" onclick="_rpmSelectStore('${s.id}','${esc(selectName).replace(/'/g,"\\'")}')">
+      ${label}
       ${loc ? `<div style="font-size:.72rem;color:var(--muted)">${esc(loc)}</div>` : ''}
     </div>`;
   }).join('');
@@ -1405,25 +1747,21 @@ async function rpmNormalizeAI(idx) {
   const descEl = document.getElementById(`rpmDesc-${idx}`);
   const raw    = descEl?.value?.trim();
   if (!raw) return;
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  const apiKey = await getGeminiApiKey();
   if (!apiKey) { toast('Configure a chave Gemini para usar IA.', 'warning'); return; }
   const btn = descEl?.parentElement?.querySelector('.rpm-ai-btn');
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
   try {
     const url  = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
-    const resp = await fetch(url, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text:
-          `Normalize este nome de produto para uma descrição curta e padronizada em português brasileiro.\n` +
-          `Remova abreviações técnicas e códigos internos.\n` +
-          `Retorne APENAS o nome normalizado em Title Case.\n\nProduto: ${raw}`
-        }] }],
-        generationConfig: { maxOutputTokens: 50, temperature: 0.1 },
-      }),
+    const _p1  = await geminiRetryFetch(url, {
+      contents: [{ parts: [{ text:
+        `Normalize este nome de produto para uma descrição curta e padronizada em português brasileiro.\n` +
+        `Remova abreviações técnicas e códigos internos.\n` +
+        `Retorne APENAS o nome normalizado em Title Case.\n\nProduto: ${raw}`
+      }] }],
+      generationConfig: { maxOutputTokens: 50, temperature: 0.1 },
     });
-    const data = await resp.json();
-    const norm = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    const norm = _parseGeminiText(_p1)?.split('\n')[0]?.trim();
     if (norm && descEl) { descEl.value = norm; _rpmAutoLink(idx); }
     toast('✓ Nome normalizado', 'success');
   } catch(e) { toast('Erro na IA: ' + e.message, 'error'); }
@@ -1532,15 +1870,18 @@ function _renderStoreList(search) {
   }
   el.innerHTML = stores.map(s => {
     const loc = [s.address, s.city, s.state_uf].filter(Boolean).join(', ');
+    // Nome principal: payee vinculado (beneficiário). Store.name é nome interno para recibos.
+    const displayName = s.payees?.name || s.name;
+    const storeSub    = s.payees && s.payees.name !== s.name ? s.name : null;
     const contact = [
-      s.payees ? `<span>👤 ${esc(s.payees.name)}</span>` : '',
+      storeSub ? `<span>🏪 ${esc(storeSub)}</span>` : '',
       s.phone  ? `<span>📞 ${esc(s.phone)}</span>`  : '',
       s.cnpj   ? `<span>🪪 ${esc(s.cnpj)}</span>`   : '',
     ].filter(Boolean).join(' · ');
     return `
     <div class="store-list-row" onclick="openStoreForm('${s.id}')">
       <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:.88rem">${esc(s.name)}</div>
+        <div style="font-weight:600;font-size:.88rem">${esc(displayName)}</div>
         ${loc     ? `<div style="font-size:.75rem;color:var(--muted)">${esc(loc)}</div>` : ''}
         ${contact ? `<div style="font-size:.72rem;color:var(--muted);margin-top:2px;display:flex;gap:8px;flex-wrap:wrap">${contact}</div>` : ''}
       </div>
@@ -1736,7 +2077,7 @@ async function onPricesReceiptDrop(event) {
 
 async function readPricesReceiptWithAI() {
   if (!_pricesReceiptPending) { toast('Selecione um arquivo primeiro.', 'warning'); return; }
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  const apiKey = await getGeminiApiKey();
   if (!apiKey) { toast('Configure a chave Gemini em Configurações → IA.', 'warning'); return; }
   const btn    = document.getElementById('pricesReadAiBtn');
   const status = document.getElementById('pricesAiStatus');
@@ -1758,7 +2099,7 @@ async function readPricesReceiptWithAI() {
 
 async function _callPricesVision(apiKey, pending) {
   const catList   = (state.categories || []).filter(c => c.type === 'expense').map(c => c.name).join(', ');
-  const storeList = _px.stores.slice(0, 20).map(s => s.name).join(', ');
+  const storeList = _px.stores.slice(0, 20).map(s => s.payees?.name ? `${s.payees.name} (${s.name})` : s.name).join(', ');
   const today     = new Date().toISOString().slice(0, 10);
   const prompt =
     `Você é especialista em leitura de notas fiscais e recibos brasileiros.\n` +
@@ -1772,22 +2113,14 @@ async function _callPricesVision(apiKey, pending) {
     `REGRAS: description=nome limpo sem abreviações; unit_price=total_price/quantity; date=${today} se não encontrar; ` +
     `se payee bater com algum da lista use o nome exato.`;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
-  const resp = await fetch(url, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [
-        { inline_data: { mime_type: pending.mediaType, data: pending.base64 } },
-        { text: prompt },
-      ]}],
-      generationConfig: { maxOutputTokens: 2000, temperature: 0.1 },
-    }),
+  const _p2 = await geminiRetryFetch(url, {
+    contents: [{ parts: [
+      { inline_data: { mime_type: pending.mediaType, data: pending.base64 } },
+      { text: prompt },
+    ]}],
+    generationConfig: { maxOutputTokens: 2000, temperature: 0.1 },
   });
-  if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err?.error?.message || `HTTP ${resp.status}`); }
-  const data  = await resp.json();
-  const text  = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const clean = text.replace(/```json|```/g, '').trim();
-  let parsed;
-  try { parsed = JSON.parse(clean); } catch { throw new Error('Resposta inválida da IA'); }
+  const parsed = _parseGeminiJSON(_p2);
   if (parsed.error) throw new Error(parsed.error);
   return parsed;
 }
@@ -2272,3 +2605,33 @@ async function pxhmDeleteType(catId, subcatKey, typeLabel, itemCount) {
   }
 }
 window.pxhmDeleteType = pxhmDeleteType;
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window._loadPricesData                     = _loadPricesData;
+window._pifStoreNew                        = _pifStoreNew;
+window._renderPricesPage                   = _renderPricesPage;
+window.applyGroceryFeature                 = applyGroceryFeature;
+window.applyPricesFeature                  = applyPricesFeature;
+window.aprNewStore                         = aprNewStore;
+window.closePricesReceiptZone              = closePricesReceiptZone;
+window.confirmAddToGroceryList             = confirmAddToGroceryList;
+window.deletePriceItemCurrent              = deletePriceItemCurrent;
+window.initPricesPage                      = initPricesPage;
+window.isGroceryEnabled                    = isGroceryEnabled;
+window.openAddPriceRecord                  = openAddPriceRecord;
+window.openEditPriceItem                   = openEditPriceItem;
+window.openNewPriceItem                    = openNewPriceItem;
+window.openPricesReceiptScan               = openPricesReceiptScan;
+window.openPricesStoreManager              = openPricesStoreManager;
+window.openRegisterPricesFromReceipt       = openRegisterPricesFromReceipt;
+window.openStoreForm                       = openStoreForm;
+window.openStorePayeeMap                   = openStorePayeeMap;
+window.pricesSetGroup                      = pricesSetGroup;
+window.readPricesReceiptWithAI             = readPricesReceiptWithAI;
+window.rpmAddRow                           = rpmAddRow;
+window.rpmNewStore                         = rpmNewStore;
+window.rpmNormalizeAllAI                   = rpmNormalizeAllAI;
+window.saveAddPriceRecord                  = saveAddPriceRecord;
+window.savePriceItem                       = savePriceItem;
+window.saveRegisterPrices                  = saveRegisterPrices;
+window.saveStoreForm                       = saveStoreForm;

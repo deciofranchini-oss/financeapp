@@ -7,24 +7,39 @@ const _CAT_FAV_KEY = () => {
 };
 
 function _loadCatFavorites() {
+  // Lê do cache local primeiro (imediato)
   try {
     const raw = localStorage.getItem(_CAT_FAV_KEY());
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return [];
+}
+
+async function _syncCatFavoritesFromServer() {
+  if (typeof getAppSetting !== 'function') return;
+  try {
+    const key = _CAT_FAV_KEY();
+    const val = await getAppSetting(key, null);
+    if (Array.isArray(val)) {
+      try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+    }
+  } catch (e) { console.warn('[catFav] sync:', e?.message); }
 }
 
 async function _saveCatFavorites(ids) {
-  // 1. Persistir localmente (imediato)
+  // 1. Persistir localmente (imediato, fallback)
   const key = _CAT_FAV_KEY();
   try { localStorage.setItem(key, JSON.stringify(ids)); } catch {}
-  // 2. Upsert direto no Supabase — sem depender de saveAppSetting
-  if (typeof sb === 'undefined' || !sb) return;
-  try {
-    const { error } = await sb.from('app_settings')
-      .upsert({ key, value: ids }, { onConflict: 'key' });
-    if (error) console.warn('[catFav] save error:', error.message);
-    else console.log('[catFav] saved', ids.length, 'favorites to Supabase');
-  } catch (e) { console.warn('[catFav] save exception:', e.message); }
+  // 2. Upsert no Supabase (principal — sincroniza entre dispositivos)
+  if (typeof saveAppSetting === 'function') {
+    saveAppSetting(key, ids).catch(e => console.warn('[catFav] save error:', e?.message));
+  } else if (typeof sb !== 'undefined' && sb) {
+    try {
+      const { error } = await sb.from('app_settings')
+        .upsert({ key, value: ids }, { onConflict: 'key' });
+      if (error) console.warn('[catFav] save error:', error.message);
+    } catch (e) { console.warn('[catFav] save exception:', e?.message); }
+  }
 }
 
 function isCatFavorite(id) { return _loadCatFavorites().includes(id); }
@@ -87,25 +102,75 @@ async function _loadCatTxCounts() {
 
 // ── Render ────────────────────────────────────────────────────────────────
 
+
+function _catHighlight(text, term) {
+  if (!term) return text;
+  const idx = text.toLowerCase().indexOf(term.toLowerCase());
+  if (idx === -1) return text;
+  return text.slice(0, idx) +
+    '<mark style="background:var(--amber,#fef08a);color:var(--text);border-radius:2px;padding:0 1px">' +
+    text.slice(idx, idx + term.length) +
+    '</mark>' +
+    text.slice(idx + term.length);
+}
+
+// ── Category search filter ───────────────────────────────────────────────────
+let _catSearchTerm = '';
+
+function filterCategories(term) {
+  _catSearchTerm = (term || '').toLowerCase().trim();
+  const clearBtn = document.getElementById('catSearchClear');
+  if (clearBtn) clearBtn.style.display = _catSearchTerm ? '' : 'none';
+  renderCategories();
+}
+window.filterCategories = filterCategories;
+
 function renderCategories() {
+  const q = _catSearchTerm;
+
   ['expense', 'income'].forEach(type => {
     const dbType    = type === 'expense' ? 'despesa' : 'receita';
     const container = document.getElementById('catEditor' + (type === 'expense' ? 'Expense' : 'Income'));
     const countEl   = document.getElementById('catCount'  + (type === 'expense' ? 'Expense' : 'Income'));
     if (!container) return;
 
-    const parents     = state.categories.filter(c => c.type === dbType && !c.parent_id).sort((a, b) => a.name.localeCompare(b.name));
+    // When searching, include a parent if it OR any of its subs match
+    let parents     = state.categories.filter(c => c.type === dbType && !c.parent_id).sort((a, b) => a.name.localeCompare(b.name));
     const allChildren = state.categories.filter(c => c.type === dbType && c.parent_id);
-    if (countEl) { const n = state.categories.filter(c => c.type === dbType).length; countEl.textContent = n + (n === 1 ? ' cat.' : ' cats.'); }
+
+    if (q) {
+      parents = parents.filter(p => {
+        const parentMatches = p.name.toLowerCase().includes(q);
+        const anySubMatches = allChildren.filter(c => c.parent_id === p.id)
+          .some(c => c.name.toLowerCase().includes(q));
+        return parentMatches || anySubMatches;
+      });
+    }
+
+    const totalCount = state.categories.filter(c => c.type === dbType).length;
+    if (countEl) {
+      if (q && parents.length !== state.categories.filter(c => c.type === dbType && !c.parent_id).length) {
+        countEl.textContent = parents.length + ' de ' + totalCount;
+      } else {
+        countEl.textContent = totalCount + (totalCount === 1 ? ' cat.' : ' cats.');
+      }
+    }
 
     if (!parents.length) {
-      container.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted);font-size:.83rem">
-        Nenhuma categoria. Clique em "+ ${type === 'expense' ? 'Despesa' : 'Receita'}" para criar.</div>`;
+      container.innerHTML = q
+        ? `<div style="text-align:center;padding:24px;color:var(--muted);font-size:.83rem">
+            🔍 Nenhuma categoria encontrada para "<strong>${esc(q)}</strong>"</div>`
+        : `<div style="text-align:center;padding:24px;color:var(--muted);font-size:.83rem">
+            Nenhuma categoria. Clique em "+ ${type === 'expense' ? 'Despesa' : 'Receita'}" para criar.</div>`;
       return;
     }
 
     container.innerHTML = parents.map(p => {
-      const subs      = allChildren.filter(c => c.parent_id === p.id).sort((a, b) => a.name.localeCompare(b.name));
+      const allSubs  = allChildren.filter(c => c.parent_id === p.id).sort((a, b) => a.name.localeCompare(b.name));
+      // When searching: show only matching subs (unless parent itself matches → show all)
+      const subs     = (q && !p.name.toLowerCase().includes(q))
+        ? allSubs.filter(c => c.name.toLowerCase().includes(q))
+        : allSubs;
       const pTxCount  = _catTxCounts[p.id] || 0;
       const pColor    = p.color || 'var(--accent)';
 
@@ -121,7 +186,7 @@ function renderCategories() {
           <div class="cat-group-icon">
             <span>${p.icon || '📦'}</span>
           </div>
-          <span class="cat-group-name" id="catName-${p.id}" ondblclick="startCatInlineEdit('${p.id}')">${esc(p.name)}</span>
+          <span class="cat-group-name" id="catName-${p.id}" ondblclick="startCatInlineEdit('${p.id}')">${q ? _catHighlight(esc(p.name), q) : esc(p.name)}</span>
           <div class="cat-group-meta">
             ${subs.length ? `<span class="cat-sub-pill">${subs.length} sub</span>` : ''}
             ${pTxCount > 0 ? `<span class="cat-tx-pill" title="Ver histórico" onclick="event.stopPropagation();openCategoryHistory('${p.id}','${esc(p.name)}')">📊 ${pTxCount}</span>` : ''}
@@ -129,7 +194,19 @@ function renderCategories() {
           <div class="cat-inline-actions">
             <button class="btn-icon" onclick="openCategoryModal('','${p.id}','${dbType}')" title="Nova subcategoria">＋ Sub</button>
             <button class="btn-icon" onclick="toggleCatFavorite('${p.id}')" title="${isCatFavorite(p.id)?'Remover favorito':'Favoritar'}" style="color:${isCatFavorite(p.id)?'var(--amber,#f59e0b)':'var(--muted)'};font-size:1.05rem">★</button>
+            ${(() => {
+              const _isActive  = window._iofCatId === p.id;
+              const _hasOther  = !!window._iofCatId && window._iofCatId !== p.id;
+              const _color     = _isActive ? '#dc2626' : _hasOther ? 'var(--border)' : 'var(--muted)';
+              const _bg        = _isActive ? 'rgba(220,38,38,.1)' : 'transparent';
+              const _cursor    = _hasOther ? 'not-allowed' : 'pointer';
+              const _opacity   = _hasOther ? '0.35' : '1';
+              const _title     = _isActive ? 'IOF ativo (clique para liberar seleção)' : _hasOther ? 'Desative o IOF atual para selecionar outro' : 'Definir como categoria padrão do IOF';
+              const _events    = _hasOther ? 'none' : 'auto';
+              return `<button class="btn-icon cat-iof-btn" onclick="setIofCategoryTarget('${p.id}','${esc(p.name)}')" title="${_title}" style="color:${_color};font-weight:700;font-size:.85rem;background:${_bg};cursor:${_cursor};opacity:${_opacity};pointer-events:${_events}">IOF</button>`;
+            })()}
             <button class="btn-icon" onclick="openCategoryModal('${p.id}')" title="Editar">✏️</button>
+            <button class="btn-ico" onclick="event.stopPropagation();openCategoryDetailModal('${p.id}')" title="Ver panorâmica 360°" style="font-size:.95rem;width:28px;height:28px;display:flex;align-items:center;justify-content:center">🔍</button>
             <button class="btn-icon" onclick="deleteCategory('${p.id}')" title="Excluir" style="color:var(--red)">🗑️</button>
           </div>
         </div>
@@ -148,11 +225,12 @@ function renderCategories() {
             <div class="cat-sub-icon" style="background:color-mix(in srgb,${cColor} 14%,transparent)">
               <span style="color:${cColor}">${c.icon || '▸'}</span>
             </div>
-            <span class="cat-sub-name" id="catName-${c.id}" ondblclick="startCatInlineEdit('${c.id}')">${esc(c.name)}</span>
+            <span class="cat-sub-name" id="catName-${c.id}" ondblclick="startCatInlineEdit('${c.id}')">${q ? _catHighlight(esc(c.name), q) : esc(c.name)}</span>
             ${cCount > 0 ? `<span class="cat-tx-pill" title="Ver histórico" onclick="event.stopPropagation();openCategoryHistory('${c.id}','${esc(c.name)}')">📊 ${cCount}</span>` : ''}
             <div class="cat-inline-actions">
               <button class="btn-icon" onclick="toggleCatFavorite('${c.id}')" title="${isCatFavorite(c.id)?'Remover favorito':'Favoritar'}" style="color:${isCatFavorite(c.id)?'var(--amber,#f59e0b)':'var(--muted)'};font-size:1.05rem">★</button>
               <button class="btn-icon" onclick="openCategoryModal('${c.id}')" title="Editar">✏️</button>
+              <button class="btn-ico" onclick="event.stopPropagation();openCategoryDetailModal('${c.id}')" title="Ver panorâmica 360°" style="font-size:.95rem;width:28px;height:28px;display:flex;align-items:center;justify-content:center">🔍</button>
               <button class="btn-icon" onclick="deleteCategory('${c.id}')" title="Excluir" style="color:var(--red)">🗑️</button>
             </div>
           </div>`;
@@ -588,3 +666,220 @@ function getPeriodColor(period) {
     default: return '#1F6B4F';
   }
 }
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window._loadCatFavorites                   = _loadCatFavorites;
+window._syncCatFavsFromServer              = _syncCatFavsFromServer;
+window.confirmCatReassign                  = confirmCatReassign;
+window.initCategoriesPage                  = initCategoriesPage;
+window.loadCategories                      = loadCategories;
+window.openCategoryHistory                 = openCategoryHistory;
+window.openCategoryModal                   = openCategoryModal;
+window.renderCategories                    = renderCategories;
+window.saveCategory                        = saveCategory;
+window.selectCatIcon                       = selectCatIcon;
+window.showCatIconGroup                    = showCatIconGroup;
+
+// ── IOF Category Target ────────────────────────────────────────────────────
+async function setIofCategoryTarget(catId, catName) {
+  const current = window._iofCatId;
+
+  // Toggle off if already set
+  if (current === catId) {
+    const ok = confirm(`Remover "${catName}" como categoria padrão do IOF?`);
+    if (!ok) return;
+    window._iofCatId = null;
+    await setIofCategoryId(null);
+    renderCategories();
+    if (typeof toast === 'function') toast('Categoria IOF padrão removida.', 'info');
+    return;
+  }
+
+  // Switching from another category?
+  const hasPrevious = !!current;
+  const prevCat = hasPrevious ? (state.categories||[]).find(c=>c.id===current) : null;
+  let migrateHistory = false;
+
+  if (hasPrevious) {
+    const answer = confirm(
+      `Definir "${catName}" como nova categoria padrão do IOF?\n\n` +
+      `Anterior: "${prevCat?.name||'Outra'}"\n\n` +
+      `Deseja transferir o histórico de transações IOF para esta categoria?`
+    );
+    if (!answer) return;
+    migrateHistory = true;
+  }
+
+  await setIofCategoryId(catId);
+
+  if (migrateHistory && typeof bulkUpdateIofCategory === 'function') {
+    await bulkUpdateIofCategory(catId);
+  }
+
+  renderCategories();
+  if (typeof toast === 'function')
+    toast(`"${catName}" definida como categoria padrão do IOF.`, 'success');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  CATEGORY 360° — panorâmica completa da categoria
+// ════════════════════════════════════════════════════════════════════════════
+async function openCategoryDetailModal(catId) {
+  const cat=(state.categories||[]).find(c=>c.id===catId);
+  if (!cat) return;
+
+  const parent=cat.parent_id?(state.categories||[]).find(c=>c.id===cat.parent_id):null;
+  const children=(state.categories||[]).filter(c=>c.parent_id===catId);
+
+  document.querySelectorAll('#cat360Modal').forEach(m=>m.remove());
+
+  const shell=document.createElement('div');
+  shell.id='cat360Modal';
+  shell.className='modal-overlay open';
+  shell.onclick=e=>{if(e.target===shell)shell.remove();};
+  shell.innerHTML=`<div class="modal" style="max-width:600px;max-height:90dvh;overflow-y:auto">
+    <div class="modal-handle"></div>
+    <div class="modal-body" style="padding:20px;text-align:center;color:var(--muted)">⏳ Carregando...</div>
+  </div>`;
+  document.body.appendChild(shell);
+
+  // Fetch last 6 months
+  const now=new Date();
+  const from=new Date(now.getFullYear(),now.getMonth()-5,1).toISOString().slice(0,10);
+
+  // Include sub-category IDs
+  const catIds=[catId,...children.map(c=>c.id)];
+  const { data:txs=[] }=await sb.from('transactions')
+    .select('id,date,description,amount,brl_amount,currency,status,categories(name,color,icon),payees(name)')
+    .in('category_id',catIds)
+    .gte('date',from)
+    .order('date',{ascending:false})
+    .limit(60);
+
+  const totalAmt=txs.reduce((s,t)=>s+Math.abs(parseFloat(t.brl_amount||t.amount)||0),0);
+  const avgAmt=txs.length?totalAmt/txs.length:0;
+  const isExp=cat.type==='despesa';
+
+  // Month breakdown
+  const byMonth={};
+  txs.forEach(t=>{
+    const m=t.date?.slice(0,7)||'';
+    byMonth[m]=(byMonth[m]||0)+Math.abs(parseFloat(t.brl_amount||t.amount)||0);
+  });
+  const months=Object.entries(byMonth).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,6);
+  const maxMonth=Math.max(...months.map(m=>m[1]),1);
+  const monthBars=months.map(([m,v])=>{
+    const pct=Math.round(v/maxMonth*100);
+    const [y,mo]=m.split('-');
+    const label=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][parseInt(mo)-1]||mo;
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <div style="font-size:.72rem;color:var(--muted);width:28px;flex-shrink:0">${label}</div>
+      <div style="flex:1;background:var(--border);border-radius:4px;height:10px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:${cat.color||'var(--accent)'};border-radius:4px;transition:width .3s"></div>
+      </div>
+      <div style="font-size:.72rem;font-weight:700;color:var(--text);width:80px;text-align:right">${fmt(v)}</div>
+    </div>`;
+  }).join('');
+
+  // Top payees
+  const payeeMap={};
+  txs.forEach(t=>{const n=t.payees?.name||'—';payeeMap[n]=(payeeMap[n]||0)+Math.abs(parseFloat(t.brl_amount||t.amount)||0);});
+  const topPayees=Object.entries(payeeMap).sort((a,b)=>b[1]-a[1]).slice(0,5);
+
+  // TX rows
+  const txRows=txs.slice(0,20).map(t=>{
+    const amt=Math.abs(parseFloat(t.brl_amount||t.amount)||0);
+    const d=t.date?t.date.split('-').reverse().join('/'):'—';
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:5px 8px;font-size:.78rem;color:var(--muted);white-space:nowrap">${d}</td>
+      <td style="padding:5px 8px;font-size:.8rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.description||'—')}</td>
+      <td style="padding:5px 8px;font-size:.78rem;color:var(--muted)">${esc(t.payees?.name||'—')}</td>
+      <td style="padding:5px 8px;font-size:.82rem;font-weight:700;text-align:right;color:${isExp?'#dc2626':'#16a34a'}">
+        ${isExp?'−':'+'} ${fmt(amt)}</td>
+    </tr>`;
+  }).join('');
+
+  shell.innerHTML=`
+    <div class="modal" style="max-width:600px;max-height:90dvh;overflow-y:auto;border-radius:18px" onclick="event.stopPropagation()">
+      <div class="modal-handle"></div>
+      <div class="modal-header" style="padding:14px 18px">
+        <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
+          <div style="width:44px;height:44px;border-radius:12px;background:${cat.color||'var(--accent)'}22;display:flex;align-items:center;justify-content:center;font-size:1.4rem;flex-shrink:0">
+            ${cat.icon||'🏷️'}
+          </div>
+          <div style="min-width:0">
+            <div style="font-size:1rem;font-weight:800;color:var(--text)">${esc(cat.name)}</div>
+            ${parent?`<div style="font-size:.75rem;color:var(--muted)">▸ ${esc(parent.name)}</div>`:''}
+            <span style="font-size:.7rem;font-weight:700;color:${cat.color||'var(--accent)'};background:${cat.color||'var(--accent)'}18;padding:2px 8px;border-radius:20px">
+              ${cat.type==='despesa'?'Despesa':cat.type==='receita'?'Receita':'Transferência'}
+            </span>
+          </div>
+        </div>
+        <button class="modal-close" onclick="document.getElementById('cat360Modal')?.remove()">✕</button>
+      </div>
+
+      <div class="modal-body" style="padding:16px 18px;display:flex;flex-direction:column;gap:16px">
+
+        <!-- KPIs -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px">
+          ${[
+            ['Total 6 meses',fmt(totalAmt),'#dc2626'],
+            ['Transações',txs.length,'#2563eb'],
+            ['Ticket médio',fmt(avgAmt),'#d97706'],
+            ['Subcategorias',children.length,'#6d28d9'],
+          ].map(([l,v,c])=>`<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;border:1px solid var(--border)">
+            <div style="font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:3px">${l}</div>
+            <div style="font-size:1rem;font-weight:800;color:${c}">${v}</div>
+          </div>`).join('')}
+        </div>
+
+        <!-- Monthly bars -->
+        ${months.length?`<div style="background:var(--surface2);border-radius:10px;padding:12px 14px;border:1px solid var(--border)">
+          <div style="font-size:.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:10px">📊 Evolução mensal</div>
+          ${monthBars}
+        </div>`:''}
+
+        <!-- Top payees -->
+        ${topPayees.length?`<div style="background:var(--surface2);border-radius:10px;padding:12px 14px;border:1px solid var(--border)">
+          <div style="font-size:.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px">👥 Top beneficiários</div>
+          ${topPayees.map(([n,v])=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:.82rem;color:var(--text)">${esc(n)}</span>
+            <span style="font-size:.82rem;font-weight:700;color:${isExp?'#dc2626':'#16a34a'}">${fmt(v)}</span>
+          </div>`).join('')}
+        </div>`:''}
+
+        <!-- Subcategories -->
+        ${children.length?`<div style="background:var(--surface2);border-radius:10px;padding:12px 14px;border:1px solid var(--border)">
+          <div style="font-size:.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px">🏷️ Subcategorias</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${children.map(c=>`<span style="padding:3px 10px;border-radius:20px;background:${c.color||'var(--accent)'}20;color:${c.color||'var(--accent)'};font-size:.78rem;font-weight:600;border:1px solid ${c.color||'var(--accent)'}30">${c.icon||'▸'} ${esc(c.name)}</span>`).join('')}
+          </div>
+        </div>`:''}
+
+        <!-- Recent transactions -->
+        ${txs.length?`<div>
+          <div style="font-size:.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px">📋 Últimos 6 meses (${txs.length} transações)</div>
+          <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden">
+            <table style="width:100%;border-collapse:collapse">
+              <thead>
+                <tr style="background:var(--surface2)">
+                  <th style="padding:5px 8px;font-size:.7rem;font-weight:700;color:var(--muted);text-align:left">Data</th>
+                  <th style="padding:5px 8px;font-size:.7rem;font-weight:700;color:var(--muted);text-align:left">Descrição</th>
+                  <th style="padding:5px 8px;font-size:.7rem;font-weight:700;color:var(--muted);text-align:left">Beneficiário</th>
+                  <th style="padding:5px 8px;font-size:.7rem;font-weight:700;color:var(--muted);text-align:right">Valor</th>
+                </tr>
+              </thead>
+              <tbody>${txRows}</tbody>
+            </table>
+          </div>
+        </div>`:'<div style="color:var(--muted);font-size:.8rem;text-align:center;padding:12px">Nenhuma transação nos últimos 6 meses.</div>'}
+
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('cat360Modal')?.remove();openCategoryModal('${catId}')">✏️ Editar</button>
+        </div>
+      </div>
+    </div>`;
+}
+window.openCategoryDetailModal = openCategoryDetailModal;
+
+window.setIofCategoryTarget = setIofCategoryTarget;

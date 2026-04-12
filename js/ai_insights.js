@@ -75,7 +75,7 @@ async function initAiInsightsPage() {
     return;
   }
 
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  const apiKey = await getGeminiApiKey();
   if (!apiKey || !apiKey.startsWith('AIza')) {
     page.innerHTML = `
       <div class="ai-disabled-state">
@@ -1126,7 +1126,13 @@ function _aiDetectAnomalies(txs, catMap, payMap, historicalTrend, byCategory) {
 async function runAiAnalysis() {
   if (_ai.analysisLoading) return;
 
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  // PWA fix: set visual feedback synchronously BEFORE any await calls
+  // iOS Safari PWA swallows taps if no DOM change occurs within ~300ms
+  _ai.analysisLoading = true;
+  const analyzeBtn = document.querySelector('.ai2-btn-analyze');
+  if (analyzeBtn) { analyzeBtn.disabled = true; analyzeBtn.style.opacity = '.7'; }
+
+  const apiKey = await getGeminiApiKey();
   if (!apiKey || !apiKey.startsWith('AIza')) {
     toast(t('ai.no_api_key_config'), 'warning');
     showAiConfig();
@@ -1158,6 +1164,8 @@ async function runAiAnalysis() {
   } finally {
     _ai.analysisLoading = false;
     _aiRefreshSnapshotButton();
+    const analyzeBtn = document.querySelector('.ai2-btn-analyze');
+    if (analyzeBtn) { analyzeBtn.disabled = false; analyzeBtn.style.opacity = ''; }
   }
 }
 
@@ -1328,7 +1336,7 @@ Responda SOMENTE com JSON válido, sem markdown, sem texto antes ou depois.
 DADOS FINANCEIROS — PERÍODO ${ctx.period.from} a ${ctx.period.to}:
 ${JSON.stringify(promptData, null, 0)}
 
-RETORNE EXATAMENTE ESTE JSON (todos os textos em português brasileiro):
+RETORNE APENAS O SEGUINTE JSON (sem texto antes ou depois, sem markdown):
 {
   "summary": "2-3 frases resumindo o período de forma clara e humana",
   "overview": {
@@ -1409,7 +1417,6 @@ RETORNE EXATAMENTE ESTE JSON (todos os textos em português brasileiro):
     { "category": "nome", "status": "ok|near|over", "insight": "análise do orçamento" }
   ],
   "investments_analysis": {
-    "_instrucao": "Inclua APENAS se carteira_investimentos estiver nos dados. Omita esta seção completamente se não houver dados de investimentos.",
     "summary": "resumo da carteira em 1-2 frases",
     "total_market_value_comment": "comentário sobre o valor total da carteira",
     "pnl_comment": "avaliação do resultado (lucro/prejuízo) da carteira",
@@ -1422,7 +1429,6 @@ RETORNE EXATAMENTE ESTE JSON (todos os textos em português brasileiro):
     ]
   },
   "debts_analysis": {
-    "_instrucao": "Inclua APENAS se dividas_ativas estiver nos dados. Omita esta seção completamente se não houver dados de dívidas.",
     "summary": "resumo das dívidas em 1-2 frases",
     "total_burden_comment": "avaliação do peso das dívidas em relação à renda",
     "priority_order": [
@@ -1432,7 +1438,6 @@ RETORNE EXATAMENTE ESTE JSON (todos os textos em português brasileiro):
     "cashflow_impact": "impacto estimado das dívidas no fluxo de caixa mensal"
   },
   "price_insights": {
-    "_instrucao": "Inclua APENAS se rastreamento_precos estiver nos dados. Omita esta seção completamente se não houver dados de preços.",
     "summary": "observação sobre os itens rastreados",
     "best_value_items": [
       { "name": "item", "insight": "dica de economia baseada nos preços históricos" }
@@ -1457,31 +1462,29 @@ REGRAS FINAIS:
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 6000, temperature: 0.2 },
-    }),
+  // responseMimeType: 'application/json' forces Gemini to output ONLY valid JSON.
+  // Combined with the improved _parseGeminiJSON (bracket-counting + sanitizer),
+  // this is more reliable than free-text mode where the model adds preamble/postamble.
+  const _statusEl = () =>
+    document.getElementById('aiInsightsLoadingMsg') || document.querySelector('.ai-loading-text');
+
+  const data = await geminiRetryFetch(url, {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      maxOutputTokens: 10000,
+      temperature: 0.2,
+      responseMimeType: 'application/json',
+      // Explicitly set thinkingBudget=0 so geminiRetryFetch doesn't re-inject it
+      // (thinkingBudget:0 = all tokens available for output)
+    },
+  }, {
+    onRetry: (attempt, max, waitMs) => {
+      const el = _statusEl();
+      if (el) el.textContent = `⏳ Modelo ocupado — aguardando ${waitMs/1000}s (tentativa ${attempt}/${max})…`;
+    },
   });
 
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    const msg = err?.error?.message || `HTTP ${resp.status}`;
-    if (resp.status === 429) throw new Error('Limite de requisições atingido. Aguarde alguns segundos.');
-    throw new Error(msg);
-  }
-
-  const data  = await resp.json();
-  const text  = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const clean = text.replace(/```json|```/g, '').trim();
-
-  let parsed;
-  try { parsed = JSON.parse(clean); }
-  catch { throw new Error('Resposta inválida da IA'); }
-
-  return parsed;
+  return _parseGeminiJSON(data);
 }
 
 
@@ -2477,7 +2480,7 @@ async function sendAiChatMessage() {
   const enabled = await isAiInsightsEnabled();
   if (!enabled) { toast('AI Insights não está habilitado para esta família', 'warning'); return; }
 
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  const apiKey = await getGeminiApiKey();
   if (!apiKey || !apiKey.startsWith('AIza')) { toast('Configure a chave Gemini', 'warning'); showAiConfig(); return; }
 
   // Adiciona mensagem do usuário
@@ -2544,28 +2547,16 @@ REGRAS:
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      contents: [
-        ...geminiHistory,
-        { role: 'user', parts: [{ text: question }] },
-      ],
-      generationConfig: { maxOutputTokens: 800, temperature: 0.4 },
-    }),
+  const data = await geminiRetryFetch(url, {
+    system_instruction: { parts: [{ text: systemInstruction }] },
+    contents: [
+      ...geminiHistory,
+      { role: 'user', parts: [{ text: question }] },
+    ],
+    generationConfig: { maxOutputTokens: 1200, temperature: 0.4 },
   });
 
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    const msg = err?.error?.message || `HTTP ${resp.status}`;
-    if (resp.status === 429) throw new Error('Limite de requisições. Aguarde.');
-    throw new Error(msg);
-  }
-
-  const data = await resp.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text || '(sem resposta)';
+  return _parseGeminiText(data) || '(sem resposta)';
 }
 
 function _aiRenderChatHistory() {
@@ -2731,3 +2722,13 @@ window.loadAiSnapshots = loadAiSnapshots;
 window.saveCurrentAiSnapshot = saveCurrentAiSnapshot;
 
 window.deleteAiSnapshot = deleteAiSnapshot;
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window._aiShowTab                          = _aiShowTab;
+window.aiChatSuggest                       = aiChatSuggest;
+window.applyAiInsightsFeature              = applyAiInsightsFeature;
+window.clearAiChat                         = clearAiChat;
+window.exportAiAnalysis                    = exportAiAnalysis;
+window.initAiInsightsPage                  = initAiInsightsPage;
+window.runAiAnalysis                       = runAiAnalysis;
+window.sendAiChatMessage                   = sendAiChatMessage;

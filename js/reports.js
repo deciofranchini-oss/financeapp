@@ -104,6 +104,7 @@ function _drillOpenModal(opts) {
     modal = document.createElement('div');
     modal.id = 'rptDrillModal';
     modal.className = 'modal-overlay';
+    modal.id = 'rptDrillModal';
     modal.onclick = e => { if (e.target === modal) closeModal('rptDrillModal'); };
     modal.innerHTML = `<div class="modal" style="max-width:520px;max-height:82dvh;overflow:hidden;display:flex;flex-direction:column;padding:0">
       <div class="modal-handle"></div>
@@ -147,20 +148,40 @@ window._drillClose = _drillClose;
 window._drillOpen  = _drillOpen;
 
 // ── Forecast table drill-down: click row → show tx details ──────────
-window._forecastDrillRow = function(dateStr, label) {
+window._forecastDrillRow = async function(dateStr, label) {
+  // 1. Tentar nos dados carregados pelo relatório
   const txSlice = (rptState.txData || []).filter(t => t.date === dateStr);
-  if (!txSlice.length) {
-    // Try from forecast state
-    const allTx = window._forecastTxCache || [];
-    const fSlice = allTx.filter(t => t.date === dateStr);
-    if (fSlice.length) {
-      _drillOpen({ title: label || dateStr, subtitle: 'Transações previstas', txs: fSlice, color: 'var(--accent)' });
-      return;
-    }
-    toast('Sem transações nesta data', 'warning');
+  if (txSlice.length) {
+    _drillOpen({ title: label || dateStr, subtitle: 'Transações · ' + dateStr, txs: txSlice, color: 'var(--accent)' });
     return;
   }
-  _drillOpen({ title: label || dateStr, subtitle: 'Transações · ' + dateStr, txs: txSlice, color: 'var(--accent)' });
+
+  // 2. Tentar no cache do forecast (transações previstas já carregadas)
+  const cached = (window._forecastTxCache || []).filter(t => t.date === dateStr);
+  if (cached.length) {
+    _drillOpen({ title: label || dateStr, subtitle: 'Transações · ' + dateStr, txs: cached, color: 'var(--accent)' });
+    return;
+  }
+
+  // 3. Fallback: buscar diretamente do banco para essa data
+  try {
+    if (typeof sb === 'undefined' || !sb) { toast('Sem transações nesta data', 'warning'); return; }
+    const { data, error } = await (typeof famQ === 'function' ? famQ : (q => q))(
+      sb.from('transactions')
+        .select('id,date,description,amount,currency,brl_amount,categories(name,color),payees(name),accounts!transactions_account_id_fkey(name,currency)')
+        .eq('date', dateStr)
+        .order('amount')
+    );
+    if (error) throw error;
+    if (!data || !data.length) {
+      toast('Sem transações lançadas nesta data', 'info');
+      return;
+    }
+    _drillOpen({ title: label || dateStr, subtitle: 'Transações · ' + dateStr, txs: data, color: 'var(--accent)' });
+  } catch(e) {
+    console.error('[forecastDrill]', e?.message);
+    toast('Erro ao carregar transações: ' + (e?.message || ''), 'error');
+  }
 };
 
 
@@ -315,7 +336,16 @@ function populateReportFilters() {
     const el = document.getElementById(id); if(!el) return;
     const cur = el.value;
     const placeholder = id==='forecastAccountFilter' ? 'Todas as contas' : 'Todas';
-    el.innerHTML = _accountOptions(state.accounts, placeholder);
+    // Reports include archived accounts for historical analysis
+    const allAccs = [...(state.accounts||[]), ...(state.archivedAccounts||[])];
+    const archived = (state.archivedAccounts||[]);
+    let html = `<option value="">${placeholder}</option>`;
+    html += _accountOptions(state.accounts, '');
+    if (archived.length) {
+      html += `<option value="" disabled>── Arquivadas ──</option>`;
+      archived.forEach(a => { html += `<option value="${a.id}">📦 ${esc(a.name)} (${a.currency})</option>`; });
+    }
+    el.innerHTML = html;
     el.value = cur;
   });
   const catEl = document.getElementById('rptCategory');
@@ -390,10 +420,11 @@ async function loadCurrentReport(resetPage = false) {
   if (_rptLoading) return;                   // prevent concurrent fetches
   _rptLoading = true;
   try {
-    // For forecast view, _fcEnsureState() inside loadForecast handles dependencies
     if (rptState.view === 'regular')           await loadReports();
     else if (rptState.view === 'transactions') await loadReportTx();
     else if (rptState.view === 'forecast')     await _safeLoadForecast();
+
+    // objectives: user must select an objective first — no auto-load
   } catch(e) {
     console.warn('[reports] loadCurrentReport error:', e?.message);
   } finally {
@@ -413,7 +444,7 @@ async function fetchRptTransactions() {
   const relGroupV = document.getElementById('rptRelGroup')?.value  || '';
 
   let q = famQ(sb.from('transactions')
-    .select('*, accounts!transactions_account_id_fkey(name,color,currency), categories(name,color,type), payees(name)'))
+    .select('*, category_splits, member_shares, accounts!transactions_account_id_fkey(name,color,currency), categories(name,color,type), payees(name)'))
     .gte('date',from).lte('date',to)
     .order('date',{ascending:false});
   if(accId) q = q.eq('account_id', accId);
@@ -425,8 +456,9 @@ async function fetchRptTransactions() {
   if(tagV)    q = q.contains('tags', [tagV]);
   // Apply specific member filter OR relationship group filter
   // Uses family_member_ids[] (array) when available, falls back to family_member_id
+  // Note: member_shares (split) is filtered client-side below
   if (memberV) {
-    q = q.or(`family_member_id.eq.${memberV},family_member_ids.cs.{${memberV}}`);
+    q = q.or(`family_member_id.eq.${memberV},family_member_ids.cs.{${memberV}},member_shares.cs.[{"member_id":"${memberV}"}]`);
   } else if (relGroupV && typeof getMemberIdsByRelGroup === 'function') {
     const groupIds = getMemberIdsByRelGroup(relGroupV);
     if (groupIds && groupIds.length > 0) {
@@ -438,7 +470,7 @@ async function fetchRptTransactions() {
 
   const {data, error} = await q;
   if(error) { toast(error.message,'error'); return []; }
-  const result = (data||[]).filter(t=>!t.is_transfer);
+  const result = (data||[]).filter(t=>!t.is_transfer && !t.is_card_payment);
 
   // Refresh tag dropdown with tags found in this period/filters
   // (do it after filter so we show tags relevant to current context)
@@ -554,7 +586,7 @@ async function loadReports() {
     allTxs.forEach(t => {
       const n = t.categories?.name || 'Sem categoria';
       const c = t.categories?.color || '#94a3b8';
-      if (t.is_transfer) {
+      if (t.is_transfer || t.is_card_payment) {
         if (!trnMap[n]) trnMap[n] = { name: n, color: c, total: 0, count: 0 };
         trnMap[n].total += (typeof txToBRL==="function"?Math.abs(txToBRL(t)):Math.abs(t.brl_amount??t.amount??0)); trnMap[n].count++;
       } else if (t.amount < 0) {
@@ -745,28 +777,67 @@ function renderReportTxTable(txs) {
   const countEl=document.getElementById('reportTxCount');
   if(countEl) countEl.textContent=txs.length+' registros';
   const totEl=document.getElementById('reportTxTotal');
-  if(totEl){totEl.textContent=fmt(total);totEl.className=total>=0?'amount-pos':'amount-neg';}
-  document.getElementById('reportTxBody').innerHTML=txs.length
-    ? txs.map(t=>`<tr>
-        <td class="rpt-td-date">${fmtDate(t.date)}</td>
-        <td class="rpt-td-desc"><div class="rpt-desc-cell">${esc(t.description||'—')}</div></td>
-        <td class="rpt-td-acct">${esc(t.accounts?.name||'—')}</td>
-        <td class="rpt-td-cat">${t.categories?`<span class="badge" style="background:${t.categories.color}18;color:${t.categories.color};border:1px solid ${t.categories.color}30;font-size:.68rem;white-space:nowrap">${esc(t.categories.name)}</span>`:'—'}</td>
-        <td class="rpt-td-pay">${esc(t.payees?.name||'—')}</td>
-        <td class="rpt-td-amt ${t.amount>=0?'amount-pos':'amount-neg'}">${fmt(t.amount)}</td>
-      </tr>`).join('')
-    : `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:28px">${t('tx.empty')}</td></tr>`;
+  if(totEl){totEl.textContent=fmt(total);totEl.className='rpt-tx-total-num '+(total>=0?'amount-pos':'amount-neg');}
+
+  const body=document.getElementById('reportTxBody');
+  if(!txs.length){
+    body.innerHTML=`<div class="rpt-tx-empty">${t('tx.empty')}</div>`;
+    return;
+  }
+
+  // Group by date for cleaner visual structure
+  const groups={};
+  txs.forEach(tx=>{
+    const d=tx.date||'';
+    if(!groups[d]) groups[d]=[];
+    groups[d].push(tx);
+  });
+
+  body.innerHTML=Object.keys(groups).sort((a,b)=>b.localeCompare(a)).map(date=>{
+    const dayTotal=groups[date].reduce((s,t)=>s+(parseFloat(t.amount)||0),0);
+    const dtParts=date?date.split('-'):[];
+    const dtLabel=dtParts.length===3?`${dtParts[2]}/${dtParts[1]}/${dtParts[0]}`:date;
+    const dayRows=groups[date].map(t=>{
+      const isPos=parseFloat(t.amount)>=0;
+      const catColor=t.categories?.color||'var(--muted)';
+      return `<div class="rpt-tx-row" onclick="typeof editTransaction==='function'&&editTransaction('${t.id}')" title="Clique para editar">
+        <div class="rpt-tx-row-cat-dot" style="background:${catColor}"></div>
+        <div class="rpt-tx-row-main">
+          <div class="rpt-tx-row-desc">${esc(t.description||'—')}</div>
+          <div class="rpt-tx-row-meta">
+            ${t.accounts?`<span class="rpt-tx-meta-acct">${esc(t.accounts.name)}</span>`:''}
+            ${t.categories?`<span class="rpt-tx-meta-cat" style="color:${catColor}">${esc(t.categories.name)}</span>`:''}
+            ${t.payees?`<span class="rpt-tx-meta-pay">${esc(t.payees.name)}</span>`:''}
+          </div>
+        </div>
+        <div class="rpt-tx-row-amt ${isPos?'amount-pos':'amount-neg'}">${fmt(t.amount)}</div>
+      </div>`;
+    }).join('');
+    return `<div class="rpt-tx-group">
+      <div class="rpt-tx-group-hdr">
+        <span class="rpt-tx-group-date">${dtLabel}</span>
+        <span class="rpt-tx-group-total ${dayTotal>=0?'amount-pos':'amount-neg'}">${fmt(dayTotal)}</span>
+      </div>
+      ${dayRows}
+    </div>`;
+  }).join('');
 }
 
 /* ═══ VIEW TOGGLE ═══ */
 function setReportView(view) {
   rptState.view = view;
-  document.getElementById('reportRegularView').style.display  = view==='regular'       ? '' : 'none';
-  document.getElementById('reportTxView').style.display       = view==='transactions'  ? '' : 'none';
-  document.getElementById('reportForecastView').style.display = view==='forecast'      ? '' : 'none';
+  document.getElementById('reportRegularView').style.display         = view==='regular'        ? '' : 'none';
+  document.getElementById('reportTxView').style.display              = view==='transactions'   ? '' : 'none';
+  document.getElementById('reportForecastView').style.display        = view==='forecast'       ? '' : 'none';
   document.getElementById('reportBudgetView')?.style && (document.getElementById('reportBudgetView').style.display = view==='budgets' ? '' : 'none');
+
   // Hide the entire filter section (wrapper + bar) for views that don't need filters
-  const _hideFilters = (view === 'forecast' || view === 'budgets');
+  // Beneficiarios view
+  const _benEl = document.getElementById('reportBeneficiariosView');
+  if (_benEl) _benEl.style.display = (view === 'beneficiarios') ? '' : 'none';
+  if (view === 'beneficiarios' && typeof loadPayeeReport === 'function') loadPayeeReport();
+
+  const _hideFilters = (view === 'forecast' || view === 'budgets' || view === 'payees' || view === 'beneficiarios');
   const _filterWrap = document.getElementById('rptFilterWrap');
   if (_filterWrap) _filterWrap.style.display = _hideFilters ? 'none' : '';
   // Keep filter bar collapsed when switching views — user opens it manually
@@ -774,11 +845,12 @@ function setReportView(view) {
     document.getElementById('reportFilterBar').style.display = 'none';
   }
   // If not hiding, leave bar in its current collapsed/expanded state (don't force open)
-  ['rptBtnRegular','rptBtnTx','rptBtnForecast','rptBtnBudgets'].forEach(id=>
+  ['rptBtnRegular','rptBtnTx','rptBtnForecast','rptBtnBudgets','rptBtnBeneficiarios'].forEach(id=>
     document.getElementById(id)?.classList.remove('active'));
-  const map={regular:'rptBtnRegular',transactions:'rptBtnTx',forecast:'rptBtnForecast',budgets:'rptBtnBudgets'};
+  const map={regular:'rptBtnRegular',transactions:'rptBtnTx',forecast:'rptBtnForecast',budgets:'rptBtnBudgets',beneficiarios:'rptBtnBeneficiarios'};
   document.getElementById(map[view])?.classList.add('active');
   if (view === 'budgets') _rbtLoad();
+
   if(view==='forecast'){
     if(!document.getElementById('forecastFrom').value){
       const today=new Date().toISOString().slice(0,10);
@@ -1138,7 +1210,21 @@ function _pdfCatTable(doc, y, txs) {
   const expMap = {}, incMap = {}, trnMap = {};
   txs.forEach(t => {
     const n = t.categories?.name || 'Sem categoria';
-    if (t.is_transfer) {
+    // Apply reimbursement net factor for linked transaction groups
+    if (typeof _txLinkFindGroup === 'function' && typeof _txLinkCache !== 'undefined' && _txLinkCache) {
+      const _grp = _txLinkFindGroup(t.id);
+      if (_grp && _grp.netMode === 'offset' && _grp.txIds.length > 1) {
+        const _linkedAmts = (_grp.txIds).map(id => {
+          const lt = txs.find(x => x.id === id);
+          return lt ? (parseFloat(lt.brl_amount ?? lt.amount) || 0) : 0;
+        });
+        const _netTotal = _linkedAmts.reduce((s,a) => s+a, 0);
+        const _fullAmt  = parseFloat(t.brl_amount ?? t.amount) || 0;
+        const _absSum   = _linkedAmts.reduce((s,a) => s+Math.abs(a), 0) || 1;
+        t = { ...t, brl_amount: _fullAmt === 0 ? 0 : _netTotal * (Math.abs(_fullAmt) / _absSum) };
+      }
+    }
+    if (t.is_transfer || t.is_card_payment) {
       if (!trnMap[n]) trnMap[n] = { name: n, total: 0, count: 0 };
       trnMap[n].total += (typeof txToBRL==="function"?Math.abs(txToBRL(t)):Math.abs(t.brl_amount??t.amount??0)); trnMap[n].count++;
     } else if (t.amount < 0) {
@@ -1782,10 +1868,20 @@ function _buildReportEmailHTML(txs, from, to, viewLabel, filters, pdfUrl) {
   // ── Category breakdown (top 8) ───────────────────────────────────
   const catMap = {};
   txs.filter(t => t.amount < 0).forEach(t => {
-    const k = t.categories?.name || 'Sem categoria';
-    if (!catMap[k]) catMap[k] = { total: 0, count: 0, color: t.categories?.color || '#888' };
-    catMap[k].total += (typeof txToBRL==="function"?Math.abs(txToBRL(t)):Math.abs(t.brl_amount??t.amount??0));
-    catMap[k].count++;
+    if (Array.isArray(t.category_splits) && t.category_splits.length >= 2) {
+      t.category_splits.forEach(s => {
+        if (!s.category_id) return;
+        const k = s.category_name || 'Sem categoria';
+        if (!catMap[k]) catMap[k] = { total: 0, count: 0, color: s.category_color || '#888' };
+        catMap[k].total += Math.abs(s.amount || 0);
+        catMap[k].count += 1 / t.category_splits.length;
+      });
+    } else {
+      const k = t.categories?.name || 'Sem categoria';
+      if (!catMap[k]) catMap[k] = { total: 0, count: 0, color: t.categories?.color || '#888' };
+      catMap[k].total += (typeof txToBRL==="function"?Math.abs(txToBRL(t)):Math.abs(t.brl_amount??t.amount??0));
+      catMap[k].count++;
+    }
   });
   const catRows = Object.entries(catMap).sort((a,b) => b[1].total - a[1].total).slice(0, 8);
   const catGrand = catRows.reduce((s,[,v]) => s + v.total, 0);
@@ -2667,3 +2763,536 @@ function getPeriodColor(period) {
     }
   }
 })();
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  RELATÓRIO DE BENEFICIÁRIOS / FONTES PAGADORAS — Implementação completa
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Estado interno ────────────────────────────────────────────────────────────
+const _rbtb = {
+  accounts:   new Set(),   // IDs selecionados (vazio = todos)
+  categories: new Set(),
+  initialized: false,
+};
+
+// ── Inicializar filtros com dados do estado ───────────────────────────────────
+function rbtbInitFilters() {
+  if (_rbtb.initialized) return;
+  _rbtb.initialized = true;
+
+  // Contas
+  const accList = document.getElementById('rbtbAccountsList');
+  if (accList) {
+    accList.innerHTML = (state.accounts || []).map(a =>
+      `<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;border-radius:6px;font-size:.82rem;transition:background .1s" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+        <input type="checkbox" data-id="${a.id}" style="accent-color:var(--accent)" checked onchange="rbtbOnCheck('accounts')">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</span>
+        <span style="font-size:.68rem;color:var(--muted);flex-shrink:0">${a.currency||'BRL'}</span>
+      </label>`
+    ).join('');
+  }
+
+  // Categorias
+  const catList = document.getElementById('rbtbCategoriesList');
+  if (catList) {
+    catList.innerHTML = (state.categories || [])
+      .filter(c => !c.parent_id) // só pais para simplificar
+      .concat((state.categories || []).filter(c => c.parent_id))
+      .map(c => {
+        const parent = c.parent_id ? (state.categories||[]).find(x=>x.id===c.parent_id) : null;
+        const label  = parent ? `${parent.name} › ${c.name}` : c.name;
+        return `<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;border-radius:6px;font-size:.82rem;transition:background .1s" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+          <input type="checkbox" data-id="${c.id}" style="accent-color:var(--accent)" checked onchange="rbtbOnCheck('categories')">
+          <span style="width:8px;height:8px;border-radius:50%;background:${c.color||'#94a3b8'};flex-shrink:0"></span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(label)}</span>
+        </label>`;
+      }).join('');
+  }
+
+  // Fechar dropdowns ao clicar fora
+  document.addEventListener('click', e => {
+    ['accounts','categories'].forEach(type => {
+      const wrap = document.getElementById(`rbtb${type.charAt(0).toUpperCase()+type.slice(1)}Wrap`);
+      const dd   = document.getElementById(`rbtb${type.charAt(0).toUpperCase()+type.slice(1)}Dropdown`);
+      if (dd && wrap && !wrap.contains(e.target)) dd.style.display = 'none';
+    });
+  }, true);
+}
+window.rbtbInitFilters = rbtbInitFilters;
+
+function rbtbToggleMulti(type) {
+  const ddId = `rbtb${type.charAt(0).toUpperCase()+type.slice(1)}Dropdown`;
+  const dd   = document.getElementById(ddId);
+  if (!dd) return;
+  const isOpen = dd.style.display !== 'none';
+  // close others
+  ['accounts','categories'].forEach(t => {
+    const other = document.getElementById(`rbtb${t.charAt(0).toUpperCase()+t.slice(1)}Dropdown`);
+    if (other && t !== type) other.style.display = 'none';
+  });
+  dd.style.display = isOpen ? 'none' : '';
+}
+window.rbtbToggleMulti = rbtbToggleMulti;
+
+function rbtbOnCheck(type) {
+  const listId = `rbtb${type.charAt(0).toUpperCase()+type.slice(1)}List`;
+  const labelId = `rbtb${type.charAt(0).toUpperCase()+type.slice(1)}Label`;
+  const checked = [...document.querySelectorAll(`#${listId} input[type=checkbox]:checked`)].map(i => i.dataset.id);
+  const all     = [...document.querySelectorAll(`#${listId} input[type=checkbox]`)].map(i => i.dataset.id);
+  _rbtb[type] = checked.length === all.length ? new Set() : new Set(checked);
+  const label = document.getElementById(labelId);
+  if (label) label.textContent = (!_rbtb[type].size) ? 'Todas' : `${checked.length} selecionadas`;
+}
+window.rbtbOnCheck = rbtbOnCheck;
+
+function rbtbSelectAll(type) {
+  const listId = `rbtb${type.charAt(0).toUpperCase()+type.slice(1)}List`;
+  document.querySelectorAll(`#${listId} input[type=checkbox]`).forEach(i => i.checked = true);
+  _rbtb[type] = new Set();
+  const label = document.getElementById(`rbtb${type.charAt(0).toUpperCase()+type.slice(1)}Label`);
+  if (label) label.textContent = 'Todas';
+}
+window.rbtbSelectAll = rbtbSelectAll;
+
+function rbtbClearAll(type) {
+  const listId = `rbtb${type.charAt(0).toUpperCase()+type.slice(1)}List`;
+  document.querySelectorAll(`#${listId} input[type=checkbox]`).forEach(i => i.checked = false);
+  const all = [...document.querySelectorAll(`#${listId} input[type=checkbox]`)].map(i => i.dataset.id);
+  _rbtb[type] = new Set(all); // nada selecionado = filtro exclusivo (nenhum resultado)
+  const label = document.getElementById(`rbtb${type.charAt(0).toUpperCase()+type.slice(1)}Label`);
+  if (label) label.textContent = '0 selecionadas';
+}
+window.rbtbClearAll = rbtbClearAll;
+
+function rbtbOnPeriodChange() {
+  const p = document.getElementById('rbtbPeriod')?.value;
+  const isCustom = p === 'custom';
+  document.getElementById('rbtbFromWrap').style.display = isCustom ? '' : 'none';
+  document.getElementById('rbtbToWrap').style.display   = isCustom ? '' : 'none';
+}
+
+window.rbtbOnPeriodChange = rbtbOnPeriodChange;
+
+function rbtbResetFilters() {
+  document.getElementById('rbtbPeriod').value = 'year';
+  document.getElementById('rbtbType').value   = '';
+  document.getElementById('rbtbSort').value   = 'total_desc';
+  document.getElementById('rbtbFromWrap').style.display = 'none';
+  document.getElementById('rbtbToWrap').style.display   = 'none';
+  _rbtb.accounts   = new Set();
+  _rbtb.categories = new Set();
+  // Reset checkboxes
+  document.querySelectorAll('#rbtbAccountsList input, #rbtbCategoriesList input').forEach(i => i.checked = true);
+  document.getElementById('rbtbAccountsLabel').textContent   = 'Todas';
+  document.getElementById('rbtbCategoriesLabel').textContent = 'Todas';
+}
+window.rbtbResetFilters = rbtbResetFilters;
+
+// ── Calcular datas do período ─────────────────────────────────────────────────
+function _rbtbGetDateRange() {
+  const p   = document.getElementById('rbtbPeriod')?.value || 'year';
+  const now = new Date();
+  const y   = now.getFullYear(), m = now.getMonth();
+  let from, to;
+  if (p === 'month')   { from = `${y}-${String(m+1).padStart(2,'0')}-01`; to = new Date(y,m+1,0).toISOString().slice(0,10); }
+  else if (p === 'quarter') {
+    const qStart = Math.floor(m/3)*3;
+    from = `${y}-${String(qStart+1).padStart(2,'0')}-01`;
+    to   = new Date(y, qStart+3, 0).toISOString().slice(0,10);
+  }
+  else if (p === 'year')   { from = `${y}-01-01`; to = `${y}-12-31`; }
+  else if (p === 'last12') { const d=new Date(now); d.setFullYear(d.getFullYear()-1); from=d.toISOString().slice(0,10); to=now.toISOString().slice(0,10); }
+  else { // custom
+    from = document.getElementById('rbtbFrom')?.value || `${y}-01-01`;
+    to   = document.getElementById('rbtbTo')?.value   || now.toISOString().slice(0,10);
+  }
+  return { from, to };
+}
+
+// ── Carregar e renderizar o relatório ────────────────────────────────────────
+
+// ── Drill-down: transações de um beneficiário ─────────────────────────────────
+// rbtbDrill: now delegates to openPayeeDetailModal which shows full profile + transactions
+async function rbtbDrill(payeeId, payeeName) {
+  if (payeeId === '__none__') return;
+  if (typeof openPayeeDetailModal === 'function') {
+    await openPayeeDetailModal(payeeId);
+  }
+}
+window.rbtbDrill = rbtbDrill;
+
+
+// ── Carregar transações do período selecionado ───────────────────────────────
+async function pdLoadTxs(payeeId) {
+  const kpisEl  = document.getElementById('pdKpis');
+  const listEl  = document.getElementById('pdTxList');
+  if (!listEl) return;
+
+  listEl.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted)">⏳ Carregando…</div>';
+
+  const period  = document.getElementById('pdPeriodSel')?.value || 'alltime';
+  const now     = new Date();
+  const y       = now.getFullYear(), m = now.getMonth();
+  let from = null, to = null;
+
+  if (period === 'month') {
+    from = `${y}-${String(m+1).padStart(2,'0')}-01`;
+    to   = new Date(y,m+1,0).toISOString().slice(0,10);
+  } else if (period === 'quarter') {
+    const qs = Math.floor(m/3)*3;
+    from = `${y}-${String(qs+1).padStart(2,'0')}-01`;
+    to   = new Date(y,qs+3,0).toISOString().slice(0,10);
+  } else if (period === 'year') {
+    from = `${y}-01-01`; to = `${y}-12-31`;
+  } else if (period === 'last12') {
+    const d = new Date(now); d.setFullYear(d.getFullYear()-1);
+    from = d.toISOString().slice(0,10); to = now.toISOString().slice(0,10);
+  }
+  // 'alltime': from/to = null
+
+  try {
+    let q = famQ(sb.from('transactions')
+      .select('id,date,description,amount,brl_amount,currency,status,accounts!transactions_account_id_fkey(name,currency),categories(name,color)')
+    ).eq('payee_id', payeeId).order('date', { ascending: false });
+
+    if (from) q = q.gte('date', from);
+    if (to)   q = q.lte('date', to);
+
+    const { data: txs, error } = await q;
+    if (error) throw error;
+
+    const totalExp = (txs||[]).filter(t=>parseFloat(t.amount)<0).reduce((s,t)=>s+Math.abs(parseFloat(t.brl_amount??t.amount)||0),0);
+    const totalInc = (txs||[]).filter(t=>parseFloat(t.amount)>=0).reduce((s,t)=>s+(parseFloat(t.brl_amount??t.amount)||0),0);
+
+    // KPIs
+    if (kpisEl) {
+      const _kpi = (label, val, color) =>
+        `<div style="padding:10px 12px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)">
+          <div style="font-size:.58rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700;margin-bottom:3px">${label}</div>
+          <div style="font-size:.95rem;font-weight:800;font-family:var(--font-serif);color:${color}">${val}</div>
+        </div>`;
+      kpisEl.innerHTML =
+        _kpi('Transações', (txs||[]).length, 'var(--text)') +
+        _kpi('Despesas', '−'+fmt(totalExp), 'var(--red,#dc2626)') +
+        _kpi('Receitas', '+'+fmt(totalInc), '#16a34a');
+    }
+
+    // Transaction list
+    if (!txs?.length) {
+      listEl.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted);font-size:.82rem">Nenhuma transação no período.</div>`;
+      return;
+    }
+
+    listEl.innerHTML = `<div style="display:flex;flex-direction:column;gap:1px;border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      ${txs.map(t => {
+        const amt    = parseFloat(t.brl_amount ?? t.amount) || 0;
+        const cur    = t.currency || t.accounts?.currency || 'BRL';
+        const isNeg  = amt < 0;
+        const catDot = t.categories?.color
+          ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${t.categories.color};flex-shrink:0"></span>`
+          : '';
+        const pendBadge = t.status === 'pending'
+          ? '<span style="font-size:.62rem;padding:1px 5px;border-radius:20px;background:var(--amber-lt,rgba(245,158,11,.1));color:var(--amber,#b45309);border:1px solid rgba(245,158,11,.2);margin-left:4px">⏳</span>'
+          : '';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface);cursor:pointer;transition:background .1s"
+                  onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background='var(--surface)'"
+                  onclick="document.getElementById('pdModal').remove();editTransaction('${t.id}')">
+          <div style="flex-shrink:0;text-align:center;min-width:34px">
+            <div style="font-size:.65rem;color:var(--muted);font-weight:600">${t.date.slice(5).split('-').reverse().join('/')}</div>
+            <div style="font-size:.6rem;color:var(--muted)">${t.date.slice(0,4)}</div>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.83rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.description||'—')}${pendBadge}</div>
+            <div style="display:flex;align-items:center;gap:5px;margin-top:2px;flex-wrap:wrap">
+              ${catDot}<span style="font-size:.7rem;color:var(--muted)">${esc(t.categories?.name||'')}</span>
+              <span style="font-size:.7rem;color:var(--muted);opacity:.6">·</span>
+              <span style="font-size:.7rem;color:var(--muted)">${esc(t.accounts?.name||'')}</span>
+            </div>
+          </div>
+          <div style="text-align:right;flex-shrink:0">
+            <div style="font-weight:700;font-family:var(--font-serif);font-size:.88rem;color:${isNeg?'var(--red,#dc2626)':'#16a34a'};white-space:nowrap">
+              ${isNeg?'−':'+'}${fmt(Math.abs(amt),'BRL')}
+            </div>
+            ${cur !== 'BRL' ? `<div style="font-size:.68rem;color:var(--muted)">${fmt(Math.abs(parseFloat(t.amount)||0),cur)}</div>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  } catch(e) {
+    listEl.innerHTML = `<div style="text-align:center;padding:24px;color:var(--red,#dc2626);font-size:.82rem">Erro: ${esc(e.message)}</div>`;
+  }
+}
+window.pdLoadTxs = pdLoadTxs;
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window.closeEmailPopup                     = closeEmailPopup;
+window.exportReportCSV                     = exportReportCSV;
+window.exportReportPDF                     = exportReportPDF;
+window.loadCurrentReport                   = loadCurrentReport;
+window.populateReportFilters               = populateReportFilters;
+window.populateSelects                     = populateSelects;
+window.printReport                         = printReport;
+window.renderChart                         = renderChart;
+window.rptSortTx                           = rptSortTx;
+window.sendReportByEmail                   = sendReportByEmail;
+window.setReportView                       = setReportView;
+window.setRptCatChart                      = setRptCatChart;
+window.showEmailPopup                      = showEmailPopup;
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  BENEFICIARIOS & FONTES
+// ═══════════════════════════════════════════════════════════════════
+
+let _rptBenefMode = 'expense';
+
+function rptBenefSetMode(mode) {
+  _rptBenefMode = mode;
+  const eB = document.getElementById('rptBenefBtn');
+  const iB = document.getElementById('rptFontesBtn');
+  if (eB) { eB.style.background = mode==='expense'?'var(--accent)':'transparent'; eB.style.color=mode==='expense'?'#fff':'var(--muted)'; }
+  if (iB) { iB.style.background = mode==='income'?'var(--accent)':'transparent';  iB.style.color=mode==='income'?'#fff':'var(--muted)'; }
+  loadPayeeReport();
+}
+window.rptBenefSetMode = rptBenefSetMode;
+
+function _rptBenefDateRange() {
+  const p = document.getElementById('rptBenefPeriod')?.value || 'year';
+  const now=new Date(), y=now.getFullYear(), m=now.getMonth();
+  const cw = document.getElementById('rptBenefCustomWrap');
+  if (cw) cw.style.display = p==='custom'?'flex':'none';
+  if (p==='alltime') return { from:'2000-01-01', to:'2099-12-31', label:'Todos os tempos' };
+  if (p==='month')   { return { from:y+'-'+String(m+1).padStart(2,'0')+'-01', to:new Date(y,m+1,0).toISOString().slice(0,10), label:new Date(y,m).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}) }; }
+  if (p==='quarter') { const q=Math.floor(m/3); return { from:new Date(y,q*3,1).toISOString().slice(0,10), to:new Date(y,q*3+3,0).toISOString().slice(0,10), label:y+' - T'+(q+1) }; }
+  if (p==='year')    return { from:y+'-01-01', to:y+'-12-31', label:'Ano '+y };
+  if (p==='last12')  { const f=new Date(now); f.setFullYear(y-1); return { from:f.toISOString().slice(0,10), to:now.toISOString().slice(0,10), label:'Ultimos 12 meses' }; }
+  if (p==='custom')  { const fr=document.getElementById('rptBenefFrom')?.value, to=document.getElementById('rptBenefTo')?.value; if (!fr||!to) return null; return { from:fr, to:to, label:fr+' ate '+to }; }
+  return { from:y+'-01-01', to:y+'-12-31', label:'Ano '+y };
+}
+
+// Keeps expanded state across refreshes within the same session
+const _rptBenefExpanded = new Set();
+
+async function loadPayeeReport() {
+  const listEl = document.getElementById('rptBenefList');
+  const kpiEl  = document.getElementById('rptBenefKpi');
+  if (!listEl) return;
+
+  const E = function(s) { return typeof esc==='function'?esc(s):String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'); };
+  const F = function(v) { return typeof fmt==='function'?fmt(v):'R$'+Number(v).toFixed(2); };
+
+  listEl.innerHTML = '<div style="text-align:center;padding:48px;color:var(--muted)">Carregando...</div>';
+  if (kpiEl) kpiEl.innerHTML = '';
+
+  if (!sb || !currentUser) {
+    listEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Aguardando conexao...</div>';
+    return;
+  }
+
+  const fid = typeof famId==='function' ? famId() : (currentUser && currentUser.family_id);
+  if (!fid) {
+    listEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Familia nao identificada.</div>';
+    return;
+  }
+
+  const range = _rptBenefDateRange();
+  if (!range) {
+    listEl.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted)">Selecione um intervalo valido.</div>';
+    return;
+  }
+
+  const isInc  = (_rptBenefMode === 'income');
+  const accent = isInc ? '#16a34a' : '#dc2626';
+  var txs = [];
+
+  try {
+    var PG = 500;
+    for (var page = 0; ; page++) {
+      var res = await sb
+        .from('transactions')
+        .select('id,date,description,amount,brl_amount,payee_id,account_id,payees(id,name),categories(name,color,icon),accounts!transactions_account_id_fkey(name)')
+        .eq('family_id', fid)
+        .eq('status', 'confirmed')
+        .eq('is_transfer', false)
+        .gte('date', range.from)
+        .lte('date', range.to)
+        .order('date', { ascending: false })
+        .range(page * PG, (page+1)*PG - 1);
+      if (res.error) throw res.error;
+      if (!res.data || res.data.length === 0) break;
+      txs = txs.concat(res.data);
+      if (res.data.length < PG) break;
+    }
+  } catch(e) {
+    listEl.innerHTML = '<div style="color:#dc2626;padding:24px;text-align:center;font-size:.84rem">Erro ao carregar: ' + E(e.message) + '</div>';
+    return;
+  }
+
+  var map = {}, grandTotal = 0, txCount = 0;
+  txs.forEach(function(t) {
+    var raw = parseFloat(t.brl_amount != null ? t.brl_amount : t.amount) || 0;
+    if (isInc  && raw <= 0) return;
+    if (!isInc && raw >= 0) return;
+    if (!t.payee_id) return;
+    var abs = Math.abs(raw);
+    var pid = t.payee_id;
+    if (!map[pid]) {
+      map[pid] = {
+        id:    pid,
+        name:  (t.payees && t.payees.name) || '(sem nome)',
+        icon:  (t.categories && t.categories.icon) || (isInc ? '💰' : '🛒'),
+        color: (t.categories && t.categories.color) || accent,
+        total: 0, count: 0, txs: []
+      };
+    }
+    map[pid].total += abs;
+    map[pid].count++;
+    map[pid].txs.push(t);
+    grandTotal += abs;
+    txCount++;
+  });
+
+  var ranked = Object.values(map).sort(function(a,b) { return b.total - a.total; });
+  var topAmt = (ranked[0] && ranked[0].total) || 1;
+
+  if (kpiEl) {
+    var kpiData = [
+      { label: isInc?'Total recebido':'Total pago', val:F(grandTotal), clr:accent },
+      { label: isInc?'Fontes':'Beneficiarios',       val:ranked.length, clr:'var(--text)' },
+      { label: 'Ticket medio', val:F(txCount>0?grandTotal/txCount:0), clr:'var(--muted)' },
+    ];
+    kpiEl.innerHTML = kpiData.map(function(k) {
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 16px">' +
+        '<div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:4px">' + k.label + '</div>' +
+        '<div style="font-size:1.1rem;font-weight:800;color:' + k.clr + ';font-family:var(--font-serif)">' + k.val + '</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  if (!ranked.length) {
+    listEl.innerHTML =
+      '<div style="text-align:center;padding:56px 20px">' +
+      '<div style="font-size:3rem;margin-bottom:14px">' + (isInc?'📭':'🔍') + '</div>' +
+      '<div style="font-size:.92rem;font-weight:700;color:var(--text)">Nenhum registro no periodo</div>' +
+      '<div style="font-size:.78rem;color:var(--muted);margin-top:8px">' + E(range.label) + '</div>' +
+      (txs.length ? '<div style="font-size:.75rem;color:var(--muted);margin-top:6px">' + txs.length + ' transacoes sem beneficiario associado</div>' : '') +
+      '</div>';
+    return;
+  }
+
+  const MON = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+
+  var html =
+    '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 18px;' +
+    'background:var(--surface2);border-bottom:1px solid var(--border)">' +
+    '<div style="font-size:.71rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:' + accent + '">' +
+    (isInc ? '📥 Fontes Pagadoras' : '📤 Beneficiarios') +
+    ' — ' + ranked.length + ' registro' + (ranked.length>1?'s':'') + '</div>' +
+    '<div style="font-size:.71rem;color:var(--muted)">' + E(range.label) + ' · ' + txCount + ' tx</div>' +
+    '</div>';
+
+  ranked.forEach(function(p, i) {
+    var pct   = grandTotal > 0 ? (p.total/grandTotal*100).toFixed(1) : '0.0';
+    var barW  = (p.total/topAmt*100).toFixed(1);
+    var medals = ['🥇','🥈','🥉'];
+    var medal  = medals[i] || null;
+    var bgTop3 = i < 3 ? 'background:' + accent + '0d;' : '';
+    var isOpen = _rptBenefExpanded.has(p.id);
+    var rowId  = 'rptBenefDetail_' + p.id;
+
+    // ── Main row (clickable) ────────────────────────────────────────────────
+    html +=
+      '<div style="border-bottom:1px solid var(--border)">' +
+      '<div onclick="_rptBenefToggle(\'' + p.id + '\')" ' +
+        'style="display:flex;align-items:center;gap:12px;padding:13px 18px;cursor:pointer;user-select:none;' +
+        bgTop3 + 'transition:background .12s" ' +
+        'onmouseover="this.style.background=\'' + accent + '08\'" ' +
+        'onmouseout="this.style.background=\'' + (i<3 ? accent+'0d' : '') + '\'">' +
+        // Rank
+        '<div style="width:24px;text-align:center;flex-shrink:0">' +
+          (medal
+            ? '<span style="font-size:1rem">' + medal + '</span>'
+            : '<span style="font-size:.67rem;font-weight:800;color:var(--muted)">' + (i+1) + '</span>') +
+        '</div>' +
+        // Icon
+        '<div style="width:34px;height:34px;border-radius:9px;background:' + p.color + '18;' +
+          'border:1.5px solid ' + p.color + '40;display:flex;align-items:center;' +
+          'justify-content:center;font-size:.95rem;flex-shrink:0">' + p.icon + '</div>' +
+        // Name + bar
+        '<div style="flex:1;min-width:0">' +
+          '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:5px">' +
+            '<span style="font-size:.85rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + E(p.name) + '</span>' +
+            '<span style="font-size:.85rem;font-weight:800;color:' + accent + ';white-space:nowrap;flex-shrink:0">' + (isInc?'+':'-') + F(p.total) + '</span>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px">' +
+            '<div style="flex:1;height:5px;border-radius:3px;background:var(--border);overflow:hidden">' +
+              '<div style="height:100%;width:' + barW + '%;background:' + accent + ';border-radius:3px"></div>' +
+            '</div>' +
+            '<span style="font-size:.63rem;color:var(--muted);white-space:nowrap">' + pct + '% · ' + p.count + 'tx</span>' +
+          '</div>' +
+        '</div>' +
+        // Chevron
+        '<svg id="' + rowId + '_arr" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" ' +
+          'style="color:var(--muted);transition:transform .2s;transform:' + (isOpen?'rotate(180deg)':'rotate(0deg)') + ';flex-shrink:0">' +
+          '<polyline points="6 9 12 15 18 9"/>' +
+        '</svg>' +
+      '</div>' +
+
+      // ── Expandable transaction list ────────────────────────────────────────
+      '<div id="' + rowId + '" style="display:' + (isOpen?'':'none') + ';border-top:1px solid var(--border)">';
+
+    // Transaction rows
+    p.txs.forEach(function(t) {
+      var d    = new Date((t.date||'')+'T12:00:00');
+      var dStr = d.getDate() + ' ' + MON[d.getMonth()] + (d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : '');
+      var abs  = Math.abs(parseFloat(t.brl_amount!=null?t.brl_amount:t.amount)||0);
+      var catIcon = (t.categories && t.categories.icon) || (isInc?'💰':'🛒');
+      var catName = (t.categories && t.categories.name) || '';
+      var accName = (t.accounts && t.accounts.name) || '';
+      html +=
+        '<div onclick="event.stopPropagation();openTransactionModal(\'' + t.id + '\')" ' +
+          'style="display:flex;align-items:center;gap:10px;padding:9px 18px 9px 64px;' +
+          'cursor:pointer;border-bottom:1px solid var(--border)" ' +
+          'onmouseover="this.style.background=\'#f9f9f9\'" ' +
+          'onmouseout="this.style.background=\'\'">' +
+          '<span style="font-size:.8rem;flex-shrink:0">' + catIcon + '</span>' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:.8rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + E(t.description||'—') + '</div>' +
+            '<div style="font-size:.67rem;color:var(--muted);margin-top:1px">' +
+              dStr +
+              (accName ? ' · ' + E(accName) : '') +
+              (catName ? ' · ' + E(catName) : '') +
+            '</div>' +
+          '</div>' +
+          '<div style="text-align:right;flex-shrink:0">' +
+            '<div style="font-size:.83rem;font-weight:700;color:' + accent + '">' + (isInc?'+':'-') + F(abs) + '</div>' +
+            '<div style="font-size:.6rem;color:var(--muted);margin-top:1px">✏️ editar</div>' +
+          '</div>' +
+        '</div>';
+    });
+
+    html += '</div></div>'; // close expandable + outer wrapper
+  });
+
+  listEl.innerHTML = html;
+}
+
+window._rptBenefToggle = function(pid) {
+  const row   = document.getElementById('rptBenefDetail_' + pid);
+  const arrow = document.getElementById('rptBenefDetail_' + pid + '_arr');
+  if (!row) return;
+  const isOpen = row.style.display !== 'none';
+  if (isOpen) {
+    _rptBenefExpanded.delete(pid);
+    row.style.display = 'none';
+    if (arrow) arrow.style.transform = 'rotate(0deg)';
+  } else {
+    _rptBenefExpanded.add(pid);
+    row.style.display = '';
+    if (arrow) arrow.style.transform = 'rotate(180deg)';
+  }
+};
+
+window.loadPayeeReport = loadPayeeReport;

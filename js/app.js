@@ -493,7 +493,7 @@ function getAppBaseUrl() {
   return origin + base;
 }
 
-const DEFAULT_LOGO_URL='logo.jpg';
+const DEFAULT_LOGO_URL='logo_glow_soft.png';
 let APP_LOGO_URL=DEFAULT_LOGO_URL;
 function setAppLogo(url){
   // Defensive: avoid accidentally assigning a Promise/thenable to img.src
@@ -569,6 +569,12 @@ async function bootApp(){
       (typeof getFamilyPreferences === 'function'
         ? getFamilyPreferences().catch(e => console.warn('[boot] getFamilyPreferences (não fatal):', e?.message))
         : Promise.resolve()),
+      // Carrega chave Gemini global em cache (para getGeminiApiKey())
+      sb ? sb.from('app_settings').select('value').eq('key','_global_gemini_key').maybeSingle()
+           .then(({data}) => {
+             const k = typeof data?.value === 'string' ? data.value.trim() : '';
+             if (k && k.startsWith('AIza')) window._globalGeminiKey = k;
+           }).catch(()=>{}) : Promise.resolve(),
     ]);
   } catch(e) {
     toast(t('error.load_data')+' '+e.message,'error');
@@ -600,7 +606,9 @@ async function bootApp(){
   const budEl=document.getElementById('budgetMonth');if(budEl)budEl.value=ym;
   const budInEl=document.getElementById('budgetMonthInput');if(budInEl)budInEl.value=ym;
   state.txFilter.month=ym;
-  // Navegar para dashboard
+  // Navegar para dashboard — requestAnimationFrame garante que o
+  // layout é pintado antes de iniciar as queries pesadas
+  await new Promise(r => requestAnimationFrame(() => setTimeout(r, 60)));
   navigate('dashboard');
   // Notificações de login para o usuário (transações do dia + saúde financeira)
   // Notifications: run after loadScheduled resolves so data is ready
@@ -623,6 +631,8 @@ async function bootApp(){
   if (typeof applyAiInsightsFeature === 'function') applyAiInsightsFeature().catch(() => {});
   if (typeof applyDebtsFeature === 'function') applyDebtsFeature().catch(() => {});
   if (typeof applyDreamsFeature === 'function') applyDreamsFeature().catch(() => {});
+  // Retry dreams after family prefs guaranteed loaded (race condition fix)
+  if (typeof _applyDreamsFeatureDelayed === 'function') _applyDreamsFeatureDelayed();
   // Setup wizard — shows for new users until accounts + categories + transactions exist
   if (typeof initWizard === 'function') setTimeout(() => initWizard().catch(()=>{}), 800);
 }
@@ -763,13 +773,23 @@ function clearFamilyScopedUI() {
   try { closeSidebar?.(); } catch(e) {}
   try { closeUserMenu?.(); } catch(e) {}
   try {
-    document.querySelectorAll('.modal-overlay.open').forEach(el => el.classList.remove('open'));
+    document.querySelectorAll('.modal-overlay').forEach(el => {
+      try {
+        const focused = el.querySelector(':focus');
+        if (focused) try { focused.blur(); } catch(_) {}
+        el.classList.remove('open');
+        el.setAttribute('aria-hidden', 'true');
+        // inert NOT used - iOS Safari compatibility
+        if ((el.style.display || '').trim() === 'flex') el.style.removeProperty('display');
+      } catch(_) {}
+    });
   } catch(e) {}
 
   _resetFamilyScopedForms();
 
   try {
     state.accounts = [];
+    state.archivedAccounts = [];
     state.groups = [];
     state.categories = [];
     state.payees = [];
@@ -908,6 +928,18 @@ function navigate(page){
     return;
   }
 
+  // Guard: per-member module restrictions (set by family owner)
+  if (typeof isModuleAllowed === 'function' && !isModuleAllowed(page)) {
+    toast('🔐 Acesso a este módulo foi restringido pelo administrador da família.', 'warning');
+    return;
+  }
+
+  // Hide the AR (valores a receber) section when leaving the scheduled page
+  if (page !== 'scheduled') {
+    const scArSec = document.getElementById('scArSection');
+    if (scArSec) scArSec.style.display = 'none';
+  }
+
   // Track history — skip duplicate consecutive
   if (_navHistory[_navHistory.length-1] !== page) {
     _navHistory.push(page);
@@ -978,8 +1010,30 @@ function navigate(page){
   state.currentPage=page;closeSidebar();
   if (typeof i18nApplyToDOM === 'function') i18nApplyToDOM(document.getElementById('page-'+page));
   _scrollActivePageToTop(page);
-  if(page==='dashboard' && sb) loadDashboard();
-  else if(page==='transactions'){if(state.reconcileMode && typeof exitReconcileMode==='function')exitReconcileMode(false);populateTxMonthFilter();if(typeof populateSelects==='function')populateSelects();loadTransactions();}
+  if(page==='dashboard' && sb) {
+    // Fire loadDashboard — swallow errors so the page still shows
+    loadDashboard().catch(err => {
+      console.warn('[dashboard] load error:', err?.message);
+      // Retry once after a short delay
+      setTimeout(() => {
+        if (state.currentPage === 'dashboard')
+          loadDashboard().catch(() => {});
+      }, 800);
+    });
+  }
+  else if(page==='transactions'){
+    if(state.reconcileMode && typeof exitReconcileMode==='function') exitReconcileMode(false);
+    populateTxMonthFilter();
+    if(typeof populateSelects==='function') populateSelects();
+    if(typeof loadTransactions==='function') {
+      loadTransactions().catch(err => {
+        console.warn('[transactions] load error:', err?.message);
+        setTimeout(() => {
+          if(state.currentPage==='transactions') loadTransactions().catch(()=>{});
+        }, 800);
+      });
+    }
+  }
   else if(page==='accounts'){ if(typeof initAccountsPage==='function') initAccountsPage(); else renderAccounts(); }
   else if(page==='reports'){if(typeof populateSelects==='function')populateSelects();if(typeof populateReportFilters==='function')populateReportFilters();loadCurrentReport();}
   else if(page==='budgets')initBudgetsPage();
@@ -994,13 +1048,8 @@ function navigate(page){
     // Use the exposed setter so the module-scoped variable is actually set
     if (typeof window._setScCalSelDay === 'function') window._setScCalSelDay(_todayStr);
     loadScheduled().then(() => {
-      if (typeof setScView === 'function') {
-        const savedView = currentUser?.preferred_sc_view ||
-                          localStorage.getItem('sc_view_pref') ||
-                          'calendar';
-        setScView(savedView);
-      }
-      // Open upcoming panel if it has events, keep day groups collapsed per spec
+      // NOTE: do NOT call setScView here — loadScheduled() already reads sc_view_pref
+      // and applies it. Calling setScView again would cause a flash (list→calendar).
       if (typeof _openUpcomingIfHasEvents === 'function') _openUpcomingIfHasEvents();
     });
   }
@@ -1010,6 +1059,7 @@ function navigate(page){
   else if(page==='telemetry')loadTelemetryDashboard?.();
   else if(page==='investments')loadInvestmentsPage?.();
   else if(page==='debts')loadDebtsPage?.();
+  else if(page==='receivables')loadReceivables?.();
   else if(page==='prices')initPricesPage();
   else if(page==='grocery')initGroceryPage();
   else if(page==='ai_insights')initAiInsightsPage();
@@ -1019,6 +1069,10 @@ function navigate(page){
 
   setTimeout(() => _scrollActivePageToTop(page), 0);
   setTimeout(() => _scrollActivePageToTop(page), 120);
+  // Restore intro banner collapsed states after page switch
+  setTimeout(() => {
+    try { _restoreModuleIntroStates(); } catch(_) {}
+  }, 50);
 }
 // Handle SW messages (e.g., deep links from notifications)
 if('serviceWorker' in navigator){
@@ -1267,3 +1321,128 @@ function getPeriodColor(period) {
     default: return '#1F6B4F';
   }
 }
+
+// ── Expor funções públicas no window ─────────────────────────────────────────
+window.navigate               = navigate;
+window.navigateBack           = navigateBack;
+
+/* ──────────────────────────────────────────────────────────────────
+   DATE INPUT LOCALE — Garante formato DD/MM/AAAA em todos os campos
+   de data, incluindo os criados dinamicamente por JS.
+   MutationObserver captura novos inputs ao abrir modais.
+────────────────────────────────────────────────────────────────── */
+(function _initDateLocale() {
+  function _fixDateInputs(root) {
+    (root || document).querySelectorAll('input[type="date"]').forEach(function(el) {
+      if (!el.getAttribute('lang')) {
+        el.setAttribute('lang', 'pt-BR');
+      }
+    });
+  }
+
+  // Fix existing inputs immediately
+  document.addEventListener('DOMContentLoaded', function() { _fixDateInputs(); });
+
+  // Watch for dynamically added inputs (modal opens, JS render)
+  if (typeof MutationObserver !== 'undefined') {
+    const _dateObserver = new MutationObserver(function(mutations) {
+      mutations.forEach(function(m) {
+        m.addedNodes.forEach(function(node) {
+          if (node.nodeType === 1) { // Element node
+            if (node.matches && node.matches('input[type="date"]')) {
+              if (!node.getAttribute('lang')) node.setAttribute('lang', 'pt-BR');
+            } else if (node.querySelectorAll) {
+              _fixDateInputs(node);
+            }
+          }
+        });
+      });
+    });
+    document.addEventListener('DOMContentLoaded', function() {
+      _dateObserver.observe(document.body, { childList: true, subtree: true });
+    });
+  }
+})();
+
+window.bootApp                = bootApp;
+window.closeSidebar           = closeSidebar;
+window.openSidebar            = openSidebar;
+window.toggleSidebar          = toggleSidebar;
+window.togglePrivacy          = togglePrivacy;
+window.initSupabase           = initSupabase;
+window.setAppLogo             = setAppLogo;
+window.getAppBaseUrl          = getAppBaseUrl;
+window.tryAutoConnect         = tryAutoConnect;
+window.quickSetLang           = quickSetLang;
+window._i18nUpdateTopbarLabel = _i18nUpdateTopbarLabel;
+window._scrollTopAndHighlight = _scrollTopAndHighlight;
+window.getPeriodColor         = getPeriodColor;
+
+// ── Collapsible module intros ──────────────────────────────────────────────────
+// State persisted in localStorage (immediate) + Supabase app_settings (cross-device)
+// Key format: intro_collapsed_<BADGE_TEXT>  — e.g. intro_collapsed_ORÇAMENTOS
+
+function _introKey(banner) {
+  const badge = banner.querySelector('.module-intro-badge');
+  const text  = (badge ? badge.textContent : '').trim().replace(/\s+/g,'_').slice(0,30);
+  // Scope the key to the current user so different users have independent states
+  const uid   = (typeof currentUser !== 'undefined' && currentUser?.id)
+    ? currentUser.id.slice(0,8)  // first 8 chars of UUID is enough for uniqueness
+    : 'anon';
+  return 'intro_' + uid + '_' + text;
+}
+
+function _toggleModuleIntro(btn) {
+  const banner = btn.closest('.module-intro-banner');
+  if (!banner) return;
+  const collapsed = banner.classList.toggle('is-collapsed');
+  btn.innerHTML = collapsed
+    ? '<i class="mib-arr">▾</i> Expandir'
+    : '<i class="mib-arr">▾</i> Recolher';
+  const key = _introKey(banner);
+  const val = collapsed ? '1' : '0';
+  // 1. Persist locally — instant, survives offline
+  try { localStorage.setItem(key, val); } catch(_) {}
+  // 2. Persist to Supabase — syncs across devices (non-blocking)
+  if (typeof saveAppSetting === 'function') {
+    saveAppSetting(key, val).catch(() => {});
+  }
+}
+window._toggleModuleIntro = _toggleModuleIntro;
+
+function _restoreModuleIntroStates() {
+  document.querySelectorAll('.module-intro-banner').forEach(banner => {
+    try {
+      const key = _introKey(banner);
+      // Check in-memory cache first (set by loadAppSettings on boot), then localStorage
+      const cached = (window._appSettingsCache && key in window._appSettingsCache)
+        ? String(window._appSettingsCache[key])
+        : null;
+      const local  = localStorage.getItem(key);
+      const val    = cached ?? local;
+      if (val === '1') {
+        banner.classList.add('is-collapsed');
+        const btn = banner.querySelector('.module-intro-toggle');
+        if (btn) btn.innerHTML = '<i class="mib-arr">▾</i> Expandir';
+      } else if (val === '0') {
+        // Explicitly expanded — remove collapsed class in case a previous session had it
+        banner.classList.remove('is-collapsed');
+        const btn = banner.querySelector('.module-intro-toggle');
+        if (btn) btn.innerHTML = '<i class="mib-arr">▾</i> Recolher';
+      }
+    } catch(_) {}
+  });
+}
+window._restoreModuleIntroStates = _restoreModuleIntroStates;
+
+// Restore on page load (localStorage pass — fast, before Supabase)
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _restoreModuleIntroStates);
+} else {
+  setTimeout(_restoreModuleIntroStates, 200);
+}
+
+// Restore again after bootApp loads app_settings from Supabase (cross-device pass)
+document.addEventListener('appsettings:loaded', () => {
+  try { _restoreModuleIntroStates(); } catch(_) {}
+});

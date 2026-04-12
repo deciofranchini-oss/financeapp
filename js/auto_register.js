@@ -306,27 +306,37 @@ function getScheduledDates(sc, upToCutoff) {
 }
 
 function nextScheduledDate(dateStr, sc) {
+  // Use T12:00:00 (noon) to avoid DST-related date shifts.
+  // Return using local date components (not toISOString which is UTC) to prevent
+  // the date appearing as yesterday for users in UTC+ timezones.
   const d = new Date(dateStr + 'T12:00:00');
+  const _origDay = d.getDate(); // save original day for month clamping
   switch(sc.frequency) {
     case 'weekly':     d.setDate(d.getDate()+7); break;
     case 'biweekly':   d.setDate(d.getDate()+14); break;
-    case 'monthly':    d.setMonth(d.getMonth()+1); break;
-    case 'bimonthly':  d.setMonth(d.getMonth()+2); break;
-    case 'quarterly':  d.setMonth(d.getMonth()+3); break;
-    case 'semiannual': d.setMonth(d.getMonth()+6); break;
-    case 'annual':     d.setFullYear(d.getFullYear()+1); break;
+    // Month-based: clamp to last valid day to prevent overflow
+    // (e.g. Jan 31 + 1 month → Feb 28/29, not Mar 3)
+    case 'monthly':    { d.setDate(1); d.setMonth(d.getMonth()+1); d.setDate(Math.min(_origDay, new Date(d.getFullYear(),d.getMonth()+1,0).getDate())); break; }
+    case 'bimonthly':  { d.setDate(1); d.setMonth(d.getMonth()+2); d.setDate(Math.min(_origDay, new Date(d.getFullYear(),d.getMonth()+1,0).getDate())); break; }
+    case 'quarterly':  { d.setDate(1); d.setMonth(d.getMonth()+3); d.setDate(Math.min(_origDay, new Date(d.getFullYear(),d.getMonth()+1,0).getDate())); break; }
+    case 'semiannual': { d.setDate(1); d.setMonth(d.getMonth()+6); d.setDate(Math.min(_origDay, new Date(d.getFullYear(),d.getMonth()+1,0).getDate())); break; }
+    case 'annual':     { d.setDate(1); d.setFullYear(d.getFullYear()+1); d.setDate(Math.min(_origDay, new Date(d.getFullYear(),d.getMonth()+1,0).getDate())); break; }
     case 'custom': {
       const n = sc.custom_interval||1;
       const u = sc.custom_unit||'months';
       if(u==='days')   d.setDate(d.getDate()+n);
       else if(u==='weeks')  d.setDate(d.getDate()+7*n);
-      else if(u==='months') d.setMonth(d.getMonth()+n);
-      else if(u==='years')  d.setFullYear(d.getFullYear()+n);
+      else if(u==='months') { d.setDate(1); d.setMonth(d.getMonth()+n); d.setDate(Math.min(_origDay, new Date(d.getFullYear(),d.getMonth()+1,0).getDate())); }
+      else if(u==='years')  { d.setDate(1); d.setFullYear(d.getFullYear()+n); d.setDate(Math.min(_origDay, new Date(d.getFullYear(),d.getMonth()+1,0).getDate())); }
       break;
     }
     default: return null;
   }
-  return d.toISOString().slice(0,10);
+  // Return local date string (not toISOString which returns UTC)
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const dy = String(d.getDate()).padStart(2,'0');
+  return y+'-'+m+'-'+dy;
 }
 
 
@@ -401,8 +411,13 @@ Valor: ${amountLabel}`;
 async function runScheduledUpcomingNotifications() {
   try {
     if (!state.scheduled || !state.scheduled.length) return 0;
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
+    // Use local midnight for today — toISOString() returns UTC which can be
+    // tomorrow's date for users in UTC+ timezones at night (e.g. UTC-3 at 22:00).
+    const _todayMidnight = new Date();
+    _todayMidnight.setHours(0, 0, 0, 0);
+    const todayStr = typeof localDateStr === 'function'
+      ? localDateStr(_todayMidnight)
+      : _todayMidnight.toISOString().slice(0, 10);
     let sent = 0;
     for (const sc of state.scheduled) {
       if (sc.status !== 'active') continue;
@@ -415,11 +430,17 @@ async function runScheduledUpcomingNotifications() {
         Math.max(0, parseInt(sc.notify_telegram_days_before ?? sc.notify_days_before ?? 0, 10) || 0),
         Math.max(0, parseInt(sc.notify_days_before ?? 0, 10) || 0)
       );
-      const cutoff = new Date(today.getTime() + daysBefore * 86400000).toISOString().slice(0,10);
+      // Cutoff: add whole calendar days from local midnight (not ms from now)
+      const _cutoffDate = new Date(_todayMidnight);
+      _cutoffDate.setDate(_cutoffDate.getDate() + daysBefore);
+      const cutoff = typeof localDateStr === 'function'
+        ? localDateStr(_cutoffDate)
+        : _cutoffDate.toISOString().slice(0,10);
       const occDates = getScheduledDates(sc, cutoff);
       for (const d of occDates) {
         if (d < todayStr) continue;
-        const diffDays = Math.round((new Date(d + 'T00:00:00') - new Date(todayStr + 'T00:00:00')) / 86400000);
+        // diffDays: compare date strings directly to avoid DST issues
+        const diffDays = Math.round((new Date(d + 'T12:00:00') - new Date(todayStr + 'T12:00:00')) / 86400000);
         if (diffDays !== daysBefore) continue;
         if (emailEnabled) {
           const cfg = getAutoCheckConfig ? getAutoCheckConfig() : {};
@@ -783,7 +804,10 @@ window.saveTelegramBotToken = async function() {
   }
 
   if (dot) dot.style.background = '#22c55e';
-  if (statusEl) { statusEl.style.color = 'var(--green)'; statusEl.textContent = '✅ Token salvo! Informe o Chat ID abaixo e clique Testar.'; }
+  if (statusEl) { statusEl.style.color = 'var(--green)'; statusEl.textContent = '✅ Token salvo! Clique em "Registrar Webhook" para conectar o bot.'; }
+  // Show webhook registration button
+  const webhookRow = document.getElementById('tgWebhookRow');
+  if (webhookRow) webhookRow.style.display = '';
   // Show the test row with chat-id field
   const testRow = document.getElementById('tgBotTestRow');
   if (testRow) testRow.style.display = 'flex';
@@ -797,6 +821,113 @@ window.saveTelegramBotToken = async function() {
     }
   }
   toast('Token do Telegram salvo', 'success');
+};
+
+/** Registrar (ou atualizar) o webhook do bot no Telegram — chamada direta à API */
+window.registerTelegramWebhook = async function() {
+  const tokenInput = document.getElementById('telegramBotTokenInput');
+  const statusEl   = document.getElementById('tgBotStatus');
+  const webhookStatusEl = document.getElementById('tgWebhookStatus');
+  const btn        = document.getElementById('tgRegisterWebhookBtn');
+  const dot        = document.getElementById('tgBotStatusDot');
+  const nameBadge  = document.getElementById('tgBotNameBadge');
+
+  const token = (tokenInput?.value || getTelegramBotToken() || '').trim();
+  if (!token) {
+    toast('Salve o token primeiro.', 'error');
+    return;
+  }
+
+  // Construir webhook URL a partir da URL do Supabase configurada
+  const sbUrl = (window.SUPABASE_URL || '').replace(/\/$/, '');
+  if (!sbUrl) {
+    toast('URL do Supabase não encontrada. Configure a conexão primeiro.', 'error');
+    return;
+  }
+  const webhookUrl = `${sbUrl}/functions/v1/telegram-webhook`;
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Conectando…'; }
+  if (statusEl) { statusEl.style.color = 'var(--muted)'; statusEl.textContent = '🔄 Verificando bot e registrando webhook…'; }
+  if (webhookStatusEl) webhookStatusEl.style.display = 'none';
+
+  try {
+    // 1. Verificar token via getMe
+    const getMeRes  = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const getMeData = await getMeRes.json();
+    if (!getMeData.ok) {
+      throw new Error(`Token inválido: ${getMeData.description || 'erro desconhecido'}`);
+    }
+    const botInfo = getMeData.result;
+    const botName = botInfo.username ? `@${botInfo.username}` : botInfo.first_name;
+
+    // 2. Registrar webhook
+    const setRes  = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url:             webhookUrl,
+        allowed_updates: ['message'],
+        drop_pending_updates: true,
+      }),
+    });
+    const setData = await setRes.json();
+    if (!setData.ok) {
+      throw new Error(`Erro ao registrar webhook: ${setData.description || 'erro desconhecido'}`);
+    }
+
+    // 3. Confirmar via getWebhookInfo
+    const infoRes  = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+    const infoData = await infoRes.json();
+    const info     = infoData.result || {};
+
+    // Atualizar UI de sucesso
+    if (dot) dot.style.background = '#22c55e';
+    if (nameBadge) { nameBadge.textContent = botName; nameBadge.style.display = ''; }
+    if (statusEl) {
+      statusEl.style.color = 'var(--green)';
+      statusEl.textContent = `✅ Webhook registrado com sucesso! Envie uma mensagem para ${botName} no Telegram.`;
+    }
+
+    if (webhookStatusEl) {
+      const pendingCount = info.pending_update_count ?? 0;
+      const lastErr = info.last_error_message ? `<div style="color:#dc2626;font-size:.68rem;margin-top:4px">⚠️ Último erro: ${info.last_error_message}</div>` : '';
+      webhookStatusEl.style.display = '';
+      webhookStatusEl.innerHTML = `
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:6px">
+          <span style="font-size:1rem">✅</span>
+          <span style="font-size:.8rem;font-weight:700;color:var(--text)">Webhook ativo — ${botName}</span>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);word-break:break-all;margin-bottom:4px">
+          🔗 ${webhookUrl}
+        </div>
+        <div style="font-size:.7rem;color:var(--muted)">
+          📨 Pendentes: ${pendingCount}
+        </div>
+        ${lastErr}
+        <div style="margin-top:8px;padding:8px 10px;background:#f0fdf4;border-radius:7px;border:1px solid #86efac;font-size:.72rem;color:#166534;line-height:1.6">
+          <strong>Próximo passo:</strong> Abra o Telegram, pesquise por <strong>${botName}</strong> e envie
+          <code style="background:#dcfce7;padding:1px 5px;border-radius:4px">/start</code>.
+          Depois, registre seu Chat ID em <strong>Meu Perfil → Telegram</strong> e
+          ative <strong>Transações por Chat</strong> no menu do usuário.
+        </div>`;
+    }
+
+    toast(`✅ Bot ${botName} conectado!`, 'success');
+
+  } catch(e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (dot) dot.style.background = '#dc2626';
+    if (statusEl) { statusEl.style.color = 'var(--danger)'; statusEl.textContent = `❌ ${msg}`; }
+    if (webhookStatusEl) {
+      webhookStatusEl.style.display = '';
+      webhookStatusEl.style.background = '#fef2f2';
+      webhookStatusEl.style.borderColor = '#fca5a5';
+      webhookStatusEl.innerHTML = `<div style="font-size:.75rem;color:#dc2626;font-weight:600">❌ Falha ao registrar</div><div style="font-size:.7rem;color:#991b1b;margin-top:3px">${msg}</div>`;
+    }
+    toast('Erro: ' + msg, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> Registrar Webhook'; }
+  }
 };
 
 window.testTelegramBotToken = async function() {
@@ -863,23 +994,60 @@ window.loadTelegramBotTokenUI = async function() {
   const testRow = document.getElementById('tgBotTestRow');
   const testBtn = document.getElementById('tgBotTestBtn');
   const chatIdInput = document.getElementById('tgBotTestChatId');
+  const webhookRow  = document.getElementById('tgWebhookRow');
   if (!input) return;
 
-  // ensureTelegramBotToken: lê localStorage → fallback Supabase DB
   const token = await ensureTelegramBotToken();
-  if (token) {
-    input.value = token;
-    if (dot) dot.style.background = '#22c55e';
-    if (testRow) testRow.style.display = 'flex';
-    // Pre-fill Chat ID from currentUser if available
-    if (chatIdInput && !chatIdInput.value) {
-      const knownChatId = String(currentUser?.telegram_chat_id || '').trim();
-      if (knownChatId) {
-        chatIdInput.value = knownChatId;
-        if (testBtn) testBtn.style.display = '';
-      }
+  if (!token) return;
+
+  input.value = token;
+  if (dot) dot.style.background = '#22c55e';
+  if (testRow) testRow.style.display = 'flex';
+  if (webhookRow) webhookRow.style.display = '';
+
+  // Pre-fill Chat ID from currentUser if available
+  if (chatIdInput && !chatIdInput.value) {
+    const knownChatId = String(currentUser?.telegram_chat_id || '').trim();
+    if (knownChatId) {
+      chatIdInput.value = knownChatId;
+      if (testBtn) testBtn.style.display = '';
     }
   }
+
+  // Check current webhook status and show info card
+  try {
+    const infoRes  = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+    const infoData = await infoRes.json();
+    const info     = infoData.result || {};
+    const sbUrl    = (window.SUPABASE_URL || '').replace(/\/$/, '');
+    const expectedUrl = sbUrl ? `${sbUrl}/functions/v1/telegram-webhook` : '';
+    const isRegistered = info.url && info.url === expectedUrl;
+    const nameBadge    = document.getElementById('tgBotNameBadge');
+    const statusEl     = document.getElementById('tgBotStatus');
+    const webhookStatusEl = document.getElementById('tgWebhookStatus');
+
+    if (isRegistered) {
+      // Fetch bot name
+      const getMeRes  = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+      const getMeData = await getMeRes.json();
+      const botName   = getMeData.ok ? `@${getMeData.result.username || getMeData.result.first_name}` : '';
+      if (nameBadge && botName) { nameBadge.textContent = botName; nameBadge.style.display = ''; }
+      if (statusEl) { statusEl.style.color = 'var(--green)'; statusEl.textContent = `✅ Bot conectado e webhook ativo.`; }
+      if (webhookStatusEl) {
+        webhookStatusEl.style.display = '';
+        webhookStatusEl.innerHTML = `
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:.85rem">✅</span>
+            <span style="font-size:.77rem;font-weight:700;color:var(--text)">Webhook ativo${botName ? ' — ' + botName : ''}</span>
+          </div>
+          <div style="font-size:.68rem;color:var(--muted);margin-top:3px;word-break:break-all">${info.url}</div>
+          ${info.last_error_message ? `<div style="font-size:.68rem;color:#dc2626;margin-top:3px">⚠️ ${info.last_error_message}</div>` : ''}`;
+      }
+    } else if (info.url && info.url !== expectedUrl) {
+      // Different URL registered
+      if (statusEl) { statusEl.style.color = '#d97706'; statusEl.textContent = '⚠️ Webhook registrado em outro servidor. Clique "Registrar Webhook" para atualizar.'; }
+    }
+  } catch(_) { /* non-blocking */ }
 };
 
 /* ── Notify on manual/auto transaction ────────────────────────────────────── */
@@ -1003,8 +1171,11 @@ async function notifyOnTransaction(tx, sc = null) {
 
     const promises = [];
 
+    // Verificar canais ativos pelo admin (respeita configurações do painel)
+    const _chEnabled = (ch) => typeof isNotifChannelEnabled === 'function' ? isNotifChannelEnabled(ch) : true;
+
     // Email
-    if (user.notify_tx_email && user.email) {
+    if (user.notify_tx_email && user.email && _chEnabled('email')) {
       const tplId = (typeof EMAILJS_CONFIG !== 'undefined') ? (EMAILJS_CONFIG.scheduledTemplateId || EMAILJS_CONFIG.templateId) : null;
       if (tplId && EMAILJS_CONFIG.serviceId && EMAILJS_CONFIG.publicKey) {
         const htmlContent = `
@@ -1035,7 +1206,7 @@ async function notifyOnTransaction(tx, sc = null) {
     }
 
     // WhatsApp
-    if (user.notify_tx_wa && user.whatsapp_number) {
+    if (user.notify_tx_wa && user.whatsapp_number && _chEnabled('whatsapp')) {
       const number = String(user.whatsapp_number).replace(/\D+/g, '');
       if (number) {
         promises.push((async () => {
@@ -1050,7 +1221,7 @@ async function notifyOnTransaction(tx, sc = null) {
     }
 
     // Telegram
-    if (user.notify_tx_tg) {
+    if (user.notify_tx_tg && _chEnabled('telegram')) {
       const chatId = String(user.telegram_chat_id || '').trim();
       if (chatId) {
         promises.push((async () => {
@@ -1098,3 +1269,74 @@ window.sendScheduledTelegramNotification = sendScheduledTelegramNotification;
 window.sendScheduledNotification         = typeof sendScheduledNotification === 'function'
   ? sendScheduledNotification : (window.sendScheduledNotification || null);
 window.runScheduledUpcomingNotifications = runScheduledUpcomingNotifications;
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window._sendTelegramDirect                 = _sendTelegramDirect;
+// ── Scheduled Run Log — histórico de execuções visível no painel admin ───────
+async function loadScheduledRunLog() {
+  // Update all #scheduledRunLogList instances on the page (settings + telemetry)
+  const allEls = Array.from(document.querySelectorAll('#scheduledRunLogList'));
+  const targetEl = allEls[0] || document.getElementById('telScheduledLog');
+  if (!targetEl) return;
+  const allTargets = allEls.length > 1 ? allEls : [targetEl];
+  targetEl.innerHTML = '<div style="text-align:center;padding:8px;color:var(--muted)">⏳ Carregando...</div>';
+  try {
+    // Try to load from migration_scheduled_run_logs table (may not exist yet)
+    const { data, error } = await famQ(
+      sb.from('migration_scheduled_run_logs')
+        .select('id,run_at,status,transactions_registered,error_message,triggered_by')
+    ).order('run_at', { ascending: false }).limit(20);
+
+    if (error) throw error;
+
+    if (!data || data.length === 0) {
+      // Fallback: show localStorage lastRun
+      const cfg = getAutoCheckConfig();
+      const lastRun = cfg.lastRun ? new Date(cfg.lastRun).toLocaleString('pt-BR') : 'Nunca';
+      const lastCount = cfg.lastRunCount ?? 0;
+      targetEl.innerHTML = `
+        <div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center">
+          <span style="font-size:.9rem">✅</span>
+          <div>
+            <div style="font-weight:600;color:var(--text);font-size:.82rem">Última execução: ${lastRun}</div>
+            <div style="color:var(--muted);font-size:.75rem">${lastCount} transação(ões) registrada(s)</div>
+          </div>
+        </div>
+        <div style="color:var(--muted);font-size:.72rem;padding-top:6px">
+          Tabela de log detalhado não encontrada. Execute a migração para habilitar o histórico completo.
+        </div>`;
+      return;
+    }
+
+    targetEl.innerHTML = data.map(row => {
+      const dt = new Date(row.run_at).toLocaleString('pt-BR');
+      const ok = row.status === 'success';
+      const icon = ok ? '✅' : '❌';
+      const countTxt = row.transactions_registered != null
+        ? `${row.transactions_registered} tx registrada(s)` : '';
+      const trigger = row.triggered_by === 'manual' ? '▶ Manual' : '⏱ Automático';
+      return `<div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start">
+        <span style="font-size:.9rem;flex-shrink:0">${icon}</span>
+        <div style="min-width:0;flex:1">
+          <div style="font-weight:600;color:var(--text);font-size:.82rem">${dt}
+            <span style="font-size:.7rem;color:var(--muted);font-weight:400;margin-left:6px">${trigger}</span>
+          </div>
+          ${countTxt ? `<div style="color:var(--accent);font-size:.75rem">${countTxt}</div>` : ''}
+          ${row.error_message ? `<div style="color:#dc2626;font-size:.75rem;margin-top:2px">⚠ ${esc(row.error_message)}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+  } catch(err) {
+    // Table doesn't exist yet — show last run from config
+    const cfg = getAutoCheckConfig();
+    const lastRun = cfg.lastRun ? new Date(cfg.lastRun).toLocaleString('pt-BR') : 'Nunca';
+    targetEl.innerHTML = `
+      <div style="font-size:.75rem;color:var(--muted);padding:8px 0">
+        Última execução (localStorage): <strong>${lastRun}</strong><br>
+        Para histórico detalhado, execute a migração <code>migration_scheduled_run_logs.sql</code>.
+      </div>`;
+  }
+}
+window.loadScheduledRunLog = loadScheduledRunLog;
+
+window._sendTelegramWithFallback           = _sendTelegramWithFallback;

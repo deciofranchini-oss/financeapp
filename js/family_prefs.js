@@ -194,19 +194,40 @@ async function _fpLoadFromDB(famId, background) {
   try {
     if (!window.sb) return _fpDefaultPrefs(famId);
 
-    // Tenta tabela dedicada `family_preferences` primeiro
     let prefs = null;
+
+    // Path 1: RPC get_family_preferences (SECURITY DEFINER — imune a RLS)
     try {
-      const { data, error } = await sb
-        .from('family_preferences')
-        .select('*')
-        .eq('family_id', famId)
-        .maybeSingle();
-      if (!error && data) prefs = _fpRowToPrefs(data, famId);
+      const { data: rpcRows, error: rpcErr } = await sb
+        .rpc('get_family_preferences', { p_family_id: famId });
+      if (!rpcErr && rpcRows && rpcRows.length > 0) {
+        prefs = _fpRowToPrefs(rpcRows[0], famId);
+        console.log('[family_prefs] carregado via RPC:', prefs.modules);
+      }
     } catch(_) {}
 
+    // Path 2: SELECT direto (funciona se RLS permite ou tabela não tem RLS)
     if (!prefs) {
-      // Fallback: monta preferências a partir de app_settings (legado)
+      try {
+        const { data, error } = await sb
+          .from('family_preferences')
+          .select('*')
+          .eq('family_id', famId)
+          .maybeSingle();
+        if (!error && data) {
+          prefs = _fpRowToPrefs(data, famId);
+          console.log('[family_prefs] carregado via SELECT direto:', prefs.modules);
+        } else if (error) {
+          console.warn('[family_prefs] SELECT direto falhou (rode a migration SQL):', error.message);
+        }
+      } catch(e2) {
+        console.warn('[family_prefs] SELECT exception:', e2.message);
+      }
+    }
+
+    // Path 3: fallback legado — lê flags de app_settings + localStorage
+    if (!prefs) {
+      console.warn('[family_prefs] tabela não disponível — usando legado. Execute sql/family_preferences_migration.sql no Supabase.');
       prefs = await _fpLoadFromLegacySettings(famId);
     }
 
@@ -281,8 +302,9 @@ async function _fpLoadFromLegacySettings(famId) {
 
 async function _fpSaveToDB(famId, prefs) {
   if (!window.sb) return;
+
+  // Path 1: upsert entire row via direct table access (owner can write via RLS)
   try {
-    // Try dedicated table first
     const row = {
       family_id:          famId,
       module_ai_insights: !!(prefs.modules?.ai_insights),
@@ -299,15 +321,28 @@ async function _fpSaveToDB(famId, prefs) {
     const { error } = await sb
       .from('family_preferences')
       .upsert(row, { onConflict: 'family_id' });
+    if (!error) return; // success
+    console.warn('[family_prefs] direct upsert failed:', error.message, '— trying RPC');
+  } catch(e) {
+    console.warn('[family_prefs] direct upsert exception:', e.message, '— trying RPC');
+  }
 
-    if (!error) {
-      // Also sync to legacy app_settings for backwards compatibility
-      await _fpSyncToLegacySettings(famId, prefs);
-      return;
-    }
-  } catch(_) {}
+  // Path 2: RPC upsert_family_module per module (SECURITY DEFINER — bypasses RLS)
+  const modules = prefs.modules || {};
+  const modEntries = Object.entries(modules);
+  let rpcOk = false;
+  for (const rpcName of ['upsert_family_module', 'set_family_module']) {
+    try {
+      const tasks = modEntries.map(([mod, enabled]) =>
+        sb.rpc(rpcName, { p_family_id: famId, p_module: mod, p_enabled: !!enabled })
+      );
+      const results = await Promise.all(tasks);
+      if (results.every(r => !r.error)) { rpcOk = true; break; }
+    } catch(_) {}
+  }
+  if (rpcOk) return;
 
-  // Fallback: save to legacy app_settings
+  // Path 3: legacy app_settings (last resort)
   await _fpSyncToLegacySettings(famId, prefs);
 }
 

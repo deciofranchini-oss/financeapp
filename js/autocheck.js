@@ -1,4 +1,14 @@
 function getAutoCheckConfig() {
+  // 1. Tenta _appSettingsCache (carregado do Supabase ao login)
+  if (typeof _appSettingsCache !== 'undefined' && _appSettingsCache &&
+      _appSettingsCache[AUTO_CHECK_CONFIG_KEY] &&
+      typeof _appSettingsCache[AUTO_CHECK_CONFIG_KEY] === 'object') {
+    const cached = _appSettingsCache[AUTO_CHECK_CONFIG_KEY];
+    // Sincroniza localStorage com cache do servidor
+    try { localStorage.setItem(AUTO_CHECK_CONFIG_KEY, JSON.stringify(cached)); } catch {}
+    return { ...AUTO_CHECK_DEFAULTS, ...cached };
+  }
+  // 2. Fallback: localStorage (offline ou antes do login)
   try {
     const raw = localStorage.getItem(AUTO_CHECK_CONFIG_KEY);
     return raw ? { ...AUTO_CHECK_DEFAULTS, ...JSON.parse(raw) } : { ...AUTO_CHECK_DEFAULTS };
@@ -490,3 +500,23 @@ function getPeriodColor(period) {
     default: return '#1F6B4F';
   }
 }
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window.applyAutoCheckTimer                 = applyAutoCheckTimer;
+window.copyAutoCheckSql                    = copyAutoCheckSql;
+window.getAutoCheckConfig                  = getAutoCheckConfig;
+window.getCronExpression                   = getCronExpression;
+window.getScheduledDates                   = getScheduledDates;
+window.getSupabaseCronSql                  = getSupabaseCronSql;
+window.getSupabaseEdgeSql                  = getSupabaseEdgeSql;
+window.loadAutoCheckConfig                 = loadAutoCheckConfig;
+window.nextScheduledDate                   = nextScheduledDate;
+window.onAutoCheckMethodChange             = onAutoCheckMethodChange;
+window.runAutoRegister                     = runAutoRegister;
+window.saveAutoCheckConfig                 = saveAutoCheckConfig;
+window.sendScheduledNotification           = sendScheduledNotification;
+window.sendUpcomingNotification            = sendUpcomingNotification;
+window.showAuthMigration                   = showAuthMigration;
+window.showAutoRegisterMigration           = showAutoRegisterMigration;
+window.updateAutoCheckUI                   = updateAutoCheckUI;
+window.updateLastRunConfig                 = updateLastRunConfig;

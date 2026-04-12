@@ -21,17 +21,78 @@ const _drm = {
 };
 
 /* ── Feature flag ─────────────────────────────────────────────────── */
+
+// ── BRL amount mask for Dreams fields (mirrors _amtFieldInput in utils.js) ──
+function _drmAmtInput(el) {
+  if (!el) return;
+  const rawDigits = el.value.replace(/[^0-9]/g, '');
+  if (!rawDigits) { el.dataset.cents = '0'; el.value = ''; return; }
+  const cents = parseInt(rawDigits.slice(-13) || '0', 10);
+  el.dataset.cents = String(cents);
+  const reais = Math.floor(cents / 100);
+  const centsOnly = cents % 100;
+  el.value = reais.toLocaleString('pt-BR') + ',' + String(centsOnly).padStart(2, '0');
+  try { el.setSelectionRange(el.value.length, el.value.length); } catch(_) {}
+}
+function _drmAmtBlur(el) {
+  if (!el) return;
+  let cents = parseInt(el.dataset.cents || '0', 10);
+  if (!cents) {
+    const raw = el.value.replace(/\./g, '').replace(',', '.');
+    cents = Math.round(Math.abs(parseFloat(raw) || 0) * 100);
+    el.dataset.cents = String(cents);
+  }
+  if (!cents) { el.value = ''; return; }
+  const reais = Math.floor(cents / 100);
+  const centsOnly = cents % 100;
+  el.value = reais.toLocaleString('pt-BR') + ',' + String(centsOnly).padStart(2, '0');
+}
+// Read numeric value from a drm amount field (returns float in BRL)
+function _drmAmtVal(el) {
+  if (!el) return 0;
+  const cents = parseInt(el.dataset.cents || '0', 10);
+  if (cents) return cents / 100;
+  // Fallback: parse displayed value
+  const raw = (el.value || '').replace(/\./g, '').replace(',', '.');
+  return Math.abs(parseFloat(raw) || 0);
+}
+
 async function isDreamsEnabled() {
-  const fid = famId();
+  const fid = typeof famId === 'function' ? famId() : null;
   if (!fid) return false;
+
+  // 1. New system: family_preferences.module_dreams
+  if (typeof getFamilyPreferences === 'function') {
+    try {
+      await getFamilyPreferences(); // populates _fpCache
+      if (typeof isModuleEnabled === 'function') {
+        // Only trust an EXPLICIT false — if cache empty/not loaded, default to enabled
+        if (typeof _fpCache !== 'undefined' && _fpCache !== null) {
+          const enabled = isModuleEnabled('dreams');
+          // If explicitly disabled, honour it
+          if (_fpCache.modules && 'dreams' in _fpCache.modules) return !!enabled;
+        }
+      }
+    } catch(_) {}
+  }
+
+  // 2. Legacy system: app_settings key 'dreams_enabled_<famId>'
   const cacheKey = 'dreams_enabled_' + fid;
   if (window._familyFeaturesCache && cacheKey in window._familyFeaturesCache)
     return !!window._familyFeaturesCache[cacheKey];
-  const raw = await getAppSetting(cacheKey, false);
-  const enabled = raw === true || raw === 'true';
-  window._familyFeaturesCache = window._familyFeaturesCache || {};
-  window._familyFeaturesCache[cacheKey] = enabled;
-  return enabled;
+
+  try {
+    const raw = await getAppSetting(cacheKey, null);
+    // Only trust explicit false — if not set at all, default to ENABLED
+    if (raw === false || raw === 'false') {
+      window._familyFeaturesCache = window._familyFeaturesCache || {};
+      window._familyFeaturesCache[cacheKey] = false;
+      return false;
+    }
+  } catch(_) {}
+
+  // Default: ENABLED (module should show unless explicitly turned off)
+  return true;
 }
 
 async function applyDreamsFeature() {
@@ -48,13 +109,34 @@ async function applyDreamsFeature() {
   if (pageEl) pageEl.style.display = on ? '' : 'none';
   if (typeof _syncModulesSection === 'function') _syncModulesSection();
   if (on && !_drm.loaded) await loadDreams().catch(() => {});
+
+  // If module is ON, ensure nav item is always visible even if hidden by other code
+  if (on && navEl && navEl.style.display === 'none') {
+    navEl.style.display = '';
+  }
 }
 window.applyDreamsFeature = applyDreamsFeature;
 
+// Re-apply after a short delay to catch any race with bootApp / family prefs load
+function _applyDreamsFeatureDelayed() {
+  setTimeout(() => applyDreamsFeature().catch(() => {}), 1500);
+  setTimeout(() => applyDreamsFeature().catch(() => {}), 4000);
+}
+window._applyDreamsFeatureDelayed = _applyDreamsFeatureDelayed;
+
 async function toggleFamilyDreams(familyId, enabled) {
+  // Save to legacy system
   await saveAppSetting('dreams_enabled_' + familyId, enabled);
   window._familyFeaturesCache = window._familyFeaturesCache || {};
   window._familyFeaturesCache['dreams_enabled_' + familyId] = enabled;
+
+  // Sync to new family_preferences system
+  if (typeof updateFamilyPreferences === 'function') {
+    try {
+      await updateFamilyPreferences({ modules: { dreams: enabled } });
+    } catch(_) {}
+  }
+
   applyDreamsFeature().catch(() => {});
   toast(enabled ? '✓ Sonhos ativado' : 'Sonhos desativado', 'success');
 }
@@ -62,8 +144,27 @@ window.toggleFamilyDreams = toggleFamilyDreams;
 
 /* ── Page init ────────────────────────────────────────────────────── */
 async function initDreamsPage() {
-  if (!await isDreamsEnabled()) return;
-  await loadDreams();
+  const container = document.getElementById('dreams-list-container');
+  if (!await isDreamsEnabled()) {
+    // Module disabled — show appropriate message instead of "Carregando sonhos…"
+    if (container) {
+      container.innerHTML = `<div class="drm-empty" style="padding:60px 20px;text-align:center;color:var(--muted)">
+        <div style="font-size:2.5rem;margin-bottom:12px">⚙️</div>
+        <div style="font-size:.95rem;font-weight:600;color:var(--text);margin-bottom:8px">Módulo Sonhos não ativado</div>
+        <div style="font-size:.82rem;color:var(--muted);line-height:1.6">Ative o módulo em <strong>Gerenciar Família → Módulos</strong>.</div>
+      </div>`;
+    }
+    return;
+  }
+  // Show loading state while fetching
+  if (container && !_drm.loaded) {
+    container.innerHTML = `<div class="drm-empty" style="padding:60px 20px;text-align:center;color:var(--muted)">
+      <div style="font-size:2.5rem;margin-bottom:12px">⏳</div>
+      <div style="font-size:.95rem;font-weight:600;color:var(--text)">Carregando sonhos…</div>
+    </div>`;
+  }
+  // Always force-reload on page navigation (avoids stale cache from previous errors)
+  await loadDreams(true);
   renderDreamsPage();
 }
 window.initDreamsPage = initDreamsPage;
@@ -72,9 +173,20 @@ window.initDreamsPage = initDreamsPage;
 async function loadDreams(force = false) {
   if (_drm.loaded && !force) return;
   try {
-    const { data, error } = await famQ(
-      sb.from('dreams').select('*')
-    ).order('priority', { ascending: true }).order('created_at', { ascending: false });
+    const fid2 = typeof famId === 'function' ? famId() : (typeof currentUser !== 'undefined' ? currentUser?.family_id : null);
+    let data, error;
+    if (fid2) {
+      // Direct query with explicit family_id — avoids famQ() chain issues
+      ({ data, error } = await sb.from('dreams').select('*')
+        .eq('family_id', fid2)
+        .order('priority', { ascending: true })
+        .order('created_at', { ascending: false }));
+    } else {
+      // Fallback to famQ
+      ({ data, error } = await famQ(
+        sb.from('dreams').select('*')
+      ).order('priority', { ascending: true }).order('created_at', { ascending: false }));
+    }
 
     // Se a tabela não existe ainda (código 42P01), avisa no container
     if (error) {
@@ -88,7 +200,8 @@ async function loadDreams(force = false) {
             <div class="drm-empty-desc">As tabelas do módulo Sonhos ainda não foram criadas no banco de dados.<br>Execute a migração SQL no painel Supabase e recarregue a página.</div>
           </div>`;
         }
-        return; // não marca como loaded — força nova tentativa
+        _drm.loaded = true; // mark loaded so we don't retry on every navigation
+        return;
       }
       throw error;
     }
@@ -125,7 +238,7 @@ async function loadDreams(force = false) {
   } catch (e) {
     console.warn('[Dreams] loadDreams error:', e?.message || e);
     _drm.dreams = [];
-    _drm.loaded = true;
+    _drm.loaded = false;  // Don't mark as loaded on error — allow retry on next navigation
   }
 }
 
@@ -166,12 +279,26 @@ function _fmtCurrency(val, currency = 'BRL') {
 }
 
 function _dreamTypeLabel(type) {
-  const labels = { viagem: '✈️ Viagem', automovel: '🚗 Automóvel', imovel: '🏠 Imóvel' };
+  const labels = {
+    viagem:           '✈️ Viagem',
+    automovel:        '🚗 Automóvel',
+    imovel:           '🏠 Imóvel',
+    cirurgia_plastica:'💉 Cirurgia Plástica',
+    estudos:          '🎓 Estudos',
+    outro:            '🌟 Outro Sonho',
+  };
   return labels[type] || '🌟 Sonho';
 }
 
 function _dreamTypeEmoji(type) {
-  const e = { viagem: '✈️', automovel: '🚗', imovel: '🏠' };
+  const e = {
+    viagem:           '✈️',
+    automovel:        '🚗',
+    imovel:           '🏠',
+    cirurgia_plastica:'💉',
+    estudos:          '🎓',
+    outro:            '🌟',
+  };
   return e[type] || '🌟';
 }
 
@@ -304,10 +431,10 @@ function _renderDreamCard(d) {
 
     ${d.description ? `<div class="drm-card-desc">${_esc(d.description).slice(0,90)}${d.description.length > 90 ? '…' : ''}</div>` : ''}
 
-    <div class="drm-card-actions" onclick="event.stopPropagation()">
-      <button class="drm-action-btn" onclick="openDreamDetail('${d.id}')">Ver detalhes</button>
-      <button class="drm-action-btn" onclick="openContributeModal('${d.id}')">+ Aporte</button>
-      <button class="drm-action-btn drm-action-btn--icon" onclick="openDreamMenu('${d.id}', event)" title="Mais opções">⋯</button>
+    <div class="drm-card-actions">
+      <button class="drm-action-btn" onclick="event.stopPropagation();openDreamDetail('${d.id}')">Ver detalhes</button>
+      <button class="drm-action-btn" onclick="event.stopPropagation();openContributeModal('${d.id}')">+ Aporte</button>
+      <button class="drm-action-btn drm-action-btn--icon" onclick="event.stopPropagation();openDreamMenu('${d.id}', event)" title="Mais opções">⋯</button>
     </div>
   </div>`;
 }
@@ -334,7 +461,7 @@ function openDreamDetail(dreamId) {
   const aiFields   = d.ai_generated_fields_json ? (typeof d.ai_generated_fields_json === 'string' ? JSON.parse(d.ai_generated_fields_json) : d.ai_generated_fields_json) : null;
 
   const html = `
-  <div id="dreamDetailModal" class="modal-overlay active" onclick="if(event.target===this)closeDreamDetail()">
+  <div id="dreamDetailModal" class="modal-overlay open" onclick="if(event.target===this)closeDreamDetail()">
     <div class="modal drm-detail-modal" onclick="event.stopPropagation()">
       <div class="drm-detail-header">
         <div class="drm-detail-emoji">${_dreamTypeEmoji(d.dream_type)}</div>
@@ -371,6 +498,47 @@ function openDreamDetail(dreamId) {
             ${monthly !== null && monthly > 0 && !privacy ? `<span>Economia necessária: <strong>${_fmtCurrency(monthly, d.currency)}/mês</strong></span>` : ''}
           </div>` : ''}
         </div>
+
+        <!-- Detalhes específicos por tipo -->
+        ${aiFields && d.dream_type === 'cirurgia_plastica' ? `
+        <div class="drm-detail-section">
+          <div class="drm-section-title">💉 Detalhes da Cirurgia</div>
+          <div class="drm-meta-grid">
+            ${aiFields.tipo_cirurgia ? `<div class="drm-meta-item"><span class="drm-meta-label">Procedimento</span><span class="drm-meta-value">${_esc(aiFields.tipo_cirurgia)}</span></div>` : ''}
+            ${aiFields.medico ? `<div class="drm-meta-item"><span class="drm-meta-label">Médico</span><span class="drm-meta-value">${_esc(aiFields.medico)}</span></div>` : ''}
+            ${aiFields.clinica ? `<div class="drm-meta-item"><span class="drm-meta-label">Clínica</span><span class="drm-meta-value">${_esc(aiFields.clinica)}</span></div>` : ''}
+            ${aiFields.protese ? `<div class="drm-meta-item"><span class="drm-meta-label">Prótese</span><span class="drm-meta-value">${_esc(aiFields.protese)}</span></div>` : ''}
+            ${aiFields.custo_medico > 0 ? `<div class="drm-meta-item"><span class="drm-meta-label">Honorários</span><span class="drm-meta-value">${_fmtCurrency(aiFields.custo_medico)}</span></div>` : ''}
+            ${aiFields.custo_anestesia > 0 ? `<div class="drm-meta-item"><span class="drm-meta-label">Anestesia</span><span class="drm-meta-value">${_fmtCurrency(aiFields.custo_anestesia)}</span></div>` : ''}
+            ${aiFields.custo_hospital > 0 ? `<div class="drm-meta-item"><span class="drm-meta-label">Hospital</span><span class="drm-meta-value">${_fmtCurrency(aiFields.custo_hospital)}</span></div>` : ''}
+            ${aiFields.custo_exames > 0 ? `<div class="drm-meta-item"><span class="drm-meta-label">Exames pré-op</span><span class="drm-meta-value">${_fmtCurrency(aiFields.custo_exames)}</span></div>` : ''}
+          </div>
+        </div>` : ''}
+
+        ${aiFields && d.dream_type === 'estudos' ? `
+        <div class="drm-detail-section">
+          <div class="drm-section-title">🎓 Detalhes dos Estudos</div>
+          <div class="drm-meta-grid">
+            ${aiFields.tipo_estudo ? `<div class="drm-meta-item"><span class="drm-meta-label">Tipo</span><span class="drm-meta-value">${_esc(aiFields.tipo_estudo)}</span></div>` : ''}
+            ${aiFields.instituicao ? `<div class="drm-meta-item"><span class="drm-meta-label">Instituição</span><span class="drm-meta-value">${_esc(aiFields.instituicao)}</span></div>` : ''}
+            ${aiFields.pais ? `<div class="drm-meta-item"><span class="drm-meta-label">País</span><span class="drm-meta-value">${_esc(aiFields.pais)}</span></div>` : ''}
+            ${aiFields.duracao_meses > 0 ? `<div class="drm-meta-item"><span class="drm-meta-label">Duração</span><span class="drm-meta-value">${aiFields.duracao_meses} meses</span></div>` : ''}
+            ${aiFields.moeda && aiFields.moeda !== 'BRL' ? `<div class="drm-meta-item"><span class="drm-meta-label">Moeda</span><span class="drm-meta-value">${aiFields.moeda}</span></div>` : ''}
+            ${aiFields.custo_mensalidade > 0 ? `<div class="drm-meta-item"><span class="drm-meta-label">Mensalidade</span><span class="drm-meta-value">${_fmtCurrency(aiFields.custo_mensalidade)}/mês</span></div>` : ''}
+            ${aiFields.custo_moradia > 0 ? `<div class="drm-meta-item"><span class="drm-meta-label">Moradia</span><span class="drm-meta-value">${_fmtCurrency(aiFields.custo_moradia)}/mês</span></div>` : ''}
+            ${aiFields.custo_passagem > 0 ? `<div class="drm-meta-item"><span class="drm-meta-label">Passagem</span><span class="drm-meta-value">${_fmtCurrency(aiFields.custo_passagem)}</span></div>` : ''}
+          </div>
+        </div>` : ''}
+
+        ${aiFields && d.dream_type === 'outro' ? `
+        <div class="drm-detail-section">
+          <div class="drm-section-title">🌟 Detalhes do Objetivo</div>
+          <div class="drm-meta-grid">
+            ${aiFields.categoria ? `<div class="drm-meta-item"><span class="drm-meta-label">Categoria</span><span class="drm-meta-value">${_esc(aiFields.categoria)}</span></div>` : ''}
+            ${aiFields.prazo_meses > 0 ? `<div class="drm-meta-item"><span class="drm-meta-label">Prazo desejado</span><span class="drm-meta-value">${aiFields.prazo_meses} meses</span></div>` : ''}
+          </div>
+          ${aiFields.detalhes ? `<div style="margin-top:8px;padding:10px 12px;background:var(--surface2);border-radius:8px;font-size:.85rem;color:var(--text2);line-height:1.5">${_esc(aiFields.detalhes)}</div>` : ''}
+        </div>` : ''}
 
         <!-- Simulation scenarios -->
         ${!privacy && remaining > 0 ? `
@@ -540,7 +708,7 @@ function openContributeModal(dreamId) {
   const today = new Date().toISOString().slice(0, 10);
 
   const html = `
-  <div id="contributeModal" class="modal-overlay active" onclick="if(event.target===this)document.getElementById('contributeModal').remove()">
+  <div id="contributeModal" class="modal-overlay open" onclick="if(event.target===this)document.getElementById('contributeModal').remove()">
     <div class="modal" style="max-width:380px" onclick="event.stopPropagation()">
       <div class="modal-header">
         <h3>💰 Registrar aporte</h3>
@@ -550,11 +718,11 @@ function openContributeModal(dreamId) {
         <p style="color:var(--muted);font-size:.82rem;margin-bottom:12px">Sonho: <strong>${_esc(d.title)}</strong></p>
         <div class="form-group">
           <label class="form-label">Valor</label>
-          <input type="number" id="contribAmount" class="form-input" placeholder="0,00" min="0.01" step="0.01">
+          <input type="text" inputmode="numeric" id="contribAmount" class="form-input" placeholder="0,00" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
         </div>
         <div class="form-group">
           <label class="form-label">Data</label>
-          <input type="date" id="contribDate" class="form-input" value="${today}">
+          <input type="date" lang="pt-BR" id="contribDate" class="form-input" value="${today}">
         </div>
         <div class="form-group">
           <label class="form-label">Observação (opcional)</label>
@@ -573,7 +741,7 @@ function openContributeModal(dreamId) {
 window.openContributeModal = openContributeModal;
 
 async function saveContribution(dreamId) {
-  const amount = parseFloat(document.getElementById('contribAmount')?.value);
+  const amount = _drmAmtVal(document.getElementById('contribAmount'));
   const date   = document.getElementById('contribDate')?.value;
   if (!amount || amount <= 0) { toast('Informe um valor válido', 'warning'); return; }
   if (!date) { toast('Informe a data', 'warning'); return; }
@@ -610,7 +778,7 @@ async function runDreamAiAnalysis(dreamId) {
   const d = _drm.dreams.find(x => x.id === dreamId);
   if (!d) return;
 
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  const apiKey = await getGeminiApiKey();
   if (!apiKey || !apiKey.startsWith('AIza')) {
     toast('Configure a chave Gemini em Configurações → IA para usar esta função', 'warning');
     return;
@@ -679,16 +847,11 @@ RETORNE EXATAMENTE ESTE JSON (em português brasileiro):
 
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 1200 } }),
+    const _d1 = await geminiRetryFetch(url, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.4, maxOutputTokens: 1200 },
     });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const body = await resp.json();
-    const raw  = body?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const clean = raw.replace(/```json|```/g, '').trim();
-    const result = JSON.parse(clean);
+    const result = _parseGeminiJSON(_d1);
 
     // Save to simulation_json
     const simData = { ai_summary: result.resumo, ai_full: result, generated_at: new Date().toISOString() };
@@ -815,9 +978,12 @@ window.closeDreamWizard = closeDreamWizard;
 /* ── Step 1: Escolha do tipo ──────────────────────────────────────── */
 function _wizStep1() {
   const types = [
-    { key: 'viagem',    emoji: '✈️', label: 'Viagem',    desc: 'Destinos, passeios, hospedagem e mais' },
-    { key: 'automovel', emoji: '🚗', label: 'Automóvel', desc: 'Compra à vista ou financiada' },
-    { key: 'imovel',    emoji: '🏠', label: 'Imóvel',    desc: 'Apartamento, casa, praia ou campo' },
+    { key: 'viagem',            emoji: '✈️', label: 'Viagem',            desc: 'Destinos, passeios, hospedagem e mais' },
+    { key: 'automovel',         emoji: '🚗', label: 'Automóvel',         desc: 'Compra à vista ou financiada' },
+    { key: 'imovel',            emoji: '🏠', label: 'Imóvel',            desc: 'Apartamento, casa, praia ou campo' },
+    { key: 'cirurgia_plastica', emoji: '💉', label: 'Cirurgia Plástica', desc: 'Médico, clínica, tipo de procedimento' },
+    { key: 'estudos',           emoji: '🎓', label: 'Estudos',           desc: 'Faculdade, curso, intercâmbio no exterior' },
+    { key: 'outro',             emoji: '🌟', label: 'Outro Sonho',       desc: 'Qualquer objetivo financeiro personalizado' },
   ];
   return `
   <div class="drm-wiz-step1">
@@ -858,7 +1024,7 @@ async function wizardAiInterpret() {
   const input = document.getElementById('wizFreeInput')?.value?.trim();
   if (!input) return;
 
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  const apiKey = await getGeminiApiKey();
   if (!apiKey || !apiKey.startsWith('AIza')) {
     toast('Configure a chave Gemini para usar interpretação por IA', 'warning');
     return;
@@ -872,7 +1038,7 @@ Objetivo: "${input}"
 
 JSON esperado (sem markdown, sem texto adicional):
 {
-  "tipo": "viagem|automovel|imovel",
+  "tipo": "viagem|automovel|imovel|cirurgia_plastica|estudos|outro",
   "titulo": "título conciso do sonho",
   "descricao": "descrição em 1 frase",
   "destino_ou_modelo": "destino ou modelo do bem",
@@ -882,14 +1048,11 @@ JSON esperado (sem markdown, sem texto adicional):
 
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 300 } }),
+    const _d2 = await geminiRetryFetch(url, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 300 },
     });
-    const body = await resp.json();
-    const raw  = body?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const result = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    const result = _parseGeminiJSON(_d2);
 
     if (_drm.wizard) {
       _drm.wizard.type = result.tipo;
@@ -931,6 +1094,7 @@ function _wizStep2() {
   else if (type === 'imovel') specificFields = _wizFieldsImovel(d);
   else if (type === 'cirurgia_plastica') specificFields = _wizFieldsCirurgia(d);
   else if (type === 'estudos') specificFields = _wizFieldsEstudos(d);
+  else if (type === 'outro') specificFields = _wizFieldsOutro(d);
 
   return `
   <div class="drm-wiz-step2">
@@ -947,11 +1111,11 @@ function _wizStep2() {
       <div class="drm-form-row">
         <div class="form-group">
           <label class="form-label">Valor total estimado *</label>
-          <input type="number" id="wizAmount" class="form-input" placeholder="0,00" min="1" step="0.01" value="${d.target_amount||''}">
+          <input type="text" inputmode="numeric" id="wizAmount" class="form-input" placeholder="0,00" value="${d.target_amount||''}" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
         </div>
         <div class="form-group">
           <label class="form-label">Prazo</label>
-          <input type="date" id="wizDate" class="form-input" value="${d.target_date||''}">
+          <input type="date" lang="pt-BR" id="wizDate" class="form-input" value="${d.target_date||''}">
         </div>
       </div>
       <div class="form-group">
@@ -1008,7 +1172,7 @@ function _wizFieldsAutomovel(d) {
     <div class="drm-form-row">
       <div class="form-group">
         <label class="form-label">Entrada</label>
-        <input type="number" id="wizEntrada" class="form-input" placeholder="0,00" value="${meta.entrada||''}">
+        <input type="text" inputmode="numeric" id="wizEntrada" class="form-input" placeholder="0,00" value="${meta.entrada||''}" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
       </div>
       <div class="form-group">
         <label class="form-label">Taxa juros % a.m.</label>
@@ -1052,7 +1216,7 @@ function _wizFieldsImovel(d) {
       </div>
       <div class="form-group">
         <label class="form-label">FGTS (opcional)</label>
-        <input type="number" id="wizFgts" class="form-input" placeholder="0,00" value="${meta.fgts||''}">
+        <input type="text" inputmode="numeric" id="wizFgts" class="form-input" placeholder="0,00" value="${meta.fgts||''}" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
       </div>
     </div>
     <div class="form-group">
@@ -1111,8 +1275,8 @@ function _renderWizItem(it, i) {
     ${it.is_ai_suggested ? '<span class="drm-ai-badge" title="Sugerido por IA">✨</span>' : ''}
     <input type="text" class="form-input drm-wiz-item-name" value="${_esc(it.name||'')}"
       oninput="_updateWizItem(${i},'name',this.value)">
-    <input type="number" class="form-input drm-wiz-item-amt" value="${it.estimated_amount||''}" step="0.01" min="0"
-      oninput="_updateWizItem(${i},'estimated_amount',this.value);_refreshItemsTotal()">
+    <input type="text" inputmode="numeric" class="form-input drm-wiz-item-amt" value="${it.estimated_amount||''}"
+      oninput="_drmAmtInput(this);_updateWizItem(${i},'estimated_amount',_drmAmtVal(this));_refreshItemsTotal()" onblur="_drmAmtBlur(this)">
     <button class="drm-item-del" onclick="_removeWizItem(${i})" title="Remover">✕</button>
   </div>`;
 }
@@ -1158,7 +1322,7 @@ async function wizardAiSuggestItems() {
   const w = _drm.wizard;
   if (!w) return;
 
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  const apiKey = await getGeminiApiKey();
   if (!apiKey || !apiKey.startsWith('AIza')) {
     toast('Configure a chave Gemini para usar sugestões por IA', 'warning');
     return;
@@ -1188,22 +1352,25 @@ async function wizardAiSuggestItems() {
     extra.medico        = document.getElementById('wizMedico')?.value || '';
     extra.clinica       = document.getElementById('wizClinica')?.value || '';
     extra.protese       = document.getElementById('wizProtese')?.value || '';
-    extra.custo_anestesia = parseFloat(document.getElementById('wizCustoAnestesia')?.value) || 0;
-    extra.custo_hospital  = parseFloat(document.getElementById('wizCustoHospital')?.value) || 0;
-    extra.custo_exames    = parseFloat(document.getElementById('wizCustoExames')?.value) || 0;
+    extra.custo_anestesia = _drmAmtVal(document.getElementById('wizCustoAnestesia')) || 0;
+    extra.custo_hospital  = _drmAmtVal(document.getElementById('wizCustoHospital')) || 0;
+    extra.custo_exames    = _drmAmtVal(document.getElementById('wizCustoExames')) || 0;
   } else if (type === 'estudos') {
     extra.tipo_estudo   = document.getElementById('wizTipoEstudo')?.value || '';
     extra.instituicao   = document.getElementById('wizInstituicao')?.value || '';
     extra.pais          = document.getElementById('wizPaisEstudo')?.value || '';
     extra.duracao_meses = parseInt(document.getElementById('wizDuracaoEstudo')?.value) || 0;
-    extra.custo_mensalidade = parseFloat(document.getElementById('wizCustoMensalidade')?.value) || 0;
-    extra.custo_moradia = parseFloat(document.getElementById('wizCustoMoradia')?.value) || 0;
-    extra.custo_passagem = parseFloat(document.getElementById('wizCustoPassagem')?.value) || 0;
+    extra.custo_mensalidade = _drmAmtVal(document.getElementById('wizCustoMensalidade')) || 0;
+    extra.custo_moradia = _drmAmtVal(document.getElementById('wizCustoMoradia')) || 0;
+    extra.custo_passagem = _drmAmtVal(document.getElementById('wizCustoPassagem')) || 0;
     extra.moeda         = document.getElementById('wizMoedaEstudo')?.value || 'BRL';
+  } else if (type === 'outro') {
+    extra.categoria = document.getElementById('wizOutroCategoria')?.value || '';
+    extra.prazo_meses = parseInt(document.getElementById('wizOutroPrazo')?.value) || 0;
+    extra.detalhes  = document.getElementById('wizOutroDetalhes')?.value || '';
   }
 
-  const prompt = `Você é um planejador financeiro. Sugira componentes de custo para o sonho abaixo.
-Tipo: ${type}
+  const prompt = `Tipo: ${type}
 Título: ${title}
 Valor total: R$ ${amount}
 Contexto: ${JSON.stringify(extra)}
@@ -1218,19 +1385,16 @@ Retorne APENAS JSON sem markdown:
 
 Regras:
 - Sugira 6-12 componentes relevantes para o tipo "${type}"
-- A soma dos valores deve ser próxima ao valor total: R$ ${amount}
+- A soma dos valores deve ser próxima ao valor total: R$ \${amount}
 - Valores em BRL, realistas para o Brasil em 2025`;
 
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${RECEIPT_AI_MODEL}:generateContent?key=${apiKey}`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 800 } }),
+    const _d3 = await geminiRetryFetch(url, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.4, maxOutputTokens: 800 },
     });
-    const body = await resp.json();
-    const raw  = body?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const result = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    const result = _parseGeminiJSON(_d3);
 
     const newItems = (result.componentes || []).map(c => ({
       name: c.nome,
@@ -1255,7 +1419,7 @@ window.wizardAiSuggestItems = wizardAiSuggestItems;
 function _wizStep4() {
   const w = _drm.wizard;
   const title    = document.getElementById('wizTitle')?.value || w.data?.title || '—';
-  const amount   = parseFloat(document.getElementById('wizAmount')?.value || w.data?.target_amount || 0);
+  const amount   = (_drmAmtVal(document.getElementById('wizAmount')) || parseFloat(w.data?.target_amount) || 0);
   const date     = document.getElementById('wizDate')?.value || w.data?.target_date || '';
   const priority = parseInt(document.getElementById('wizPriority')?.value || w.data?.priority || 1);
   const items    = w.items || [];
@@ -1364,6 +1528,34 @@ function wizardNext() {
         fgts:       document.getElementById('wizFgts')?.value || '',
         taxa_juros: document.getElementById('wizJuros')?.value || '',
       };
+    } else if (w.type === 'cirurgia_plastica') {
+      w.data.ai_generated_fields_json = {
+        tipo_cirurgia:   document.getElementById('wizTipoCirurgia')?.value || '',
+        medico:          document.getElementById('wizMedico')?.value || '',
+        clinica:         document.getElementById('wizClinica')?.value || '',
+        protese:         document.getElementById('wizProtese')?.value || '',
+        custo_medico:    _drmAmtVal(document.getElementById('wizCustoMedico')) || 0,
+        custo_anestesia: _drmAmtVal(document.getElementById('wizCustoAnestesia')) || 0,
+        custo_hospital:  _drmAmtVal(document.getElementById('wizCustoHospital')) || 0,
+        custo_exames:    _drmAmtVal(document.getElementById('wizCustoExames')) || 0,
+      };
+    } else if (w.type === 'estudos') {
+      w.data.ai_generated_fields_json = {
+        tipo_estudo:      document.getElementById('wizTipoEstudo')?.value || '',
+        instituicao:      document.getElementById('wizInstituicao')?.value || '',
+        pais:             document.getElementById('wizPaisEstudo')?.value || '',
+        duracao_meses:    parseInt(document.getElementById('wizDuracaoEstudo')?.value) || 0,
+        custo_mensalidade: _drmAmtVal(document.getElementById('wizCustoMensalidade')) || 0,
+        custo_moradia:    _drmAmtVal(document.getElementById('wizCustoMoradia')) || 0,
+        custo_passagem:   _drmAmtVal(document.getElementById('wizCustoPassagem')) || 0,
+        moeda:            document.getElementById('wizMoedaEstudo')?.value || 'BRL',
+      };
+    } else if (w.type === 'outro') {
+      w.data.ai_generated_fields_json = {
+        categoria:    document.getElementById('wizOutroCategoria')?.value || '',
+        prazo_meses:  parseInt(document.getElementById('wizOutroPrazo')?.value) || 0,
+        detalhes:     document.getElementById('wizOutroDetalhes')?.value || '',
+      };
     }
     w.step = 3;
   } else if (w.step === 3) {
@@ -1431,21 +1623,21 @@ function _wizFieldsCirurgia(d) {
   <div class="drm-form-row">
     <div class="form-group">
       <label class="form-label">Honorários do médico (R$)</label>
-      <input type="number" id="wizCustoMedico" class="form-input" placeholder="0,00" min="0" step="0.01" value="${meta.custo_medico||''}" oninput="_wizSomaCirurgia()">
+      <input type="text" inputmode="numeric" id="wizCustoMedico" class="form-input" placeholder="0,00" value="${meta.custo_medico||''}" oninput="_wizSomaCirurgia()" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
     </div>
     <div class="form-group">
       <label class="form-label">Anestesia (R$)</label>
-      <input type="number" id="wizCustoAnestesia" class="form-input" placeholder="0,00" min="0" step="0.01" value="${meta.custo_anestesia||''}" oninput="_wizSomaCirurgia()">
+      <input type="text" inputmode="numeric" id="wizCustoAnestesia" class="form-input" placeholder="0,00" value="${meta.custo_anestesia||''}" oninput="_wizSomaCirurgia()" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
     </div>
   </div>
   <div class="drm-form-row">
     <div class="form-group">
       <label class="form-label">Hospital / Clínica (R$)</label>
-      <input type="number" id="wizCustoHospital" class="form-input" placeholder="0,00" min="0" step="0.01" value="${meta.custo_hospital||''}" oninput="_wizSomaCirurgia()">
+      <input type="text" inputmode="numeric" id="wizCustoHospital" class="form-input" placeholder="0,00" value="${meta.custo_hospital||''}" oninput="_wizSomaCirurgia()" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
     </div>
     <div class="form-group">
       <label class="form-label">Exames pré-op (R$)</label>
-      <input type="number" id="wizCustoExames" class="form-input" placeholder="0,00" min="0" step="0.01" value="${meta.custo_exames||''}" oninput="_wizSomaCirurgia()">
+      <input type="text" inputmode="numeric" id="wizCustoExames" class="form-input" placeholder="0,00" value="${meta.custo_exames||''}" oninput="_wizSomaCirurgia()" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
     </div>
   </div>
   <div style="margin-top:6px;padding:8px 12px;background:var(--accent-lt);border-radius:8px;font-size:.8rem;color:var(--accent);font-weight:600" id="wizCirurgiaTotal" style="display:none"></div>`;
@@ -1513,18 +1705,18 @@ function _wizFieldsEstudos(d) {
     </div>
     <div class="form-group">
       <label class="form-label">Mensalidade</label>
-      <input type="number" id="wizCustoMensalidade" class="form-input" placeholder="0,00" min="0" step="0.01" value="${meta.custo_mensalidade||''}" oninput="_wizSomaEstudos()">
+      <input type="text" inputmode="numeric" id="wizCustoMensalidade" class="form-input" placeholder="0,00" value="${meta.custo_mensalidade||''}" oninput="_wizSomaEstudos()" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
     </div>
   </div>
   <div class="drm-wiz-section-title" style="margin-top:10px">✈️ Custos Adicionais</div>
   <div class="drm-form-row">
     <div class="form-group">
       <label class="form-label">Moradia (por mês)</label>
-      <input type="number" id="wizCustoMoradia" class="form-input" placeholder="0,00" min="0" step="0.01" value="${meta.custo_moradia||''}" oninput="_wizSomaEstudos()">
+      <input type="text" inputmode="numeric" id="wizCustoMoradia" class="form-input" placeholder="0,00" value="${meta.custo_moradia||''}" oninput="_wizSomaEstudos()" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
     </div>
     <div class="form-group">
       <label class="form-label">Passagem (total)</label>
-      <input type="number" id="wizCustoPassagem" class="form-input" placeholder="0,00" min="0" step="0.01" value="${meta.custo_passagem||''}" oninput="_wizSomaEstudos()">
+      <input type="text" inputmode="numeric" id="wizCustoPassagem" class="form-input" placeholder="0,00" value="${meta.custo_passagem||''}" oninput="_wizSomaEstudos()" oninput="_drmAmtInput(this)" onblur="_drmAmtBlur(this)">
     </div>
   </div>
   <div style="margin-top:6px;padding:8px 12px;background:var(--accent-lt);border-radius:8px;font-size:.8rem;color:var(--accent);font-weight:600" id="wizEstudosTotal"></div>`;
@@ -1532,9 +1724,9 @@ function _wizFieldsEstudos(d) {
 
 function _wizSomaEstudos() {
   const meses       = parseInt(document.getElementById('wizDuracaoEstudo')?.value) || 1;
-  const mensalidade = parseFloat(document.getElementById('wizCustoMensalidade')?.value) || 0;
-  const moradia     = parseFloat(document.getElementById('wizCustoMoradia')?.value) || 0;
-  const passagem    = parseFloat(document.getElementById('wizCustoPassagem')?.value) || 0;
+  const mensalidade = _drmAmtVal(document.getElementById('wizCustoMensalidade')) || 0;
+  const moradia     = _drmAmtVal(document.getElementById('wizCustoMoradia')) || 0;
+  const passagem    = _drmAmtVal(document.getElementById('wizCustoPassagem')) || 0;
   const total = (mensalidade + moradia) * meses + passagem;
   const el = document.getElementById('wizEstudosTotal');
   if (el) {
@@ -1546,6 +1738,38 @@ function _wizSomaEstudos() {
   }
 }
 window._wizSomaEstudos = _wizSomaEstudos;
+
+// ── Campos específicos: Outro Sonho ───────────────────────────────────────
+function _wizFieldsOutro(d) {
+  const meta = typeof d.ai_generated_fields_json === 'object' ? (d.ai_generated_fields_json || {}) : {};
+  return `
+  <div class="drm-wiz-section-title">🌟 Detalhes do Objetivo</div>
+  <div class="drm-form-row">
+    <div class="form-group">
+      <label class="form-label">Categoria do Objetivo</label>
+      <select id="wizOutroCategoria" class="form-input">
+        <option value="">— Selecionar —</option>
+        <option value="eletronico" ${meta.categoria==='eletronico'?'selected':''}>📱 Eletrônico / Gadget</option>
+        <option value="movel" ${meta.categoria==='movel'?'selected':''}>🛋️ Móvel / Decoração</option>
+        <option value="evento" ${meta.categoria==='evento'?'selected':''}>🎉 Evento / Celebração</option>
+        <option value="negocio" ${meta.categoria==='negocio'?'selected':''}>💼 Negócio / Empreendimento</option>
+        <option value="saude" ${meta.categoria==='saude'?'selected':''}>🏥 Saúde / Bem-estar</option>
+        <option value="esporte" ${meta.categoria==='esporte'?'selected':''}>⚽ Esporte / Lazer</option>
+        <option value="reserva" ${meta.categoria==='reserva'?'selected':''}>🏦 Reserva de Emergência</option>
+        <option value="outro" ${meta.categoria==='outro'?'selected':''}>🌟 Outro</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Prazo desejado (meses)</label>
+      <input type="number" id="wizOutroPrazo" class="form-input" placeholder="Ex: 12" min="1" max="600" value="${meta.prazo_meses||''}">
+    </div>
+  </div>
+  <div class="form-group">
+    <label class="form-label">Detalhes adicionais</label>
+    <textarea id="wizOutroDetalhes" class="form-input" rows="3" placeholder="Descreva o que você quer alcançar…" style="resize:vertical">${_esc(meta.detalhes||'')}</textarea>
+  </div>`;
+}
+window._wizFieldsOutro = _wizFieldsOutro;
 
 async function saveDream() {
   const w = _drm.wizard;

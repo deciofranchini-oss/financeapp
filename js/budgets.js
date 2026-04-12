@@ -9,8 +9,8 @@ let _dbHasBudgetType = null; // null = ainda não testado
 
 async function _checkBudgetSchema() {
   if (_dbHasBudgetType !== null) return _dbHasBudgetType;
-  // Testa se a coluna budget_type existe com uma query leve
-  const { error } = await famQ(sb.from('budgets').select('budget_type').limit(1));
+  // Testa se as colunas novas existem com uma query leve
+  const { error } = await famQ(sb.from('budgets').select('budget_type,paused').limit(1));
   _dbHasBudgetType = !error || !error.message?.includes('budget_type');
   return _dbHasBudgetType;
 }
@@ -32,7 +32,16 @@ function _categoryFamily(catId) {
 function _buildRawSpending(txs) {
   const map = {};
   (txs || []).forEach(t => {
-    if (t.category_id) map[t.category_id] = (map[t.category_id] || 0) + Math.abs(t.amount);
+    // Se tem category_splits com ≥2 itens, distribui pelos splits
+    if (Array.isArray(t.category_splits) && t.category_splits.length >= 2) {
+      t.category_splits.forEach(s => {
+        if (s.category_id && s.amount > 0) {
+          map[s.category_id] = (map[s.category_id] || 0) + Math.abs(s.amount);
+        }
+      });
+    } else if (t.category_id) {
+      map[t.category_id] = (map[t.category_id] || 0) + Math.abs(t.amount);
+    }
   });
   return map;
 }
@@ -69,8 +78,13 @@ function _populateHistCat() {
 
 function setBudgetView(view) {
   _budgetView = view;
-  document.getElementById('budgetTabMonthly')?.classList.toggle('active', view === 'monthly');
-  document.getElementById('budgetTabAnnual')?.classList.toggle('active',  view === 'annual');
+  // Support both old .tab class and new .budget-period-btn class
+  ['budgetTabMonthly', 'budgetTabAnnual'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.classList.toggle('active', id === (view === 'monthly' ? 'budgetTabMonthly' : 'budgetTabAnnual'));
+    }
+  });
   const mp = document.getElementById('budgetMonthPicker');
   const yp = document.getElementById('budgetYearPicker');
   if (mp) mp.style.display = view === 'monthly' ? '' : 'none';
@@ -103,6 +117,7 @@ async function loadBudgets() {
 
   // 1. Buscar orçamentos do período
   let bq = famQ(sb.from('budgets').select('*, categories(id,name,icon,color,parent_id)'));
+  // Mostrar ativos e pausados; pausados aparecem em seção separada
 
   if (hasNewSchema) {
     bq = bq.eq('budget_type', _budgetView);
@@ -140,7 +155,7 @@ async function loadBudgets() {
   _budgetCache = budgets || [];
 
   // 2. Buscar gastos do período
-  let txQ = famQ(sb.from('transactions').select('category_id,amount')).lt('amount', 0);
+  let txQ = famQ(sb.from('transactions').select('category_id,amount,category_splits')).lt('amount', 0);
   if (_budgetView === 'monthly') {
     const y = String(period.year), m = String(period.month).padStart(2, '0');
     const last = String(_lastDayOf(y, m)).padStart(2, '0');
@@ -150,6 +165,17 @@ async function loadBudgets() {
   }
   const { data: txs } = await txQ;
   const raw = _buildRawSpending(txs);
+
+  // 2b. Auto-project recurring budgets from previous month if current period is empty
+  if (hasNewSchema && _budgetView === 'monthly' && _budgetCache.length === 0) {
+    await _autoProjectRecurringBudgets(period);
+    // Re-fetch after projection
+    let bq2 = famQ(sb.from('budgets').select('*, categories(id,name,icon,color,parent_id)'))
+      .eq('budget_type', 'monthly')
+      .eq('month', `${period.year}-${String(period.month).padStart(2,'0')}-01`);
+    const { data: projectedBudgets } = await bq2;
+    _budgetCache = projectedBudgets || [];
+  }
 
   // 3. Gasto por orçamento (soma hierarquia)
   const resolved = {};
@@ -172,12 +198,23 @@ async function loadBudgets() {
     return;
   }
 
-  // 5. Ordenar: estourado primeiro, depois % desc
-  const sorted = [..._budgetCache].sort((a, b) =>
-    (resolved[b.id] / (b.amount || 1)) - (resolved[a.id] / (a.amount || 1))
-  );
+  // 5. Separar pausados dos ativos; ordenar: estourado primeiro, depois % desc
+  const activeBudgets = _budgetCache.filter(b => !b.paused);
+  const pausedBudgets = _budgetCache.filter(b =>  b.paused);
+  const _sortFn = (a, b) =>
+    (resolved[b.id] / (b.amount || 1)) - (resolved[a.id] / (a.amount || 1));
+  const sortedActive = [...activeBudgets].sort(_sortFn);
+  const sortedPaused = [...pausedBudgets].sort(_sortFn);
 
-  grid.innerHTML = sorted.map(b => _budgetCardHTML(b, resolved[b.id], raw)).join('');
+  let gridHtml = sortedActive.map(b => _budgetCardHTML(b, resolved[b.id], raw)).join('');
+  if (sortedPaused.length) {
+    gridHtml += `<div style="grid-column:1/-1;margin-top:16px;margin-bottom:4px;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);display:flex;align-items:center;gap:8px">
+      <span>⏸ Orçamentos pausados (${sortedPaused.length})</span>
+      <div style="flex:1;height:1px;background:var(--border)"></div>
+    </div>`;
+    gridHtml += sortedPaused.map(b => _budgetCardHTML(b, resolved[b.id], raw)).join('');
+  }
+  grid.innerHTML = gridHtml;
 }
 
 // ── Budget Drill-Through ────────────────────────────────────────────────
@@ -278,16 +315,14 @@ function _budgetCardHTML(b, spent, raw) {
         }).join('')}
       </div>` : '';
 
+  const isPaused   = !!b.paused;
+  const isRecurring = (b.auto_reset ?? true) && _budgetView === 'monthly';
   const badgesHtml = [
-    (b.auto_reset ?? true) && _budgetView === 'monthly'
-      ? `<span class="budget-badge" style="background:#e0f2fe;color:#0369a1" title="Reseta todo mês">🔄</span>` : '',
-    _budgetView === 'annual'
-      ? `<span class="budget-badge" style="background:#f0fdf4;color:#15803d">📆</span>` : '',
-    b.notes
-      ? `<span class="budget-badge" style="background:var(--bg2);color:var(--muted)" title="${esc(b.notes)}">📝</span>` : '',
+    isPaused
+      ? `<span class="budget-badge" style="background:#fef3c7;color:#b45309;font-weight:700;font-size:.65rem">⏸ Pausado</span>` : '',
   ].filter(Boolean).join('');
 
-  return `<div class="budget-card${over ? ' budget-card--over' : near ? ' budget-card--near' : ''}" style="cursor:pointer" onclick="openBudgetDrilldown('${b.id}','${(cat.name||'').replace(/'/g,'\\u0027')}')">
+  return `<div class="budget-card${over ? ' budget-card--over' : near ? ' budget-card--near' : ''}${isPaused ? ' budget-card--paused' : ''}" style="cursor:pointer;${isPaused ? 'opacity:.72' : ''}" onclick="openBudgetDrilldown('${b.id}','${(cat.name||'').replace(/'/g,'\\u0027')}')">
     <div class="budget-card-stripe" style="background:${color}"></div>
 
     <div class="budget-card-header">
@@ -300,11 +335,21 @@ function _budgetCardHTML(b, spent, raw) {
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-        ${badgesHtml}
+        ${isPaused ? `<span class="budget-badge" style="background:#fef3c7;color:#b45309;font-weight:700;font-size:.65rem">⏸ Pausado</span>` : ''}
+        <button class="btn-icon" onclick="event.stopPropagation();toggleBudgetPaused('${b.id}',${isPaused})"
+          title="${isPaused ? 'Retomar orçamento' : 'Pausar orçamento'}"
+          style="color:${isPaused ? 'var(--accent)' : 'var(--muted)'}"
+          >${isPaused ? '▶️' : '⏸'}</button>
         <button class="btn-icon" onclick="event.stopPropagation();openBudgetModal('${b.id}')" title="Editar">✏️</button>
         <button class="btn-icon" onclick="event.stopPropagation();deleteBudget('${b.id}')" title="Excluir" style="color:var(--red)">🗑️</button>
       </div>
     </div>
+
+    ${(isRecurring && !isPaused) || _budgetView==='annual' || b.notes ? `<div style="padding:2px 10px 7px;display:flex;gap:5px;flex-wrap:wrap">
+      ${isRecurring && !isPaused ? `<span class="budget-badge" style="background:#e0f2fe;color:#0369a1;font-size:.7rem" title="Recorrente — reseta todo mês automaticamente">🔄 Recorrente</span>` : ''}
+      ${_budgetView==='annual' ? `<span class="budget-badge" style="background:#f0fdf4;color:#15803d;font-size:.7rem">📆 Anual</span>` : ''}
+      ${b.notes ? `<span class="budget-badge" style="background:var(--bg2);color:var(--muted);font-size:.7rem" title="${esc(b.notes)}">📝 Nota</span>` : ''}
+    </div>` : ''}
 
     <div class="budget-amounts">
       <div>
@@ -369,7 +414,7 @@ async function loadBudgetHistory() {
     .in('month', months);
 
   const family = _categoryFamily(catId);
-  const { data: txAll } = await famQ(sb.from('transactions').select('category_id,amount,date'))
+  const { data: txAll } = await famQ(sb.from('transactions').select('category_id,amount,date,category_splits'))
     .lt('amount', 0)
     .gte('date', firstMonth)
     .lte('date', lastDate)
@@ -476,6 +521,10 @@ function openBudgetModal(id = '') {
   const arEl = document.getElementById('budgetAutoReset');
   if (arEl) arEl.checked = existing ? !!(existing.auto_reset ?? true) : true;
 
+  // Pausado
+  const pausedEl = document.getElementById('budgetPaused');
+  if (pausedEl) pausedEl.checked = !!(existing?.paused);
+
   // Notas
   const notesEl = document.getElementById('budgetNotes');
   if (notesEl) notesEl.value = existing?.notes || '';
@@ -486,6 +535,10 @@ function openBudgetModal(id = '') {
     const fmSel = document.getElementById('budgetFamilyMember');
     if (fmSel) fmSel.value = existing?.family_member_id || '';
   }
+
+  // Campo "pausar" só aparece em edição (orçamentos novos sempre começam ativos)
+  const pausedGroup = document.getElementById('budgetPausedGroup');
+  if (pausedGroup) pausedGroup.style.display = id ? '' : 'none';
 
   openModal('budgetModal');
 }
@@ -554,7 +607,13 @@ async function saveBudget() {
     data.auto_reset  = btype === 'monthly' ? autoReset : false;
     data.year        = year;
     data.notes       = notes;
-    // updated_at omitido — coluna não existe no schema atual
+    // paused — só salvar em edições (novo orçamento começa ativo)
+    if (id) {
+      const pausedEl = document.getElementById('budgetPaused');
+      data.paused = pausedEl ? !!pausedEl.checked : false;
+    } else {
+      data.paused = false;
+    }
   }
   // family_member_id — works if column exists (silently ignored if not)
   const fmMemberId = document.getElementById('budgetFamilyMember')?.value || null;
@@ -591,7 +650,59 @@ async function deleteBudget(id) {
   loadBudgets();
 }
 
+// ── Toggle pausa de orçamento recorrente ──────────────────────────────────
+async function toggleBudgetPaused(id, currentlyPaused) {
+  const newPaused = !currentlyPaused;
+  const { error } = await famQ(
+    sb.from('budgets').update({ paused: newPaused }).eq('id', id)
+  );
+  if (error) { toast('Erro ao ' + (newPaused ? 'pausar' : 'retomar') + ': ' + error.message, 'error'); return; }
+  toast(newPaused ? '⏸ Orçamento pausado' : '▶️ Orçamento retomado', 'success');
+  await loadBudgets();
+}
+window.toggleBudgetPaused = toggleBudgetPaused;
+
+
 // ── Init ──────────────────────────────────────────────────────────────────
+
+// ── Estado das abas principais de Orçamentos ─────────────────────────────────
+let _budgetMainTab = 'budgets'; // 'budgets' | 'objectives'
+
+function switchBudgetMainTab(tab) {
+  _budgetMainTab = tab;
+
+  // Atualizar botões
+  document.getElementById('budgetMainTabBudgets')?.classList.toggle('active', tab === 'budgets');
+  document.getElementById('budgetMainTabObjectives')?.classList.toggle('active', tab === 'objectives');
+
+  // Mostrar/ocultar painéis
+  const panelBudgets    = document.getElementById('budgetPanelBudgets');
+  const panelObjectives = document.getElementById('budgetPanelObjectives');
+  if (panelBudgets)    panelBudgets.style.display    = tab === 'budgets'    ? '' : 'none';
+  if (panelObjectives) panelObjectives.style.display  = tab === 'objectives' ? '' : 'none';
+
+  if (tab === 'objectives') {
+    // Reset container display antes de render (evita estado flex travado)
+    const grid = document.getElementById('objectivesGrid');
+    if (grid) {
+      grid.style.display = '';
+      grid.style.alignItems = '';
+      grid.style.justifyContent = '';
+      grid.style.minHeight = '';
+    }
+    // Carregar objetivos quando a aba é aberta
+    if (typeof renderObjectivesPage === 'function') {
+      try {
+        renderObjectivesPage();
+      } catch(e) {
+        console.warn('[objectives] renderObjectivesPage:', e.message);
+        if (grid) grid.innerHTML = `<div style="color:var(--red);padding:16px">Erro ao carregar: ${e.message}</div>`;
+      }
+    } else {
+      console.warn('[objectives] renderObjectivesPage not yet defined — objectives.js may not be loaded');
+    }
+  }
+}
 
 function initBudgetsPage() {
   const now     = new Date();
@@ -604,7 +715,12 @@ function initBudgetsPage() {
   // Resetar cache de schema para re-testar a cada visita (banco pode ter sido migrado)
   _dbHasBudgetType = null;
 
-  setBudgetView(_budgetView);
+  // Garantir painel correto visível
+  if (_budgetMainTab === 'budgets') {
+    setBudgetView(_budgetView);
+  } else {
+    switchBudgetMainTab(_budgetMainTab);
+  }
 }
 
 
@@ -618,3 +734,52 @@ function getPeriodColor(period) {
     default: return '#1F6B4F';
   }
 }
+
+// ── Auto-project recurring budgets ──────────────────────────────────────────
+// If no budgets exist for current month but recurring ones exist from last month,
+// automatically create copies for the current month.
+async function _autoProjectRecurringBudgets(period) {
+  try {
+    // Look for recurring budgets in previous month
+    const prevDate = new Date(period.year, period.month - 1, 1);
+    prevDate.setMonth(prevDate.getMonth() - 1);
+    const prevY = prevDate.getFullYear();
+    const prevM = prevDate.getMonth() + 1;
+    const prevMonthStr = `${prevY}-${String(prevM).padStart(2,'0')}-01`;
+    const curMonthStr  = `${period.year}-${String(period.month).padStart(2,'0')}-01`;
+
+    const { data: prevBudgets } = await famQ(
+      sb.from('budgets').select('category_id,amount,budget_type,family_member_id,notes')
+    ).eq('budget_type','monthly').eq('month', prevMonthStr).eq('auto_reset', true);
+
+    if (!prevBudgets || !prevBudgets.length) return;
+
+    // Insert for current month (ignore conflicts)
+    const toInsert = prevBudgets.map(b => ({
+      family_id:        famId(),
+      category_id:      b.category_id,
+      amount:           b.amount,
+      month:            curMonthStr,
+      budget_type:      'monthly',
+      auto_reset:       true,
+      paused:           false,
+      notes:            b.notes || null,
+      family_member_id: b.family_member_id || null,
+    }));
+
+    await sb.from('budgets')
+      .upsert(toInsert, { onConflict: 'family_id,category_id,month,budget_type', ignoreDuplicates: true });
+  } catch(e) {
+    console.debug('[budget auto-project]', e.message);
+  }
+}
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window.initBudgetsPage                     = initBudgetsPage;
+window.loadBudgets                         = loadBudgets;
+window.openBudgetModal                     = openBudgetModal;
+window.saveBudget                          = saveBudget;
+window.setBudgetModalType                  = setBudgetModalType;
+window.setBudgetView                       = setBudgetView;
+window.switchBudgetMainTab                 = switchBudgetMainTab;
+window._autoProjectRecurringBudgets        = _autoProjectRecurringBudgets;

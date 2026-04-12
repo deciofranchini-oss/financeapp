@@ -180,7 +180,7 @@ function payeeRow(p) {
   const txCount = _payeeTxCounts[p.id] || 0;
   // Feature 4: badge clicável abre histórico
   const txBadge = txCount > 0
-    ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.72rem;font-weight:600;color:var(--accent);background:var(--accent-lt);border:1px solid var(--accent)30;border-radius:20px;padding:1px 7px;cursor:pointer" onclick="event.stopPropagation();openPayeeHistory('${p.id}','${esc(p.name)}')" title="Ver histórico">${txCount} tx 📋</span>`
+    ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.72rem;font-weight:600;color:var(--accent);background:var(--accent-lt);border:1px solid var(--accent)30;border-radius:20px;padding:1px 7px;cursor:pointer" onclick="event.stopPropagation();typeof openPayeeDetailModal==='function'?openPayeeDetailModal('${p.id}'):openPayeeHistory('${p.id}','${esc(p.name)}')" title="Ver panorâmica">${txCount} tx 📋</span>`
     : `<span style="font-size:.72rem;color:var(--muted)">—</span>`;
   const locParts = [p.address, p.city, p.state_uf].filter(Boolean);
   const locLine  = locParts.length ? locParts.join(', ') : '';
@@ -193,27 +193,33 @@ function payeeRow(p) {
   ].filter(Boolean);
   // Feature 4: linha clicável quando há transações
   const rowAttrs = txCount > 0
-    ? `onclick="openPayeeHistory('${p.id}','${esc(p.name)}')" style="cursor:pointer"`
+    ? `onclick="typeof openPayeeDetailModal==='function'?openPayeeDetailModal('${p.id}'):openPayeeHistory('${p.id}','${esc(p.name)}')" style="cursor:pointer"`
     : '';
-  return `<tr class="payee-row py2-row" ${rowAttrs}>
-    <td>
-      <div class="py2-name-cell">
-        <div class="py2-avatar" style="background:${avatarColor}18;border:1.5px solid ${avatarColor}35;color:${avatarColor}">${initials}</div>
-        <div class="py2-name-body">
-          <div class="py2-name">${esc(p.name)}</div>
-          ${contactChips.length ? `<div class="py2-chips">${contactChips.join('')}</div>` : ''}
-          ${p.notes ? `<div class="py2-notes">${esc(p.notes)}</div>` : ''}
-        </div>
+  return `<div class="py3-card" ${rowAttrs}>
+    <!-- Left: avatar + info -->
+    <div class="py3-card-left">
+      <div class="py3-avatar" style="--av-clr:${avatarColor}">${initials}</div>
+      <div class="py3-info">
+        <div class="py3-name">${esc(p.name)}</div>
+        ${p.categories?.name ? `<span class="py3-cat">${esc(p.categories.name)}</span>` : ''}
+        ${contactChips.length ? `<div class="py3-chips">${contactChips.slice(0,3).join('')}</div>` : ''}
       </div>
-    </td>
-    <td>
-      ${p.categories?.name
-        ? `<span class="py2-cat-badge">${esc(p.categories.name)}</span>`
-        : `<span class="py2-cat-none">—</span>`}
-    </td>
-    <td style="text-align:center">${txBadge}</td>
-    <td>
-      <div class="payee-row-actions" style="display:flex;gap:4px;justify-content:flex-end">
+    </div>
+    <!-- Right: tx badge + actions -->
+    <div class="py3-card-right">
+      <div class="py3-tx">${txBadge}</div>
+      <div class="py3-actions">
+        ${(() => {
+              const _isActive = window._iofPayeeId === p.id;
+              const _hasOther = !!window._iofPayeeId && window._iofPayeeId !== p.id;
+              const _color    = _isActive ? '#dc2626' : _hasOther ? 'var(--border)' : 'var(--muted)';
+              const _bg       = _isActive ? 'rgba(220,38,38,.1)' : _hasOther ? 'var(--surface)' : 'var(--surface2)';
+              const _cursor   = _hasOther ? 'not-allowed' : 'pointer';
+              const _opacity  = _hasOther ? '0.35' : '1';
+              const _events   = _hasOther ? 'none' : 'auto';
+              const _title    = _isActive ? 'IOF ativo (clique para liberar seleção)' : _hasOther ? 'Desative o IOF atual para selecionar outro' : 'Definir como beneficiário padrão do IOF';
+              return `<button class="py2-action-btn" onclick="event.stopPropagation();setIofPayeeTarget('${p.id}','${esc(p.name)}')" title="${_title}" style="font-size:.68rem;font-weight:700;color:${_color};padding:3px 7px;border-radius:6px;background:${_bg};cursor:${_cursor};opacity:${_opacity};pointer-events:${_events}">IOF</button>`;
+            })()}
         <button class="py2-action-btn" onclick="event.stopPropagation();openPayeeModal('${p.id}')" title="Editar">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         </button>
@@ -221,8 +227,8 @@ function payeeRow(p) {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
         </button>
       </div>
-    </td>
-  </tr>`;
+    </div>
+  </div>`;
 }
 
 // Feature 4: modal com histórico de transações do beneficiário (últimos 6 meses)
@@ -295,60 +301,131 @@ const PAYEE_GROUP_DEF = [
 const payeeGroupState = { beneficiario: true, fonte_pagadora: true, ambos: true }; // true = expanded
 
 function renderPayees(filter='', typeFilter='') {
-  let ps = state.payees;
-  if(filter) ps = ps.filter(p => p.name.toLowerCase().includes(filter.toLowerCase()));
-  if(typeFilter) ps = ps.filter(p => p.type === typeFilter);
+  let ps = state.payees || [];
+  if (filter)     ps = ps.filter(p => {
+    const q = filter.toLowerCase();
+    return (p.name||'').toLowerCase().includes(q)
+      || (p.cnpj_cpf||'').toLowerCase().includes(q)
+      || (p.city||'').toLowerCase().includes(q)
+      || (p.notes||'').toLowerCase().includes(q);
+  });
+  if (typeFilter) ps = ps.filter(p => p.type === typeFilter);
 
-  // Summary chips
-  const bar = document.getElementById('payeeSummaryBar');
-  if(bar) {
-    const all = typeFilter ? [] : PAYEE_GROUP_DEF.map(g => {
-      const cnt = ps.filter(p => p.type === g.key).length;
-      if(!cnt) return '';
-      return `<div class="payee-summary-chip" onclick="scrollPayeeGroup('${g.key}')" style="border-left:3px solid ${g.color}">
-        <span>${g.icon}</span>
-        <span style="font-weight:600;color:var(--text)">${g.label}</span>
-        <span class="badge" style="background:${g.colorLt};color:${g.color};border:1px solid ${g.color}30">${cnt}</span>
-      </div>`;
-    });
-    bar.innerHTML = all.join('');
-    bar.style.display = ps.length && !typeFilter ? 'flex' : 'none';
+  // Update hero stats
+  const all = state.payees || [];
+  const heroCount = document.getElementById('pyeHeroCount');
+  const heroSub   = document.getElementById('pyeHeroSub');
+  const statsRow  = document.getElementById('pyeStatsRow');
+  if (heroCount) heroCount.textContent = ps.length;
+  if (heroSub) {
+    const nBenef  = all.filter(p=>p.type==='beneficiario').length;
+    const nFonte  = all.filter(p=>p.type==='fonte_pagadora').length;
+    const nAmbos  = all.filter(p=>p.type==='ambos').length;
+    heroSub.textContent = `${nBenef} beneficiários · ${nFonte} fontes · ${nAmbos} ambos`;
+  }
+  if (statsRow) {
+    statsRow.style.display = ps.length ? '' : 'none';
+    const nBenef = all.filter(p=>p.type==='beneficiario').length;
+    const nFonte = all.filter(p=>p.type==='fonte_pagadora').length;
+    const nAmbos = all.filter(p=>p.type==='ambos').length;
+    const bv = document.getElementById('pyeStatBenefVal');
+    const fv = document.getElementById('pyeStatFonteVal');
+    const av = document.getElementById('pyeStatAmbosVal');
+    if (bv) bv.textContent = nBenef;
+    if (fv) fv.textContent = nFonte;
+    if (av) av.textContent = nAmbos;
   }
 
   const container = document.getElementById('payeeGroups');
-  if(!container) return;
+  if (!container) return;
 
-  if(!ps.length) {
-    container.innerHTML = '<div class="card" style="text-align:center;padding:40px;color:var(--muted);font-size:.875rem">Nenhum beneficiário encontrado</div>';
+  if (!ps.length) {
+    container.innerHTML = `
+      <div class="pye-empty">
+        <div class="pye-empty-icon">${filter ? '🔍' : '👥'}</div>
+        <div class="pye-empty-title">${filter ? 'Nenhum resultado' : 'Nenhum beneficiário cadastrado'}</div>
+        <div class="pye-empty-sub">${filter ? 'Tente outros termos de busca.' : 'Cadastre quem recebe ou faz pagamentos para a família.'}</div>
+        ${!filter ? '<button class="btn btn-primary btn-sm" onclick="openPayeeModal()">+ Cadastrar beneficiário</button>' : ''}
+      </div>`;
     return;
   }
 
-  // When filtering by type, show a single flat group
+  // Group by type
   const groups = typeFilter
     ? [{ ...PAYEE_GROUP_DEF.find(g=>g.key===typeFilter)||{key:typeFilter,label:typeFilter,icon:'👤',color:'var(--accent)',colorLt:'var(--accent-lt)'}, items: ps }]
     : PAYEE_GROUP_DEF.map(g => ({ ...g, items: ps.filter(p=>p.type===g.key) })).filter(g=>g.items.length>0);
 
   container.innerHTML = groups.map(g => {
-    const expanded = payeeGroupState[g.key] !== false;
-    return `<div class="payee-group-wrap" id="payeeGroup-${g.key}">
-      <div class="payee-group-header" onclick="togglePayeeGroup('${g.key}')">
-        <div class="payee-group-icon" style="background:${g.colorLt}">${g.icon}</div>
-        <span class="payee-group-title">${g.label}</span>
-        <div class="payee-group-meta">
-          <span class="badge" style="background:${g.colorLt};color:${g.color};border:1px solid ${g.color}30;font-size:.75rem">${g.items.length} registro${g.items.length!==1?'s':''}</span>
-        </div>
-        <span class="payee-group-arrow${expanded?'':' collapsed'}">▼</span>
-      </div>
-      <div class="payee-group-body${expanded?'':' collapsed'}" id="payeeGroupBody-${g.key}">
-        <div class="table-wrap" style="margin:0">
-          <table style="border-radius:0">
-            <thead><tr><th>Nome</th><th>Categoria Padrão</th><th style="width:80px;text-align:center">Transações</th><th style="width:70px"></th></tr></thead>
-            <tbody>${g.items.map(p=>payeeRow(p)).join('')}</tbody>
-          </table>
-        </div>
-      </div>
-    </div>`;
+    const cards = g.items.map(p => _pyeCard(p, g)).join('');
+    return `
+    <div class="pye-section-hdr">
+      <div class="pye-section-icon" style="background:${g.colorLt}">${g.icon}</div>
+      <span class="pye-section-title">${g.label}</span>
+      <span class="pye-section-count" style="background:${g.colorLt};color:${g.color};border:1px solid ${g.color}22">${g.items.length} registro${g.items.length!==1?'s':''}</span>
+    </div>
+    <div class="pye-grid">${cards}</div>`;
   }).join('');
+}
+
+function _pyeCard(p, g) {
+  const initials   = (p.name||'?').trim().split(/\s+/).map(w=>w[0]||'').slice(0,2).join('').toUpperCase();
+  const colors     = ['#2a6049','#1e5ba8','#b45309','#6d28d9','#0e7490','#be185d','#047857','#7c3aed'];
+  const avatarClr  = p.color || colors[(p.name||'').charCodeAt(0) % colors.length];
+  const txCount    = _payeeTxCounts[p.id] || 0;
+  const gColor     = g.color || 'var(--accent)';
+  const gColorLt   = g.colorLt || 'var(--accent-lt)';
+
+  const metaChips = [
+    p.city    ? `<span class="pye-meta-chip">📍 ${esc(p.city)}${p.state_uf?', '+esc(p.state_uf):''}</span>` : '',
+    p.phone   ? `<span class="pye-meta-chip">📞 ${esc(p.phone)}</span>` : '',
+    p.cnpj_cpf? `<span class="pye-meta-chip">🪪 ${esc(p.cnpj_cpf)}</span>` : '',
+    p.website ? `<a class="pye-meta-chip" href="${esc(p.website)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--accent)">🌐 ${esc(p.website.replace(/^https?:\/\//, ''))}</a>` : '',
+  ].filter(Boolean).join('');
+
+  const catBadge = p.categories?.name
+    ? `<span class="pye-card-cat" style="border-color:${p.categories.color||'var(--border)'}20">${esc(p.categories.name)}</span>`
+    : '';
+
+  const txBadge = txCount > 0
+    ? `<span class="pye-tx-badge" onclick="event.stopPropagation();typeof openPayeeDetailModal==='function'?openPayeeDetailModal('${p.id}'):openPayeeHistory('${p.id}','${esc(p.name)}')" title="Ver transações">${txCount} transaç${txCount===1?'ão':'ões'}</span>`
+    : `<span style="font-size:.68rem;color:var(--muted)">Sem transações</span>`;
+
+  const openDetail = `typeof openPayeeDetailModal==='function'?openPayeeDetailModal('${p.id}'):openPayeeHistory('${p.id}','${esc(p.name)}')`;
+
+  return `
+  <div class="pye-card" onclick="${txCount>0?openDetail:'openPayeeModal(\'' + p.id + '\')'}">
+    <div class="pye-card-stripe" style="background:linear-gradient(90deg,${avatarClr},${avatarClr}88)"></div>
+    <div class="pye-card-body">
+      <div class="pye-card-top">
+        <div class="pye-card-avatar" style="background:${avatarClr}18;border:1.5px solid ${avatarClr}35;color:${avatarClr}">${initials}</div>
+        <div class="pye-card-info">
+          <div class="pye-card-name">${esc(p.name)}</div>
+          <span class="pye-card-type" style="background:${gColorLt};color:${gColor}">${g.icon} ${g.label}</span>
+        </div>
+      </div>
+      ${metaChips ? `<div class="pye-card-meta">${metaChips}</div>` : ''}
+      ${catBadge}
+      ${p.notes ? `<div class="pye-card-notes">${esc(p.notes)}</div>` : ''}
+    </div>
+    <div class="pye-card-footer">
+      ${txBadge}
+      <div class="pye-card-actions" onclick="event.stopPropagation()">
+        ${txCount>0?`<button class="pye-icon-btn" onclick="${openDetail}" title="Ver histórico"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></button>`:''}
+        ${(() => {
+          const _isActive = window._iofPayeeId === p.id;
+          const _hasOther = !!window._iofPayeeId && window._iofPayeeId !== p.id;
+          const _color    = _isActive ? '#dc2626' : _hasOther ? 'var(--border)' : 'var(--muted)';
+          const _bg       = _isActive ? 'rgba(220,38,38,.08)' : 'transparent';
+          const _opacity  = _hasOther ? '0.35' : '1';
+          const _events   = _hasOther ? 'none' : 'auto';
+          const _title    = _isActive ? 'IOF ativo — clique para remover' : _hasOther ? 'Desative o IOF atual primeiro' : 'Definir como beneficiário padrão do IOF';
+          return `<button class="pye-icon-btn" onclick="setIofPayeeTarget('${p.id}','${esc(p.name)}')" title="${_title}" style="font-size:.6rem;font-weight:800;letter-spacing:.03em;color:${_color};background:${_bg};opacity:${_opacity};pointer-events:${_events};${_isActive?'border-color:rgba(220,38,38,.3)':''}">IOF</button>`;
+        })()}
+        <button class="pye-icon-btn" onclick="openPayeeModal('${p.id}')" title="Editar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
+        <button class="pye-icon-btn" onclick="typeof openNewTxWithPayee==='function'?openNewTxWithPayee('${p.id}'):openTransactionModal({payee_id:'${p.id}'})" title="Nova transação" style="color:var(--accent);border-color:rgba(42,96,73,.25)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function togglePayeeGroup(key) {
@@ -369,12 +446,22 @@ function scrollPayeeGroup(key) {
 
 function filterPayees(){renderPayees(document.getElementById('payeeSearch').value,document.getElementById('payeeTypeFilter').value);}
 
+function pyeSetView(view) {
+  const isRel = view === 'relatorio';
+  document.getElementById('payeeGroups').style.display      = isRel ? 'none' : '';
+  document.getElementById('payeesReportPanel').style.display = isRel ? ''     : 'none';
+  document.getElementById('pyeTabCadastro').classList.toggle('active', !isRel);
+  document.getElementById('pyeTabRelatorio').classList.toggle('active',  isRel);
+  if (isRel) loadPayeeReport();
+}
+window.pyeSetView = pyeSetView;
+
 function py2SetTypeFilter(btn, type) {
   // Update hidden select
   const sel = document.getElementById('payeeTypeFilter');
   if (sel) sel.value = type;
   // Update pill active state
-  document.querySelectorAll('.py2-type-pill').forEach(b => b.classList.toggle('active', b === btn));
+  document.querySelectorAll('.py2-type-pill,.pye-pill').forEach(b => b.classList.toggle('active', b === btn));
   filterPayees();
 }
 async function openPayeeModal(id=''){
@@ -608,7 +695,7 @@ window.payeeAiSuggestLogo = async function() {
   content.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:.8rem;padding:12px;width:100%">⏳ Buscando sugestões…</div>';
 
   try {
-    const apiKey = await getAppSetting('gemini_api_key', '');
+    const apiKey = await getGeminiApiKey();
     if (!apiKey) { content.innerHTML = '<div style="color:var(--red,#dc2626);font-size:.78rem;padding:8px">Configure a chave Gemini em Configurações → IA</div>'; return; }
 
     const domain = (() => {
@@ -643,38 +730,17 @@ window.payeeAiSuggestLogo = async function() {
       context
     ].join('\n');
 
-    const models = ['gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-1.5-flash'];
-    let lastErr = null;
-    let parsed = null;
-
-    for (const model of models) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        const resp = await fetch(url, {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({
-            contents:[{parts:[{text:prompt}]}],
-            generationConfig:{maxOutputTokens:500,temperature:0.35,responseMimeType:'application/json'}
-          })
-        });
-        if (!resp.ok) {
-          const errText = await resp.text().catch(()=>'');
-          throw new Error(`HTTP ${resp.status}${errText ? ' - ' + errText : ''}`);
-        }
-        const data = await resp.json();
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        const clean = text.replace(/```json|```/g,'').trim();
-        parsed = JSON.parse(clean);
-        if (parsed?.suggestions?.length) break;
-        throw new Error('Sem sugestões');
-      } catch (err) {
-        lastErr = err;
-      }
-    }
+    const _cfgModel = (typeof getGeminiModel === 'function') ? await getGeminiModel() : 'gemini-2.5-flash';
+    // geminiRetryFetch: handles thinkingConfig, retry, and responseMimeType fallback automatically
+    const _payUrl = `https://generativelanguage.googleapis.com/v1beta/models/${_cfgModel}:generateContent?key=${apiKey}`;
+    const _payData = await geminiRetryFetch(_payUrl, {
+      contents:[{parts:[{text:prompt}]}],
+      generationConfig:{maxOutputTokens:500,temperature:0.35,responseMimeType:'application/json'},
+    });
+    const parsed = _parseGeminiJSON(_payData);
 
     const sugs = parsed?.suggestions || [];
-    if (!sugs.length) throw (lastErr || new Error('Sem sugestões'));
+    if (!sugs.length) throw new Error('Sem sugestões');
 
     content.innerHTML = sugs.map(s => {
       const title = esc(s.label || 'Sugestão');
@@ -1206,3 +1272,310 @@ function getPeriodColor(period) {
     default: return '#1F6B4F';
   }
 }
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window._loadPayeeTxCounts                  = _loadPayeeTxCounts;
+window.applyNormalizePayees                = applyNormalizePayees;
+window.confirmPayeeClipboardImport         = confirmPayeeClipboardImport;
+window.confirmPayeeReassign                = confirmPayeeReassign;
+window.loadPayees                          = loadPayees;
+window.openNormalizePayeesModal            = openNormalizePayeesModal;
+window.openPayeeClipboardImport            = openPayeeClipboardImport;
+window.openPayeeModal                      = openPayeeModal;
+window.pasteFromClipboard                  = pasteFromClipboard;
+window.py2SetTypeFilter                    = py2SetTypeFilter;
+window.renderPayees                        = renderPayees;
+window.savePayee                           = savePayee;
+window.searchPayeeOnMaps                   = searchPayeeOnMaps;
+window.togglePayeeCatPicker                = togglePayeeCatPicker;
+
+// ── IOF Payee Target ───────────────────────────────────────────────────────
+async function setIofPayeeTarget(payeeId, payeeName) {
+  const current = window._iofPayeeId;
+
+  if (current === payeeId) {
+    const ok = confirm(`Remover "${payeeName}" como beneficiário padrão do IOF?`);
+    if (!ok) return;
+    window._iofPayeeId = null;
+    await setIofPayeeId(null);
+    renderPayees();
+    if (typeof toast === 'function') toast('Beneficiário IOF padrão removido.', 'info');
+    return;
+  }
+
+  const hasPrevious = !!current;
+  const prevPayee = hasPrevious ? (window._payeesCache||[]).find(p=>p.id===current) : null;
+  let migrateHistory = false;
+
+  if (hasPrevious) {
+    const answer = confirm(
+      `Definir "${payeeName}" como novo beneficiário padrão do IOF?\n\n` +
+      `Anterior: "${prevPayee?.name||'Outro'}"\n\n` +
+      `Deseja transferir o histórico de transações IOF para este beneficiário?`
+    );
+    if (!answer) return;
+    migrateHistory = true;
+  }
+
+  await setIofPayeeId(payeeId);
+
+  if (migrateHistory && typeof bulkUpdateIofPayee === 'function') {
+    await bulkUpdateIofPayee(payeeId);
+  }
+
+  renderPayees();
+  if (typeof toast === 'function')
+    toast(`"${payeeName}" definido como beneficiário padrão do IOF.`, 'success');
+}
+window.setIofPayeeTarget = setIofPayeeTarget;
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  PAYEE 360° — panorâmica completa do beneficiário / fonte pagadora
+// ════════════════════════════════════════════════════════════════════════════
+async function openPayeeDetailModal(payeeId) {
+  const payee = (state.payees||[]).find(p=>p.id===payeeId);
+  if (!payee) { toast('Beneficiário não encontrado.','warning'); return; }
+
+  // Remove any existing instance
+  document.querySelectorAll('#payee360Modal').forEach(m=>m.remove());
+
+  // Create shell overlay (loading state)
+  const shell=document.createElement('div');
+  shell.id='payee360Modal';
+  shell.className='modal-overlay open';
+  shell.style.cssText='z-index:9999;';
+  shell.onclick=e=>{ if(e.target===shell) shell.remove(); };
+  shell.innerHTML=`<div class="modal" style="max-width:640px;width:100%;max-height:90dvh;overflow-y:auto">
+    <div class="modal-handle"></div>
+    <div class="modal-body" style="padding:32px;text-align:center;color:var(--muted)">
+      <div style="font-size:2rem;margin-bottom:12px">⏳</div>
+      <div style="font-size:.85rem">Carregando panorâmica de ${esc(payee.name)}…</div>
+    </div>
+  </div>`;
+  document.body.appendChild(shell);
+
+  try {
+    // Fetch last 12 months transactions for this payee (extended range for better analysis)
+    const now=new Date();
+    const from=new Date(now.getFullYear(),now.getMonth()-11,1).toISOString().slice(0,10);
+    const { data:txsRaw, error } = await famQ(
+      sb.from('transactions')
+        .select('id,date,description,amount,brl_amount,currency,accounts!transactions_account_id_fkey(name),categories(name,icon,color)')
+    ).eq('payee_id',payeeId).gte('date',from).order('date',{ascending:false}).limit(200);
+
+    if (error) throw error;
+
+    const txs = txsRaw || [];
+
+    // Guard: shell may have been closed while loading
+    if (!document.getElementById('payee360Modal')) return;
+
+    const isSource = payee.type==='fonte_pagadora';
+    const typeLabel = isSource?'Fonte Pagadora':'Beneficiário';
+    const typeColor = isSource?'#16a34a':'#dc2626';
+    const typeBg    = isSource?'#dcfce7':'#fee2e2';
+    const fmtAmt    = v => (typeof fmt==='function') ? fmt(Math.abs(v)) : Math.abs(v).toFixed(2).replace('.',',');
+
+    // KPIs
+    const totalAmt = txs.reduce((s,t)=>s+Math.abs(parseFloat(t.brl_amount||t.amount)||0),0);
+    const avgAmt   = txs.length ? totalAmt/txs.length : 0;
+    const lastDate = txs[0]?.date || null;
+    const firstDate= txs[txs.length-1]?.date || null;
+
+    // Monthly breakdown (last 6 months shown in chart)
+    const monthlyMap={};
+    txs.forEach(t=>{
+      const m=(t.date||'').slice(0,7);
+      if(!monthlyMap[m]) monthlyMap[m]={total:0,count:0};
+      monthlyMap[m].total += Math.abs(parseFloat(t.brl_amount||t.amount)||0);
+      monthlyMap[m].count++;
+    });
+    // Get last 6 months in order
+    const last6Months=[];
+    for(let i=5;i>=0;i--){
+      const d=new Date(now.getFullYear(),now.getMonth()-i,1);
+      last6Months.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));
+    }
+    const monthlyTotals=last6Months.map(m=>monthlyMap[m]?.total||0);
+    const maxMonthly=Math.max(...monthlyTotals,1);
+    const MON_PT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+
+    // Category breakdown by amount
+    const catAmtMap={};
+    txs.forEach(t=>{
+      const cn=t.categories?.name||'Sem categoria';
+      const cc=t.categories?.color||'var(--border)';
+      const ci=t.categories?.icon||'📦';
+      if(!catAmtMap[cn]) catAmtMap[cn]={total:0,count:0,color:cc,icon:ci};
+      catAmtMap[cn].total += Math.abs(parseFloat(t.brl_amount||t.amount)||0);
+      catAmtMap[cn].count++;
+    });
+    const catEntries=Object.entries(catAmtMap).sort((a,b)=>b[1].total-a[1].total).slice(0,6);
+
+    // Account breakdown
+    const acctAmtMap={};
+    txs.forEach(t=>{
+      const an=t.accounts?.name||'—';
+      if(!acctAmtMap[an]) acctAmtMap[an]={total:0,count:0};
+      acctAmtMap[an].total += Math.abs(parseFloat(t.brl_amount||t.amount)||0);
+      acctAmtMap[an].count++;
+    });
+    const topAcct = Object.entries(acctAmtMap).sort((a,b)=>b[1].total-a[1].total)[0]?.[0]||'—';
+    const topCat  = catEntries[0]?.[0]||'—';
+
+    // Monthly trend chart HTML (bar chart using divs)
+    const trendHtml = last6Months.map((m,i)=>{
+      const v=monthlyTotals[i];
+      const pct=v>0?(v/maxMonthly*100).toFixed(1):0;
+      const mLabel=MON_PT[parseInt(m.split('-')[1])-1];
+      return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0">'
+        +'<div style="font-size:.6rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;text-align:center">'+fmtAmt(v)+'</div>'
+        +'<div style="flex:1;width:100%;display:flex;align-items:flex-end;min-height:40px">'
+          +'<div style="width:100%;height:'+pct+'%;min-height:'+( v>0?2:0)+'px;background:'+typeColor+';border-radius:4px 4px 0 0;opacity:'+(v>0?0.85:0.15)+';transition:height .3s"></div>'
+        +'</div>'
+        +'<div style="font-size:.62rem;color:var(--muted)">'+mLabel+'</div>'
+        +'</div>';
+    }).join('');
+
+    // Category breakdown bars
+    const catHtml = catEntries.map(([name,{total,count,color,icon}])=>{
+      const pct=totalAmt>0?(total/totalAmt*100).toFixed(0):0;
+      const barW=(total/catEntries[0][1].total*100).toFixed(1);
+      return '<div style="display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:8px;padding:5px 0">'
+        +'<span style="font-size:.9rem;text-align:center">'+icon+'</span>'
+        +'<div>'
+          +'<div style="display:flex;justify-content:space-between;margin-bottom:3px">'
+            +'<span style="font-size:.78rem;font-weight:600;color:var(--text)">'+esc(name)+'</span>'
+            +'<span style="font-size:.72rem;color:var(--muted)">'+pct+'% · '+count+'×</span>'
+          +'</div>'
+          +'<div style="height:5px;border-radius:3px;background:var(--border)">'
+            +'<div style="height:100%;width:'+barW+'%;background:'+color+';border-radius:3px"></div>'
+          +'</div>'
+        +'</div>'
+        +'<div style="font-size:.8rem;font-weight:700;color:'+typeColor+';white-space:nowrap">'+fmtAmt(total)+'</div>'
+        +'</div>';
+    }).join('');
+
+    // Contact/address
+    const addr=[payee.address,payee.city,payee.state,payee.country].filter(Boolean).join(', ');
+    let contactHtml='';
+    if(payee.cnpj_cpf) contactHtml+='<div style="font-size:.78rem;color:var(--muted)">CNPJ/CPF: '+esc(payee.cnpj_cpf)+'</div>';
+    if(addr)           contactHtml+='<div style="font-size:.78rem;color:var(--muted);margin-top:3px">📍 '+esc(addr)+'</div>';
+    if(addr)           contactHtml+='<a href="https://maps.google.com/?q='+encodeURIComponent(addr)+'" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;font-size:.74rem;color:#2563eb;padding:3px 8px;background:#eff6ff;border-radius:6px;text-decoration:none">🗺️ Ver no mapa</a>';
+    if(payee.email)    contactHtml+='<div style="margin-top:4px"><a href="mailto:'+esc(payee.email)+'" style="font-size:.78rem;color:var(--accent)">✉ '+esc(payee.email)+'</a></div>';
+    if(payee.phone)    contactHtml+='<div style="font-size:.78rem;color:var(--muted);margin-top:2px">📞 '+esc(payee.phone)+'</div>';
+
+    // TX rows
+    let txRowsHtml='';
+    txs.slice(0,20).forEach(t=>{
+      const amt=Math.abs(parseFloat(t.brl_amount||t.amount)||0);
+      const ds=t.date?t.date.split('-').reverse().join('/'):'—';
+      txRowsHtml+='<tr style="border-bottom:1px solid var(--border)">'
+        +'<td style="padding:5px 8px;font-size:.78rem;color:var(--muted);white-space:nowrap">'+ds+'</td>'
+        +'<td style="padding:5px 8px;font-size:.8rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(t.description||'—')+'</td>'
+        +'<td style="padding:5px 8px;font-size:.78rem;color:var(--muted)">'+esc(t.accounts?.name||'—')+'</td>'
+        +'<td style="padding:5px 8px;font-size:.82rem;font-weight:700;text-align:right;color:'+(isSource?'#16a34a':'#dc2626')+'">'+fmtAmt(amt)+'</td>'
+        +'</tr>';
+    });
+
+    // KPI cards
+    const kpis=[
+      ['Total 12m',    fmtAmt(totalAmt), typeColor],
+      ['Transações',   String(txs.length), '#2563eb'],
+      ['Ticket médio', fmtAmt(avgAmt), '#d97706'],
+      ['Última vez',   lastDate?lastDate.split('-').reverse().join('/'):'—', '#6d28d9'],
+    ];
+    const kpiHtml=kpis.map(([l,v,c])=>
+      '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;border:1px solid var(--border)">'
+      +'<div style="font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:3px">'+l+'</div>'
+      +'<div style="font-size:1rem;font-weight:800;color:'+c+'">'+v+'</div>'
+      +'</div>'
+    ).join('');
+
+    const content =
+      // ── Header ──────────────────────────────────────────────────────────────
+      '<div class="modal" style="max-width:680px;width:100%;max-height:90dvh;overflow-y:auto;border-radius:18px" onclick="event.stopPropagation()">'
+      +'<div class="modal-handle"></div>'
+      +'<div class="modal-header" style="padding:14px 18px;gap:10px">'
+        +'<div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">'
+          +'<div style="width:44px;height:44px;border-radius:12px;background:'+typeBg+';display:flex;align-items:center;justify-content:center;font-size:1.4rem;flex-shrink:0">'+(payee.icon||'👤')+'</div>'
+          +'<div style="min-width:0">'
+            +'<div style="font-size:1rem;font-weight:800;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(payee.name)+'</div>'
+            +'<span style="font-size:.72rem;font-weight:700;color:'+typeColor+';background:'+typeBg+';padding:2px 8px;border-radius:20px">'+typeLabel+'</span>'
+          +'</div>'
+        +'</div>'
+        +'<button class="modal-close" onclick="document.getElementById(\'payee360Modal\')?.remove()">✕</button>'
+      +'</div>'
+      // ── Body ─────────────────────────────────────────────────────────────────
+      +'<div class="modal-body" style="padding:16px 18px;display:flex;flex-direction:column;gap:16px">'
+        // KPI cards
+        +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px">'+kpiHtml+'</div>'
+        // Contact
+        +(contactHtml?'<div style="background:var(--surface2);border-radius:10px;padding:12px 14px;border:1px solid var(--border)"><div style="font-size:.7rem;font-weight:800;text-transform:uppercase;color:var(--muted);margin-bottom:8px">📋 Contato</div>'+contactHtml+'</div>':'')
+        // ── Tendência mensal (últimos 6 meses) ──────────────────────────────
+        +(trendHtml
+          ? '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px 14px">'
+            +'<div style="font-size:.7rem;font-weight:800;text-transform:uppercase;color:var(--muted);margin-bottom:10px">📈 Tendência Mensal — últimos 6 meses</div>'
+            +'<div style="display:flex;align-items:flex-end;gap:6px;height:90px">'+trendHtml+'</div>'
+          +'</div>'
+          : '')
+        // ── Distribuição por categoria ──────────────────────────────────────
+        +(catHtml
+          ? '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px 14px">'
+            +'<div style="font-size:.7rem;font-weight:800;text-transform:uppercase;color:var(--muted);margin-bottom:8px">🏷️ Distribuição por Categoria</div>'
+            +catHtml
+          +'</div>'
+          : '')
+        // ── Conta e categoria principais ────────────────────────────────────
+        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+          +'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;border:1px solid var(--border)">'
+            +'<div style="font-size:.66rem;font-weight:700;text-transform:uppercase;color:var(--muted);margin-bottom:3px">Conta mais usada</div>'
+            +'<div style="font-size:.88rem;font-weight:700;color:var(--text)">'+esc(topAcct)+'</div>'
+          +'</div>'
+          +'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;border:1px solid var(--border)">'
+            +'<div style="font-size:.66rem;font-weight:700;text-transform:uppercase;color:var(--muted);margin-bottom:3px">Categoria principal</div>'
+            +'<div style="font-size:.88rem;font-weight:700;color:var(--text)">'+esc(topCat)+'</div>'
+          +'</div>'
+        +'</div>'
+        // ── Lista de transações ─────────────────────────────────────────────
+        +(txs.length
+          ? '<div>'
+            +'<div style="font-size:.7rem;font-weight:800;text-transform:uppercase;color:var(--muted);margin-bottom:8px">📅 Lançamentos — 12 meses ('+txs.length+' tx)</div>'
+            +'<div style="border:1px solid var(--border);border-radius:10px;overflow:hidden">'
+              +'<table style="width:100%;border-collapse:collapse">'
+                +'<thead><tr style="background:var(--surface2)">'
+                  +'<th style="padding:6px 8px;font-size:.7rem;text-align:left;color:var(--muted);font-weight:700">Data</th>'
+                  +'<th style="padding:6px 8px;font-size:.7rem;text-align:left;color:var(--muted);font-weight:700">Descrição</th>'
+                  +'<th style="padding:6px 8px;font-size:.7rem;text-align:left;color:var(--muted);font-weight:700">Conta</th>'
+                  +'<th style="padding:6px 8px;font-size:.7rem;text-align:right;color:var(--muted);font-weight:700">Valor</th>'
+                +'</tr></thead>'
+                +'<tbody>'+txRowsHtml+'</tbody>'
+              +'</table>'
+            +'</div>'
+            +(txs.length>20?'<div style="font-size:.74rem;color:var(--muted);text-align:center;margin-top:6px">Mostrando 20 de '+txs.length+'</div>':'')
+          +'</div>'
+          : '<div style="text-align:center;padding:16px;color:var(--muted);font-size:.82rem">Nenhuma transação nos últimos 12 meses.</div>'
+        )
+        // ── Actions ──────────────────────────────────────────────────────────
+        +'<div style="display:flex;gap:8px;padding-top:4px">'
+          +'<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'payee360Modal\')?.remove();openPayeeModal(\''+payeeId+'\')">✏️ Editar</button>'
+        +'</div>'
+      +'</div>'
+      +'</div>';
+
+    // Update shell with full content
+    const liveShell=document.getElementById('payee360Modal');
+    if(liveShell) liveShell.innerHTML=content;
+
+  } catch(e) {
+    const s=document.getElementById('payee360Modal');
+    if(s) s.innerHTML='<div class="modal" style="max-width:480px"><div class="modal-handle"></div><div class="modal-body" style="padding:24px;text-align:center;color:#dc2626">Erro ao carregar: '+esc(e.message||String(e))+'</div></div>';
+    console.error('[payee360]',e);
+  }
+}
+window.openPayeeDetailModal = openPayeeDetailModal;
+
+// ── Payees page tab switcher ─────────────────────────────────────────────
+function setPayeesTab(tab) { if (typeof pyeSetView === 'function') pyeSetView(tab === 'relatorio' ? 'relatorio' : 'cadastro'); }
+window.setPayeesTab = setPayeesTab;

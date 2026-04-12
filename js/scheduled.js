@@ -47,7 +47,7 @@ async function _createPairedTransferLeg(originTx, sc, actualDate, memoOverride=n
     return null;
   }
   // Back-link origin to paired (best-effort)
-  await sb.from('transactions').update({linked_transfer_id: pairedResult.id}).eq('id', originTx.id).then(()=>{}).catch(()=>{});
+  try { await sb.from('transactions').update({linked_transfer_id: pairedResult.id}).eq('id', originTx.id).then(()=>{}); } catch(_) {};
   return pairedResult;
 }
 
@@ -206,16 +206,27 @@ const FREQ_LABELS = {
   semiannual: 'Semestral', annual: 'Anual', custom: 'Personalizado'
 };
 
+// Adds N months to a Date, clamping to the last valid day of the target month.
+// Prevents overflow: 2025-01-31 + 1 month → 2025-02-28 (not 2025-03-03).
+function _addMonthsClamped(d, n) {
+  const originalDay = d.getDate();
+  d.setDate(1);                    // go to 1st to avoid overflow during month change
+  d.setMonth(d.getMonth() + n);    // move to target month
+  // Clamp to the last day of the target month
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(originalDay, lastDay));
+}
+
 function nextDate(from, freq, customInterval, customUnit) {
   const d = new Date(from + 'T12:00:00');
   switch(freq) {
     case 'weekly':     d.setDate(d.getDate() + 7); break;
     case 'biweekly':   d.setDate(d.getDate() + 14); break;
-    case 'monthly':    d.setMonth(d.getMonth() + 1); break;
-    case 'bimonthly':  d.setMonth(d.getMonth() + 2); break;
-    case 'quarterly':  d.setMonth(d.getMonth() + 3); break;
-    case 'semiannual': d.setMonth(d.getMonth() + 6); break;
-    case 'annual':     d.setFullYear(d.getFullYear() + 1); break;
+    case 'monthly':    _addMonthsClamped(d, 1); break;
+    case 'bimonthly':  _addMonthsClamped(d, 2); break;
+    case 'quarterly':  _addMonthsClamped(d, 3); break;
+    case 'semiannual': _addMonthsClamped(d, 6); break;
+    case 'annual':     _addMonthsClamped(d, 12); break;
     case 'custom':
       const n = parseInt(customInterval) || 1;
       if(customUnit === 'days')   d.setDate(d.getDate() + n);
@@ -249,16 +260,18 @@ function generateOccurrences(sc, limit = 12) {
 
 function getNextOccurrence(sc) {
   const today = localDateStr();
-  const registered = (sc.occurrences || []).map(o => o.scheduled_date);
+  // 'executed', 'processing', 'skipped', 'ar_pending' all count as consumed
+  // A date with ANY occurrence record is considered handled — move to next date
+  const consumed = new Set((sc.occurrences || []).map(o => o.scheduled_date));
   if(sc.frequency === 'once') {
-    return registered.includes(sc.start_date) ? null : sc.start_date;
+    return consumed.has(sc.start_date) ? null : sc.start_date;
   }
   let cur = sc.start_date;
   const maxCount = sc.end_count || 999;
   const endDate = sc.end_date || '2099-12-31';
   let count = 0;
   while(count < maxCount && cur <= endDate) {
-    if(!registered.includes(cur)) return cur;
+    if(!consumed.has(cur)) return cur;  // next unhandled date
     count++;
     cur = nextDate(cur, sc.frequency, sc.custom_interval, sc.custom_unit);
   }
@@ -283,7 +296,57 @@ function scStatusLabel(sc) {
 }
 
 // ── Load & Render ──────────────────────────────────────
+
+// ── clearAllScFilters: reset all scheduled filters ──────────────────────────
+function clearAllScFilters() {
+  const searchEl = document.getElementById('scSearch');
+  if (searchEl) searchEl.value = '';
+  const searchDesktopEl = document.getElementById('scSearchDesktop');
+  if (searchDesktopEl) searchDesktopEl.value = '';
+  const typeEl = document.getElementById('scTypeFilter');
+  if (typeEl) typeEl.value = '';
+  // Reset chip to "Todos"
+  document.querySelectorAll('.sc-mf-chip').forEach(b => b.classList.remove('active'));
+  const allChip = document.getElementById('scChipAll');
+  if (allChip) allChip.classList.add('active');
+  if (typeof filterScheduled === 'function') filterScheduled();
+  if (typeof toast === 'function') toast('Filtros limpos', 'info');
+}
+window.clearAllScFilters = clearAllScFilters;
+
 async function loadScheduled() {
+  // Recuperar view preferida — padrão: lista (carrega mais rápido, sem flash)
+  // sc_view_pref: read from localStorage (fast) or app_users.preferred_sc_view (sync)
+  const _savedView = (() => {
+    try {
+      const local = localStorage.getItem('sc_view_pref');
+      if (local) return local;
+      // Fallback to app_users preference (already loaded into currentUser)
+      return currentUser?.preferred_sc_view || 'list';
+    } catch(_) { return 'list'; }
+  })();
+
+  // Sincronizar variável de estado ANTES de qualquer render
+  _scView = _savedView;
+
+  // Aplicar visibilidade das áreas imediatamente (sem dados ainda) — elimina qualquer flash
+  const _lvEarly    = document.getElementById('scListView');
+  const _cvEarly    = document.getElementById('scCalendarView');
+  const _catsEarly  = document.getElementById('scCategoriesView');
+  const _kpiEarly   = document.getElementById('scKpiStrip');
+  const _mKpiEarly  = document.getElementById('scMobileKpis');
+
+  if (_lvEarly)    _lvEarly.style.display    = _savedView === 'list'       ? '' : 'none';
+  if (_cvEarly)    _cvEarly.style.display    = _savedView === 'calendar'   ? '' : 'none';
+  if (_catsEarly)  _catsEarly.style.display  = _savedView === 'categories' ? '' : 'none';
+  if (_kpiEarly)   _kpiEarly.style.display   = _savedView === 'list'       ? '' : 'none';
+  if (_mKpiEarly)  _mKpiEarly.style.display  = _savedView === 'list'       ? '' : 'none';
+
+  // Atualizar botões de view imediatamente
+  document.querySelectorAll('#scViewList').forEach(b => b.classList.toggle('active', _savedView === 'list'));
+  document.querySelectorAll('#scViewCal').forEach(b  => b.classList.toggle('active', _savedView === 'calendar'));
+  document.querySelectorAll('#scViewCats').forEach(b => b.classList.toggle('active', _savedView === 'categories'));
+
   try {
     const { data, error } = await famQ(sb.from('scheduled_transactions').select('*, accounts!scheduled_transactions_account_id_fkey(name,currency), payees(name), categories(name,color), occurrences:scheduled_occurrences(id,scheduled_date,actual_date,amount,memo,transaction_id,execution_status,executed_at)'));
     if(error) throw error;
@@ -333,7 +396,17 @@ function scChipFilter(event, status) {
 }
 
 function filterScheduled() {
-  const search = (document.getElementById('scSearch')?.value||'').toLowerCase();
+  // Read search from whichever input the user is typing in (mobile panel or desktop panel)
+  const _mSearch  = document.getElementById('scSearch')?.value || '';
+  const _dSearch  = document.getElementById('scSearchDesktop')?.value || '';
+  const search = (_dSearch || _mSearch).toLowerCase();
+  // Keep both search inputs in sync
+  const _mEl = document.getElementById('scSearch');
+  const _dEl = document.getElementById('scSearchDesktop');
+  if (_mEl && _dEl) {
+    if (_dSearch && _mEl.value !== _dEl.value) _mEl.value = _dEl.value;
+    else if (_mSearch && _dEl.value !== _mEl.value) _dEl.value = _mEl.value;
+  }
   const statusF = _scStatusChip || '';
   // Read from mobile filter OR desktop panel filter — whichever has a value
   // (desktop uses scTypeFilterDesktop to avoid duplicate-id collision with mobile)
@@ -354,11 +427,22 @@ function filterScheduled() {
   }
   // Store filtered list globally so calendar + upcoming also respect active filters
   state._scFiltered = list;
-  renderScheduled(list);
-  renderUpcoming();
-  _renderScKpis();
-  // Re-render calendar if active — it also needs to respect filters
-  if (typeof _scView !== 'undefined' && _scView === 'calendar') renderScCalendar();
+
+  // Renderizar apenas o que está visível — evita flash entre views
+  const currentView = typeof _scView !== 'undefined' ? _scView : 'list';
+
+  if (currentView === 'calendar') {
+    // View calendário: só renderizar calendário, não a lista
+    renderScCalendar();
+    _renderScKpis(); // KPIs usados pela barra de topo
+  } else if (currentView === 'categories') {
+    renderScCategories();
+  } else {
+    // View lista
+    renderScheduled(list);
+    renderUpcoming();
+    _renderScKpis();
+  }
   // Keep both type selects in sync so switching between views preserves selection
   const _syncVal = typeF;
   const _m = document.getElementById('scTypeFilter');
@@ -545,7 +629,8 @@ function _scCardHtml(sc) {
         <div class="sc-card-meta">${freqPill}${meta ? `<span class="sc-card-meta-text">${meta}</span>` : ''}${catChip}${memberChips ? '<div class="sc-member-chips">' + memberChips + '</div>' : ''}</div>
       </div>
       <div class="sc-card-end">
-        <div class="sc-card-amt ${isExpense?'amount-neg':'amount-pos'}">${isExpense?'−':'+'}${fmt(Math.abs(sc.amount))}</div>
+        <div class="sc-card-amt ${isExpense?'amount-neg':'amount-pos'}">${isExpense?'−':'+'}${fmt(Math.abs(sc.amount), sc.currency||acct?.currency||'BRL')}</div>
+        ${(sc.currency && sc.currency !== 'BRL' && acct?.currency !== sc.currency) ? `<div style="font-size:.66rem;color:var(--muted);text-align:right">≈ ${fmt(Math.abs(sc.amount) * (sc.fx_rate || 1), 'BRL')}</div>` : ''}
         <div class="sc-card-badges">${nextBadge}<span class="sc-status-badge ${st.cls}">${st.label}</span></div>
       </div>
       <svg class="sc-card-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" id="scChev-${sc.id}"><polyline points="6 9 12 15 18 9"/></svg>
@@ -557,6 +642,9 @@ function _scCardHtml(sc) {
         : `<span class="sc-reg-btn sc-reg-none">${totalCount} registradas</span>`
       }
       <div class="sc-icon-btns">
+        ${(sc.frequency !== 'once' && (sc.end_count || sc.end_date) && sc.status === 'active') ? `<button class="sc-icon-btn sc-icon-antecipar" onclick="openAnteciparSerie('${sc.id}')" title="Antecipar todas as parcelas pendentes" style="background:rgba(180,83,9,.10);color:#b45309">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+        </button>` : ''}
         <button class="sc-icon-btn" onclick="toggleScStatus('${sc.id}')" title="${sc.status==='active'?'Pausar':'Reativar'}">
           ${sc.status==='active'
             ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
@@ -621,23 +709,47 @@ function renderUpcoming() {
   const _srcList = state._scFiltered || state.scheduled;
   _srcList.forEach(sc => {
     if(sc.status === 'paused') return;
-    const pendingDates=new Set(
+    // Dates that are explicitly skipped (ignored) — must NOT appear in upcoming
+    // EXCEPTION: dates with an AR record ('ar_pending') DO appear, but with special UI
+    const arPending = state._arPendingKeys || new Set();
+    const skippedDates = new Set(
       (sc.occurrences||[])
-        .filter(o=>(o.execution_status==='pending'||o.execution_status==='skipped')&&o.scheduled_date>=today&&o.scheduled_date<=limitStr)
-        .map(o=>o.scheduled_date)
+        .filter(o => o.execution_status === 'skipped' && !arPending.has(sc.id + '|' + o.scheduled_date))
+        .map(o => o.scheduled_date)
     );
-    const executedDates=new Set(
+    const arPendingDates = new Set(
       (sc.occurrences||[])
-        .filter(o=>o.execution_status==='executed'||o.execution_status==='processing')
-        .map(o=>o.scheduled_date)
+        .filter(o => o.execution_status === 'skipped' && arPending.has(sc.id + '|' + o.scheduled_date))
+        .map(o => o.scheduled_date)
     );
-    const occ=generateOccurrences(sc,30);
-    occ.forEach(date=>{
-      if(date>=today&&date<=limitStr&&!executedDates.has(date))
-        upcoming.push({sc,date,isPending:pendingDates.has(date)});
+    const pendingDates = new Set(
+      (sc.occurrences||[])
+        .filter(o => o.execution_status === 'pending' && o.scheduled_date >= today && o.scheduled_date <= limitStr)
+        .map(o => o.scheduled_date)
+    );
+    const executedDates = new Set(
+      (sc.occurrences||[])
+        .filter(o => o.execution_status === 'executed' || o.execution_status === 'processing')
+        .map(o => o.scheduled_date)
+    );
+    const occ = generateOccurrences(sc, 30);
+    occ.forEach(date => {
+      // Skip: outside window, already executed, or explicitly ignored
+      if (date < today || date > limitStr) return;
+      if (executedDates.has(date)) return;
+      if (skippedDates.has(date)) return;
+      upcoming.push({sc, date, isPending: pendingDates.has(date),
+                     isArPending: arPendingDates.has(date)});
     });
-    pendingDates.forEach(date=>{
-      if(!occ.includes(date)) upcoming.push({sc,date,isPending:true});
+    // Also show pending occurrences that aren't in the generated list (edge case)
+    pendingDates.forEach(date => {
+      if (!occ.includes(date) && !skippedDates.has(date))
+        upcoming.push({sc, date, isPending: true, isArPending: false});
+    });
+    // Also show AR-pending dates that may be outside the normal occurrence window
+    arPendingDates.forEach(date => {
+      if (date >= today && date <= limitStr && !occ.includes(date))
+        upcoming.push({sc, date, isPending: false, isArPending: true});
     });
   });
   upcoming.sort((a, b) => a.date.localeCompare(b.date));
@@ -661,7 +773,7 @@ function renderUpcoming() {
   // Card starts expanded by default (display is '' from HTML)
   // toggleUpcomingCard() handles collapse/expand on click
 
-  // Agrupar por data
+  // ── Render upcoming list ───────────────────────────────────────────────────
   const byDate = {};
   upcoming.forEach(u => { if(!byDate[u.date]) byDate[u.date]=[]; byDate[u.date].push(u); });
 
@@ -669,83 +781,106 @@ function renderUpcoming() {
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
   const tomorrowStr = localDateStr(tomorrow);
 
-  if(listEl) listEl.innerHTML = Object.entries(byDate).map(([date, items]) => {
+  // Pre-collapse all dates beyond today/tomorrow (first call per session per date)
+  _scInitCollapse(Object.keys(byDate).sort(), today, tomorrowStr);
+
+  const groups = Object.entries(byDate).map(([date, items]) => {
     const isToday    = date === today;
     const isTomorrow = date === tomorrowStr;
-    const dow = DOW[new Date(date+'T12:00:00').getDay()];
-    const dayLabel = isToday ? '🔔 Hoje' : isTomorrow ? '📆 Amanhã' : `${dow}, ${fmtDate(date)}`;
-
+    const dow   = DOW[new Date(date+'T12:00:00').getDay()];
+    const dayNum = new Date(date+'T12:00:00').getDate();
+    const dayMon = new Date(date+'T12:00:00').toLocaleString('pt-BR',{month:'short'}).replace('.','');
     const dayTot = items.reduce((s,{sc}) => {
       const isExp = sc.type==='expense'||sc.type==='card_payment'||sc.type==='transfer';
       return s + (isExp ? -1 : 1)*Math.abs(sc.amount);
     }, 0);
 
-    const gid = 'upg_' + date.replace(/-/g,'');
-    const rows = items.map(({sc, isPending}) => {
+    const dayLabel = isToday ? '🔔 Hoje' : isTomorrow ? '📆 Amanhã' : (dow + ', ' + fmtDate(date));
+    const dayBg    = isToday
+      ? 'background:color-mix(in srgb,var(--amber) 8%,var(--surface2));border-color:rgba(217,119,6,.25)'
+      : isTomorrow
+      ? 'background:color-mix(in srgb,var(--accent) 5%,var(--surface2));border-color:rgba(42,96,73,.2)'
+      : '';
+    const dayTotColor = dayTot >= 0 ? 'color:#16a34a' : 'color:#dc2626';
+
+    // Build item rows
+    const itemRows = items.map(({sc, date: d, isPending, isArPending}) => {
       const isExp    = sc.type==='expense'||sc.type==='card_payment'||sc.type==='transfer';
-      const typeIcon = sc.type==='card_payment'?'💳':sc.type==='transfer'?'↔':isExp?'↑':'↓';
-      const dest     = (sc.type==='transfer'||sc.type==='card_payment')
-                       ? state.accounts.find(a=>a.id===sc.transfer_to_account_id) : null;
-      const catColor = sc.categories?.color || (isExp ? 'var(--red)' : 'var(--green)');
-      const manualBadge = !sc.auto_register
-        ? `<span class="sup-manual-badge">Manual</span>` : '';
-      const pendingBadge = isPending
-        ? `<span class="sup-pending-badge" title="Aguardando registro">⚠ Pendente</span>` : '';
-      return `<div class="sup-item${isToday?' sup-item--today':''}">
-        <div class="sup-icon" style="background:color-mix(in srgb,${catColor} 14%,transparent);color:${catColor}">${typeIcon}</div>
-        <div class="sup-body">
-          <div class="sup-desc">${esc(sc.description)}${manualBadge}${pendingBadge}</div>
-          <div class="sup-acct">${esc(sc.accounts?.name||'—')}${dest?` <span class="sup-arrow">→</span> ${esc(dest.name)}`:''}</div>
-        </div>
-        <div class="sup-right">
-          <span class="sup-amt ${isExp?'neg':'pos'}">${isExp?'−':'+'}${fmt(Math.abs(sc.amount))}</span>
-          <div class="sup-actions">
-            <button class="sup-ignore-btn" title="Ignorar"
-              onclick="event.stopPropagation();ignoreOccurrence('${sc.id}','${date}')">✕</button>
-            <button class="sup-register-btn" onclick="openRegisterOcc('${sc.id}','${date}')">✓</button>
-          </div>
-        </div>
-      </div>`;
+      const amtColor = isExp ? '#dc2626' : '#16a34a';
+      const amtSign  = isExp ? '−' : '+';
+      const catColor = sc.categories?.color || (isExp ? '#dc2626' : '#16a34a');
+      const typeEmoji = sc.type==='card_payment'?'💳':sc.type==='transfer'?'↔':isExp?'↑':'↓';
+
+      // AR-pending special row
+      if (isArPending) {
+        const arRec = (window._scArRecordsCache||[]).find(r => r.sc_id===sc.id && r.date===d);
+        const arId  = arRec?.id||'';
+        return '<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;border-top:1px solid var(--border);background:rgba(251,191,36,.05)">' +
+          '<div style="width:30px;height:30px;border-radius:8px;background:rgba(251,191,36,.15);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0">📬</div>' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:.82rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(sc.description) + '</div>' +
+            '<div style="font-size:.68rem;color:#d97706;margin-top:1px">⏳ A Receber</div>' +
+          '</div>' +
+          '<div style="text-align:right;flex-shrink:0">' +
+            '<div style="font-size:.85rem;font-weight:800;color:#16a34a">' + amtSign + fmt(Math.abs(sc.amount)) + '</div>' +
+            (arId ? '<button onclick="event.stopPropagation();_scArReceive(\'' + arId + '\')" style="margin-top:3px;padding:2px 7px;background:#dcfce7;color:#15803d;border:1px solid #86efac;border-radius:5px;font-size:.62rem;font-weight:700;cursor:pointer;font-family:inherit">✅ Receber</button>' : '') +
+          '</div>' +
+        '</div>';
+      }
+
+      return '<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;border-top:1px solid var(--border)">' +
+        '<div style="width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.78rem;font-weight:700;flex-shrink:0;background:' + catColor + '18;color:' + catColor + '">' + typeEmoji + '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:.82rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(sc.description) + '</div>' +
+          '<div style="font-size:.68rem;color:var(--muted);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+            esc(sc.accounts?.name||'—') +
+            (sc.payees?.name ? ' · ' + esc(sc.payees.name) : '') +
+            (isPending ? ' · <span style="color:#d97706;font-weight:600">⚠ Pendente</span>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          '<div style="font-size:.85rem;font-weight:800;color:' + amtColor + '">' + amtSign + fmt(Math.abs(sc.amount)) + '</div>' +
+          '<button onclick="event.stopPropagation();openRegisterOcc(\'' + sc.id + '\',\'' + d + '\')" ' +
+            'style="margin-top:3px;display:inline-flex;align-items:center;gap:3px;padding:3px 8px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-size:.62rem;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">' +
+            '✓ Registrar' +
+          '</button>' +
+        '</div>' +
+      '</div>';
     }).join('');
 
-    const dayNum = new Date(date+'T12:00:00').getDate();
-    const dayMon = new Date(date+'T12:00:00').toLocaleString('pt-BR',{month:'short'}).replace('.','');
-    const dayPill = isToday
-      ? `<div class="sup-day-pill sup-day-pill--today"><span>Hoje</span></div>`
-      : isTomorrow
-      ? `<div class="sup-day-pill sup-day-pill--tmrw"><span>Amanhã</span></div>`
-      : `<div class="sup-day-pill"><span class="sup-day-num">${dayNum}</span><span class="sup-day-mon">${dayMon}</span></div>`;
-
-    // Para Hoje/Amanhã: subtítulo com data por extenso; demais: só dow + data
-    const dowLabel = isToday
-      ? `<div class="sup-group-dow-wrap">
-           <span class="sup-group-dow sup-group-dow--special">Hoje</span>
-           <span class="sup-group-date-sub">${dow} · ${dayNum} de ${dayMon}</span>
-         </div>`
-      : isTomorrow
-      ? `<div class="sup-group-dow-wrap">
-           <span class="sup-group-dow sup-group-dow--special">Amanhã</span>
-           <span class="sup-group-date-sub">${dow} · ${dayNum} de ${dayMon}</span>
-         </div>`
-      : `<span class="sup-group-dow">${dow}, ${fmtDate(date)}</span>`;
-
-    const _startOpen = isToday || isTomorrow;
-    return `<div class="sup-group">
-      <div class="sup-group-hdr" onclick="toggleUpcomingGroup('${gid}')">
-        <div class="sup-group-left">
-          ${dayPill}
-          ${dowLabel}
-        </div>
-        <div class="sup-group-meta">
-          <span class="sup-day-total ${dayTot>=0?'pos':'neg'}">${dayTot>=0?'+':''}${fmt(dayTot)}</span>
-          <span class="sup-day-count">${items.length}</span>
-          <svg class="sc-upcoming-day-arrow" id="${gid}_arr" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
-            style="transform:rotate(${_startOpen?'180':'0'}deg);transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>
-        </div>
-      </div>
-      <div class="sup-rows" id="${gid}" style="${_startOpen?'':'display:none'}">${rows}</div>
-    </div>`;
+    const dayId   = 'scDay_' + date;
+    const isCollapsed = _scDayCollapsed.has(date);
+    return '<div style="border-bottom:1.5px solid var(--border)">' +
+      // Day header — clickable to collapse/expand
+      '<div onclick="_scToggleDay(\'' + date + '\')" ' +
+        'style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px 6px;cursor:pointer;user-select:none;' + dayBg + '">' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<div style="width:36px;height:36px;border-radius:10px;background:var(--surface);border:1.5px solid var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0">' +
+            '<span style="font-size:.62rem;font-weight:700;color:var(--muted);line-height:1;text-transform:uppercase">' + dayMon + '</span>' +
+            '<span style="font-size:1rem;font-weight:800;color:var(--text);line-height:1">' + dayNum + '</span>' +
+          '</div>' +
+          '<div>' +
+            '<div style="font-size:.8rem;font-weight:700;color:var(--text)">' + dayLabel + '</div>' +
+            '<div style="font-size:.65rem;color:var(--muted)">' + items.length + ' transaç' + (items.length===1?'ão':'ões') + (isCollapsed ? ' · recolhido' : '') + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<div style="font-size:.9rem;font-weight:800;' + dayTotColor + '">' + (dayTot>=0?'+':'') + fmt(dayTot) + '</div>' +
+          '<svg id="' + dayId + '_arr" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" ' +
+            'style="color:var(--muted);transition:transform .2s;transform:' + (isCollapsed ? 'rotate(0deg)' : 'rotate(180deg)') + ';flex-shrink:0">' +
+            '<polyline points="6 9 12 15 18 9"/>' +
+          '</svg>' +
+        '</div>' +
+      '</div>' +
+      // Items — collapsible
+      '<div id="' + dayId + '" style="display:' + (isCollapsed ? 'none' : '') + '">' +
+        itemRows +
+      '</div>' +
+    '</div>';
   }).join('');
+
+  if(listEl) listEl.innerHTML = groups;
+
 
   // Auto-open the desktop upcoming panel after rendering
   // (panel body starts display:none; open it so events are visible)
@@ -776,6 +911,45 @@ function toggleUpcomingGroup(gid) {
   rows.style.display = isOpen ? 'none' : '';
   if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
 }
+
+// ── Collapse state for individual days in list view ─────────────────────────
+const _scDayCollapsed = new Set(); // Set of date strings 'YYYY-MM-DD' currently collapsed
+
+// ── Pre-collapse dates beyond the first 2 days when rendering ────────────────
+// Called by renderUpcoming after computing the sorted date list
+function _scInitCollapse(allDates, today, tomorrowStr) {
+  // Expand only today and tomorrow; collapse everything else
+  // Preserve any manual toggle the user has done during this session
+  allDates.forEach(date => {
+    const isFirst2 = date === today || date === tomorrowStr;
+    if (!isFirst2 && !_scDayCollapsed.has(date)) {
+      // Not yet manually toggled open — collapse by default
+      _scDayCollapsed.add(date);
+    }
+  });
+}
+
+window._scToggleDay = function(date) {
+  const el    = document.getElementById('scDay_' + date);
+  const arrow = document.getElementById('scDay_' + date + '_arr');
+  if (!el) return;
+  const wasCollapsed = _scDayCollapsed.has(date);
+  if (wasCollapsed) {
+    _scDayCollapsed.delete(date);
+    el.style.display = '';
+    if (arrow) arrow.style.transform = 'rotate(180deg)';
+    // Update subtitle
+    const hdr = el.previousElementSibling;
+    if (hdr) {
+      const sub = hdr.querySelector('.sc-day-sub');
+      if (sub) sub.textContent = sub.textContent.replace(' · recolhido', '');
+    }
+  } else {
+    _scDayCollapsed.add(date);
+    el.style.display = 'none';
+    if (arrow) arrow.style.transform = 'rotate(0deg)';
+  }
+};
 function _toggleUpcomingGroupOLD(gid) {
   const rows = document.getElementById(gid);
   const arrow = document.getElementById(gid + '_arr');
@@ -885,7 +1059,7 @@ function openScheduledModal(id='') {
   }, 50);
 
   // Dates — usa _scSyncDate para manter os dois campos sincronizados
-  const _startDate = sc?.start_date || localDateStr();
+  const _startDate = (sc?.start_date||'').slice(0,10) || localDateStr();
   _scSyncDate(_startDate);
 
   // Frequency
@@ -989,8 +1163,22 @@ function openScheduledModal(id='') {
 
   updateScPreview();
   openModal('scheduledModal');
+  // Show Reembolso button (only for non-transfer types)
+  const _scReimbBtn = document.getElementById('scReimbBtn');
+  const _scId = document.getElementById('scId')?.value;
+  const _scTypeVal = document.getElementById('scTypeField')?.value;
+  if (_scReimbBtn) {
+    const _isScTransfer = _scTypeVal === 'transfer' || _scTypeVal === 'card_payment';
+    _scReimbBtn.style.display = _isScTransfer ? 'none' : 'flex';
+    if (_scId && !_isScTransfer && typeof checkReimbOnScOpen === 'function') {
+      checkReimbOnScOpen(_scId).catch(()=>{});
+    }
+  }
   if (typeof initScFormMode === "function") initScFormMode();
   if (typeof initScFormMode === 'function') initScFormMode();
+  // Apply admin notification channel visibility
+  if (typeof loadNotifChannelSettings === 'function') loadNotifChannelSettings().catch(() => {});
+  else if (typeof _applyNotifChannelVisibility === 'function') _applyNotifChannelVisibility();
   // Scroll modal body to top on every open
   requestAnimationFrame(() => {
     const body = document.querySelector('#scheduledModal .modal-body');
@@ -1516,7 +1704,41 @@ function openRegisterOcc(scId, date) {
   document.getElementById('occDate').value = date;
   setAmtField('occAmount', sc.amount);
   document.getElementById('occMemo').value = '';
-  document.getElementById('registerOccDesc').textContent = `Registrar "${sc.description}" em ${fmtDate(date)} — isso criará uma transação real na conta ${sc.accounts?.name||''}.`;
+
+  // Populate the hero header
+  const isIncome = sc.type === 'income';
+  const isExpense = sc.type === 'expense' || sc.type === 'card_payment';
+  const typeEmoji = isIncome ? '💰' : isExpense ? '💸' : '↔';
+
+  const nameEl  = document.getElementById('occModalName');
+  const metaEl  = document.getElementById('occModalMeta');
+  const amtEl   = document.getElementById('occModalOriginalAmt');
+  const iconEl  = document.getElementById('occModalTypeIcon');
+  const acctEl  = document.getElementById('occAccountDisplay');
+  const hintEl  = document.getElementById('occAmountHint');
+
+  if (nameEl) nameEl.textContent = sc.description || '—';
+  if (iconEl) iconEl.textContent = typeEmoji;
+  if (amtEl)  amtEl.textContent  = (isExpense ? '−' : '+') + fmt(Math.abs(sc.amount), sc.currency || 'BRL');
+  if (amtEl)  amtEl.style.color  = isIncome ? '#7dc242' : '#fca5a5';
+  if (acctEl) acctEl.textContent = sc.accounts?.name || '—';
+  if (hintEl) hintEl.textContent = `Valor original: ${fmt(Math.abs(sc.amount), sc.currency||'BRL')} — ajuste se houver juros ou correção`;
+
+  // Meta chips: frequency · account · category
+  if (metaEl) {
+    const freqMap = { daily:'Diário', weekly:'Semanal', biweekly:'Quinzenal',
+                      monthly:'Mensal', bimonthly:'Bimestral', quarterly:'Trimestral',
+                      semiannual:'Semestral', annual:'Anual', once:'Único' };
+    const parts = [
+      freqMap[sc.frequency] || sc.frequency,
+      sc.accounts?.name,
+      sc.payees?.name,
+    ].filter(Boolean);
+    metaEl.innerHTML = parts.map(p => `<span style="background:rgba(255,255,255,.12);padding:2px 7px;border-radius:100px">${esc(p)}</span>`).join('');
+  }
+
+  // Show/hide the "Não Recebido" button — only for income type
+  _scArShowBtn(sc);
   openModal('registerOccModal');
 }
 
@@ -1529,6 +1751,61 @@ async function confirmRegisterOccurrence() {
   const actualDate = document.getElementById('occDate').value;
   const amount = getAmtField('occAmount') || Math.abs(sc.amount);
   const memo = document.getElementById('occMemo').value;
+
+  // ── Duplicate detection against existing transactions ──────────────────
+  try {
+    const signedAmt = (sc.type === 'expense' || sc.type === 'transfer' || sc.type === 'card_payment')
+      ? -Math.abs(amount) : Math.abs(amount);
+
+    // Query: same date + account + amount
+    const { data: dupes } = await sb.from('transactions')
+      .select('id,date,description,amount,account_id')
+      .eq('family_id', famId())
+      .eq('date', actualDate)
+      .eq('account_id', sc.account_id)
+      .eq('amount', signedAmt);
+
+    if (dupes && dupes.length > 0) {
+      // Determine match quality
+      const exactMatch = dupes.find(d =>
+        d.description?.toLowerCase() === (sc.description || '').toLowerCase()
+      );
+      const msgLines = [
+        exactMatch
+          ? '⚠️ <strong>Transação idêntica já existe</strong> — mesma data, valor, conta e descrição:'
+          : '⚠️ <strong>Possível duplicata detectada</strong> — mesma data, valor e conta:',
+        '',
+        ...dupes.slice(0,3).map(d =>
+          `• ${d.date} | ${d.description || '—'} | ${typeof fmt==='function'?fmt(d.amount,'BRL'):d.amount}`
+        ),
+      ];
+
+      const confirmed = await new Promise(res => {
+        const overlay = document.createElement('div');
+        overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box';
+        overlay.innerHTML=`<div style="background:var(--surface);border-radius:16px;padding:24px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+          <div style="font-size:1.3rem;text-align:center;margin-bottom:10px">⚠️</div>
+          <div style="font-size:.9rem;color:var(--text);line-height:1.6;margin-bottom:16px">${msgLines.join('<br>')}</div>
+          <div style="display:flex;gap:10px">
+            <button id="_dupCancelBtn" style="flex:1;padding:11px;border-radius:9px;border:1.5px solid var(--border);background:var(--surface2);color:var(--text);font-size:.85rem;font-weight:700;cursor:pointer;font-family:inherit">
+              ✕ Cancelar
+            </button>
+            <button id="_dupConfirmBtn" style="flex:1;padding:11px;border-radius:9px;border:none;background:#d97706;color:#fff;font-size:.85rem;font-weight:700;cursor:pointer;font-family:inherit">
+              Registrar mesmo assim
+            </button>
+          </div>
+        </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#_dupCancelBtn').onclick  = () => { overlay.remove(); res(false); };
+        overlay.querySelector('#_dupConfirmBtn').onclick = () => { overlay.remove(); res(true);  };
+      });
+
+      if (!confirmed) return;
+    }
+  } catch(dupErr) {
+    console.warn('[dup-check]', dupErr?.message); // non-fatal — proceed
+  }
+  // ── End duplicate detection ────────────────────────────────────────────
 
   const result = await processScheduledOccurrence(sc, {
     scheduledDate: schedDate,
@@ -1556,6 +1833,13 @@ async function confirmRegisterOccurrence() {
   toast('Transação registrada!', 'success');
   closeModal('registerOccModal');
   await loadScheduled();
+  // Refresh dashboard upcoming list if visible so registered tx disappears immediately
+  if (typeof renderDashboardUpcoming === 'function' && typeof state !== 'undefined' && state.currentPage === 'dashboard') {
+    renderDashboardUpcoming().catch(() => {});
+  } else if (typeof renderDashboardUpcoming === 'function') {
+    // Always refresh upcoming section so changes are reflected
+    setTimeout(() => renderDashboardUpcoming().catch(() => {}), 300);
+  }
 }
 
 // Payee autocomplete for SC modal uses shared onPayeeInput/selectPayee with ctx='sc'
@@ -1620,10 +1904,16 @@ async function runScheduledAutoRegister() {
   try {
     const cfg = getAutoCheckConfig ? getAutoCheckConfig() : { daysAhead: 0 };
     const daysAhead = parseInt(cfg?.daysAhead || 0, 10) || 0;
-    const today = new Date();
-    const toDate = new Date(today.getTime() + daysAhead*86400000);
+    // Always use local midnight as the baseline — prevents timestamp-based drift.
+    // new Date() could be 14:00; adding N×86400000 would point to 14:00 in N days
+    // instead of midnight, causing transactions to register 0-23h too early.
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0); // local midnight, no timezone ambiguity
+    const todayStr = localDateStr(todayMidnight);
+    // For the cutoff (toStr), add whole calendar days from local midnight
+    const toDate = new Date(todayMidnight);
+    toDate.setDate(toDate.getDate() + daysAhead); // calendar-day addition, not ms
     const toStr = localDateStr(toDate);
-    const todayStr = localDateStr(today);
 
     // Ensure scheduled loaded
     if(!state.scheduled || !state.scheduled.length) return 0;
@@ -1634,7 +1924,7 @@ async function runScheduledAutoRegister() {
       if(sc.status !== 'active' || !sc.auto_register) continue;
       const occDates = generateOccurrences(sc, 500);
       for(const d of occDates) {
-        if(d > toStr) continue;
+        if(d > toStr) break;  // dates are ordered ASC — once past cutoff, stop
 
         const result = await processScheduledOccurrence(sc, {
           scheduledDate: d,
@@ -1707,7 +1997,7 @@ async function runScheduledAutoRegister() {
       try{ await showAutoRegisterNotification(createdItems); }catch(e){}
 
       await loadScheduled(); // refresh occurrences
-      await loadAccounts();  // refresh balances (pending excluded now)
+      await loadAccounts(true);  // force refresh balances (pending excluded now)
       try{await recalcAccountBalances();}catch(_e){}
       if(state.currentPage==='transactions') loadTransactions();
       if(state.currentPage==='dashboard') loadDashboard();
@@ -1773,7 +2063,7 @@ async function showAutoRegisterNotification(items){
 ══════════════════════════════════════════════════════════════════ */
 
 // ── State ─────────────────────────────────────────────────────────
-let _scView       = 'calendar';       // 'list' | 'calendar' — padrão: calendário
+let _scView       = 'list';           // 'list' | 'calendar' — padrão: lista
 let _scCalYear    = new Date().getFullYear();
 let _scCalMonth   = new Date().getMonth(); // 0-indexed
 let _scCalSelDay  = null;             // 'YYYY-MM-DD' | null
@@ -1787,17 +2077,29 @@ const SC_MONTHS = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
 // ── View switch ───────────────────────────────────────────────────
 function setScView(view) {
   _scView = view;
-  // Persist preference to localStorage + Supabase app_users
+  // Persist: localStorage (instant) + app_users (cross-device sync)
   try { localStorage.setItem('sc_view_pref', view); } catch(_) {}
   if (typeof sb !== 'undefined' && sb && typeof currentUser !== 'undefined' && currentUser?.id) {
     sb.from('app_users').update({ preferred_sc_view: view }).eq('id', currentUser.id)
-      .then(() => {}).catch(() => {});
+      .then(({error}) => { if(error) console.warn('[sc_view] save:', error.message); })
+      .catch(e => console.warn('[sc_view] save:', e?.message));
   }
 
-  // Update all view buttons — handles both desktop and mobile variants
-  document.querySelectorAll('#scViewList').forEach(b => b.classList.toggle('active', view === 'list'));
-  document.querySelectorAll('#scViewCal').forEach(b  => b.classList.toggle('active', view === 'calendar'));
-  document.querySelectorAll('#scViewCats').forEach(b => b.classList.toggle('active', view === 'categories'));
+  // Update all view buttons — desktop (by id) + mobile (by data-mview)
+  const _viewMap = { list: 'list', calendar: 'cal', categories: 'cats' };
+  const _mKey = _viewMap[view] || view;
+  // Desktop
+  ['scViewList','scViewCal','scViewCats'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('active',
+      (id === 'scViewList' && view === 'list') ||
+      (id === 'scViewCal'  && view === 'calendar') ||
+      (id === 'scViewCats' && view === 'categories'));
+  });
+  // Mobile (data-mview attribute)
+  document.querySelectorAll('[data-mview]').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-mview') === _mKey);
+  });
 
   const listView = document.getElementById('scListView');
   const calView  = document.getElementById('scCalendarView');
@@ -1832,8 +2134,8 @@ function scMobileToggleFilter() {
   const panel = document.getElementById('scMobileFilters');
   const btn   = document.getElementById('scMobileFilterBtn');
   if (!panel) return;
-  const open = panel.style.display !== 'none';
-  panel.style.display = open ? 'none' : '';
+  const open = panel.style.display === 'block' || (panel.style.display !== 'none' && panel.style.display !== '');
+  panel.style.display = open ? 'none' : 'block';
   if (btn) btn.classList.toggle('active', !open);
   if (!open) {
     // focus search input when opening
@@ -2541,7 +2843,8 @@ function _openUpcomingIfHasEvents() {
 // CALENDAR VIEW — Right column panels (Upcoming + Recorrentes)
 // ══════════════════════════════════════════════════════════════════════════════
 
-let _calUpcomingOpen = true;
+let _calUpcomingOpen        = true;
+let _calUpcomingInitialised = false;
 let _calScStatusChip = 'all';
 
 window.toggleCalUpcomingPanel = function() {
@@ -2635,7 +2938,7 @@ function _renderCalUpcoming() {
       return s + (isExp ? -1 : 1) * Math.abs(sc.amount);
     }, 0);
 
-    const rows = items.map(({ sc, isPending }) => {
+    const rows = items.map(({ sc, isPending, isArPending }) => {
       const isExp    = sc.type === 'expense' || sc.type === 'card_payment' || sc.type === 'transfer';
       const isIncome = sc.type === 'income';
       const typeIcon = sc.type === 'transfer' ? '🔄' : isExp ? '💸' : '💰';
@@ -2666,10 +2969,14 @@ function _renderCalUpcoming() {
     </div>`;
   }).join('');
 
-  // Open the upcoming panel
-  listEl.style.setProperty('display', 'block', 'important');
-  _calUpcomingOpen = true;
-  if (arrowEl) arrowEl.style.transform = 'rotate(180deg)';
+  // Preserve user's toggle state — only force open on first render
+  if (!_calUpcomingInitialised) {
+    _calUpcomingOpen = true;
+    _calUpcomingInitialised = true;
+  }
+  // Apply current state (respects user collapse)
+  listEl.style.setProperty('display', _calUpcomingOpen ? 'block' : 'none', 'important');
+  if (arrowEl) arrowEl.style.transform = _calUpcomingOpen ? 'rotate(180deg)' : 'rotate(0)';
 }
 
 function filterScheduledCal() {
@@ -2721,3 +3028,656 @@ function _renderCalList(list) {
     el.innerHTML = list.map(sc => `<div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:.84rem">${esc(sc.description||'—')}</div>`).join('');
   }
 }
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window._openUpcomingIfHasEvents            = _openUpcomingIfHasEvents;
+window.confirmRegisterOccurrence           = confirmRegisterOccurrence;
+window.fetchScCurrencyRate                 = fetchScCurrencyRate;
+window.fetchScSuggestedFxRate              = fetchScSuggestedFxRate;
+window.generateOccurrences                 = generateOccurrences;
+window.ignoreOccurrence                    = ignoreOccurrence;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// A/R — VALORES A RECEBER (Contas a receber pendentes)
+// Guarda num store scoped por família em app_settings
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════
+// VALORES A RECEBER — Supabase-backed (scheduled_ar_records)
+// ════════════════════════════════════════════════════════════════════════════
+
+async function _scArFetch(statusFilter) {
+  try {
+    const fid = typeof famId === 'function' ? famId() : null;
+    if (!fid) return [];
+    let q = sb.from('scheduled_ar_records')
+      .select('*')
+      .eq('family_id', fid)
+      .order('date', { ascending: true });
+    if (statusFilter && statusFilter.length === 1) {
+      q = q.eq('status', statusFilter[0]);
+    } else if (statusFilter && statusFilter.length > 1) {
+      q = q.in('status', statusFilter);
+    }
+    const { data, error } = await q;
+    if (error) throw error;
+    const rows = data || [];
+    // Rebuild ar_pending keys for renderUpcoming cross-reference
+    if (!statusFilter || statusFilter.includes('pending')) {
+      state._arPendingKeys = new Set(
+        rows.filter(r => r.status === 'pending' && r.sc_id && r.date)
+            .map(r => r.sc_id + '|' + r.date)
+      );
+    }
+    return rows;
+  } catch (e) {
+    console.warn('[scAr] fetch error:', e?.message);
+    return [];
+  }
+}
+
+async function registerAsNotReceived() {
+  const scId   = document.getElementById('occScId')?.value;
+  const date   = document.getElementById('occDate')?.value;
+  const memo   = document.getElementById('occMemo')?.value?.trim() || '';
+
+  if (!scId || !date) { toast('Preencha a data.', 'warning'); return; }
+
+  const sc     = (state.scheduled || []).find(s => s.id === scId);
+  const amount = Math.abs(getAmtField('occAmount') || parseFloat(sc?.amount) || 0);
+  const desc   = sc?.description || 'Valor a receber';
+  const fid    = typeof famId === 'function' ? famId() : null;
+  if (!fid) { toast('Familia nao identificada.', 'error'); return; }
+
+  // ── Duplicate detection ────────────────────────────────────────────────────
+  try {
+    const { data: existing } = await sb.from('scheduled_ar_records')
+      .select('id,date,amount,description,status')
+      .eq('family_id', fid)
+      .eq('sc_id',     scId)
+      .eq('status',   'pending');
+    if (existing?.length) {
+      // Already has a pending AR for this scheduled item
+      const dup = existing[0];
+      const dupDate = typeof fmtDate === 'function' ? fmtDate(dup.date) : dup.date;
+      const sameDateDup = existing.find(r => r.date === date);
+      if (sameDateDup) {
+        // Exact duplicate: same scheduled item, same date
+        toast(`⚠️ Já existe um registro de A Receber para esta data (${dupDate}). Verifique em A Receber.`, 'warning');
+        return;
+      }
+      // Different date but same sc — warn but allow
+      if (!confirm(`⚠️ Este programado já tem um registro pendente em A Receber (${dupDate}).
+
+Deseja adicionar mais uma entrada para ${typeof fmtDate === 'function' ? fmtDate(date) : date}?`)) {
+        return;
+      }
+    }
+  } catch (_dupErr) {
+    // Non-critical — proceed even if duplicate check fails
+    console.warn('[scAr] Duplicate check failed:', _dupErr?.message);
+  }
+
+  try {
+    // Tenta via RPC SECURITY DEFINER primeiro — bypassa edge cases de RLS
+    let insertOk = false;
+    try {
+      const { error: rpcErr } = await sb.rpc('insert_scheduled_ar_record', {
+        p_family_id:   fid,
+        p_sc_id:       scId,
+        p_description: desc,
+        p_date:        date,
+        p_amount:      amount,
+        p_memo:        memo || null,
+      });
+      if (!rpcErr) insertOk = true;
+      else console.warn('[scAr] RPC insert_scheduled_ar_record:', rpcErr.message);
+    } catch(rpcEx) {
+      console.warn('[scAr] RPC exception:', rpcEx?.message);
+    }
+
+    // Fallback: INSERT direto (funciona se RLS estiver configurada corretamente)
+    if (!insertOk) {
+      const { error } = await sb.from('scheduled_ar_records').insert({
+        family_id:   fid,
+        sc_id:       scId,
+        description: desc,
+        date,
+        amount,
+        memo:        memo || null,
+        status:      'pending',
+      });
+      if (error) throw error;
+    }
+
+    // Mark occurrence as 'ar_pending' (stored as 'skipped' in DB — no schema change)
+    // renderUpcoming detects ar_pending by cross-referencing state._arPendingKeys
+    try {
+      await sb.from('scheduled_occurrences')
+        .upsert({
+          sc_id:            scId,
+          scheduled_date:   date,
+          family_id:        fid,
+          execution_status: 'skipped',
+          updated_at:       new Date().toISOString(),
+        }, { onConflict: 'sc_id,scheduled_date' });
+      // Update local cache
+      const scLocal = (state.scheduled || []).find(s => s.id === scId);
+      if (scLocal) {
+        if (!scLocal.occurrences) scLocal.occurrences = [];
+        const existing = scLocal.occurrences.find(o => o.scheduled_date === date);
+        if (existing) existing.execution_status = 'skipped';
+        else scLocal.occurrences.push({ sc_id: scId, scheduled_date: date, execution_status: 'skipped', family_id: fid });
+      }
+      // Track ar_pending keys so renderUpcoming can show them as "awaiting" rows
+      if (!state._arPendingKeys) state._arPendingKeys = new Set();
+      state._arPendingKeys.add(scId + '|' + date);
+    } catch(skipErr) {
+      console.warn('[scAr] Could not mark occurrence as ar_pending:', skipErr?.message);
+    }
+
+    closeModal('registerOccModal');
+    toast('📬 Adicionado em A Receber', 'success');
+    _scArLoad();
+    renderUpcoming();
+    if (typeof loadDashboard === 'function' && typeof state !== 'undefined' && state.currentPage === 'dashboard') loadDashboard();
+  } catch (e) {
+    toast('Erro ao registrar: ' + (e.message || e), 'error');
+  }
+}
+
+async function _scArLoad() {
+  const section = document.getElementById('scArSection');
+  const list    = document.getElementById('scArList');
+  const cntEl   = document.getElementById('scArCount');
+  if (!section || !list) return;
+
+  // Only show on the scheduled page
+  if (state.currentPage !== 'scheduled') {
+    section.style.display = 'none';
+    return;
+  }
+
+  const pending = await _scArFetch(['pending']);
+  window._scArRecordsCache = pending;  // cache for renderUpcoming inline buttons
+
+  section.style.display = pending.length ? '' : 'none';
+  if (cntEl) cntEl.textContent = pending.length || '';
+  if (!pending.length) { list.innerHTML = ''; return; }
+
+  list.innerHTML = pending.map(r => {
+    const dt  = r.date ? r.date.split('-').reverse().join('/') : '--';
+    const amt = typeof fmt === 'function' ? fmt(r.amount || 0) : 'R$ ' + (+(r.amount || 0)).toFixed(2);
+    return `
+    <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;
+      background:var(--surface);border:1px solid #fde68a;border-radius:10px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:.83rem;font-weight:700;color:var(--text)">${esc(r.description)}</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:3px;flex-wrap:wrap">
+          <span style="font-size:.78rem;color:var(--muted)">${dt}</span>
+          <span style="font-size:.83rem;font-weight:800;color:#d97706">${amt}</span>
+          ${r.memo ? '<span style="font-size:.72rem;color:var(--muted);font-style:italic">'+esc(r.memo)+'</span>' : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button onclick="_scArReceive('${r.id}')"
+          style="padding:5px 10px;background:#dcfce7;color:#15803d;border:1px solid #86efac;
+            border-radius:7px;font-size:.72rem;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">
+          Recebido
+        </button>
+        <button onclick="_scArCancel('${r.id}')"
+          style="padding:5px 10px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);
+            border-radius:7px;font-size:.72rem;font-weight:700;cursor:pointer;font-family:inherit">
+          X
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function _scArReceive(arId) {
+  // Load ar_record details then open the receipt modal
+  try {
+    const { data: rec, error } = await sb.from('scheduled_ar_records')
+      .select('*, scheduled_transactions(account_id,category_id,payee_id,currency,accounts!scheduled_transactions_account_id_fkey(name))')
+      .eq('id', arId).maybeSingle();
+    if (error || !rec) throw error || new Error('Registro não encontrado');
+
+    const sc = rec.scheduled_transactions;
+    // Open the unified receipt modal
+    if (typeof _openReceiptModal === 'function') {
+      _openReceiptModal({
+        type:        'ar_record',
+        id:          arId,
+        description: rec.description || '—',
+        amount:      rec.amount || 0,
+        currency:    sc?.currency || 'BRL',
+        date:        new Date().toISOString().slice(0,10),
+        accountId:   sc?.account_id || '',
+        categoryId:  sc?.category_id || null,
+        payeeId:     sc?.payee_id    || null,
+        memo:        rec.memo || '',
+      });
+    } else {
+      // Fallback: direct confirm without modal
+      const fid = typeof famId === 'function' ? famId() : null;
+      const { error: upErr } = await sb.from('scheduled_ar_records')
+        .update({ status:'received', received_at:new Date().toISOString(), updated_at:new Date().toISOString() })
+        .eq('id', arId).eq('family_id', fid);
+      if (upErr) throw upErr;
+      _scArLoad();
+      toast('Marcado como recebido','success');
+    }
+  } catch(e) {
+    toast('Erro: '+(e.message||e),'error');
+  }
+}
+
+async function _scArCancel(arId) {
+  try {
+    const fid = typeof famId === 'function' ? famId() : null;
+    // Load the AR record first so we can restore the occurrence
+    const { data: rec } = await sb.from('scheduled_ar_records')
+      .select('sc_id,date').eq('id', arId).maybeSingle();
+
+    const { error } = await sb.from('scheduled_ar_records')
+      .update({
+        status:       'cancelled',
+        cancelled_at: new Date().toISOString(),
+        updated_at:   new Date().toISOString(),
+      })
+      .eq('id', arId)
+      .eq('family_id', fid);
+    if (error) throw error;
+
+    // Restore occurrence: remove skipped status so it reappears in upcoming
+    if (rec?.sc_id && rec?.date) {
+      await sb.from('scheduled_occurrences')
+        .delete()
+        .eq('sc_id', rec.sc_id)
+        .eq('scheduled_date', rec.date)
+        .eq('execution_status', 'skipped')
+        .eq('family_id', fid);
+      // Update local cache
+      const sc = (state.scheduled || []).find(s => s.id === rec.sc_id);
+      if (sc?.occurrences) {
+        sc.occurrences = sc.occurrences.filter(
+          o => !(o.scheduled_date === rec.date && o.execution_status === 'skipped')
+        );
+      }
+      // Remove from pending keys
+      if (state._arPendingKeys) state._arPendingKeys.delete(rec.sc_id + '|' + rec.date);
+    }
+
+    await _scArLoad();
+    renderUpcoming();
+    toast('📅 Transação restaurada para Programados', 'info');
+  } catch (e) {
+    toast('Erro: ' + (e.message || e), 'error');
+  }
+}
+
+function _scArShowBtn(sc) {
+  const btn = document.getElementById('registerNotReceivedBtn');
+  if (!btn) return;
+  btn.style.display = sc && sc.type === 'income' ? '' : 'none';
+}
+
+
+
+// Cancel AR from the upcoming panel row (faster than going through scArSection)
+async function _scArCancelFromUpcoming(arId, scId, date) {
+  if (!confirm('Remover de A Receber e restaurar em Programados?')) return;
+  await _scArCancel(arId);
+}
+window._scArCancelFromUpcoming = _scArCancelFromUpcoming;
+window._scArLoad              = _scArLoad;
+window._scArReceive           = _scArReceive;
+window.registerAsNotReceived  = registerAsNotReceived;
+window._scArCancel  = _scArCancel;
+window._scArShowBtn = _scArShowBtn;
+
+window.loadScheduled                       = loadScheduled;
+// Auto-load A/R section after scheduled loads
+_scArLoad && setTimeout(_scArLoad, 500);
+// Show A Receber access button in Programados page
+setTimeout(() => {
+  const bar = document.getElementById('scArAccessBar');
+  if (bar) bar.style.display = '';
+}, 100);
+window.openRegisterOcc                     = openRegisterOcc;
+
+// ── switchScTab: handles tab navigation inside the scheduled modal ──────────
+function switchScTab(paneId, btn) {
+  document.querySelectorAll('[id^="scCtx"]').forEach(p => { p.style.display = 'none'; });
+  const pane = document.getElementById(paneId);
+  if (pane) pane.style.display = '';
+  document.querySelectorAll('.tx-ctx-tab').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (paneId === 'scCtxDivisao') {
+    const scAmt = Math.abs(getAmtField('scAmount') || 0);
+    if (typeof _scSplitRenderCat === 'function') _scSplitRenderCat(scAmt);
+    if (typeof _scSplitRenderMem === 'function') _scSplitRenderMem(scAmt);
+    const activeScTab = (typeof _scSplit !== 'undefined' && _scSplit.activeTab) || 'cat';
+    if (typeof scSplitShowTab === 'function') scSplitShowTab(activeScTab);
+  }
+}
+window.switchScTab = switchScTab;
+
+window.openScheduledModal                  = openScheduledModal;
+window.renderScheduled                     = renderScheduled;
+window.runScheduledAutoRegister            = runScheduledAutoRegister;
+window.saveScheduled                       = saveScheduled;
+window.scCalGoToday                        = scCalGoToday;
+window.scCalMove                           = scCalMove;
+window.scChipFilter                        = scChipFilter;
+window.setScCurrencyMode                   = setScCurrencyMode;
+window.setScFxMode                         = setScFxMode;
+window.setScType                           = setScType;
+window.setScView                           = setScView;
+
+// ── Antecipar Série — Computar e consolidar todas as parcelas pendentes ───────
+
+function openAnteciparSerie(scId) {
+  const sc = state.scheduled.find(s => s.id === scId);
+  if (!sc) return;
+
+  // Compute pending occurrences (not yet registered)
+  const registered = new Set((sc.occurrences || []).map(o => o.scheduled_date));
+  const allOccs    = generateOccurrences(sc, 500);
+  const today      = localDateStr();
+  const pending    = allOccs.filter(d => !registered.has(d) && d >= today);
+
+  if (!pending.length) {
+    toast('Não há parcelas pendentes para antecipar.', 'info');
+    return;
+  }
+
+  const baseAmt    = Math.abs(parseFloat(sc.amount) || 0);
+  const totalAmt   = baseAmt * pending.length;
+  const isExpense  = sc.type === 'expense' || sc.type === 'transfer' || sc.type === 'card_payment';
+  const currency   = sc.currency || (state.accounts.find(a => a.id === sc.account_id)?.currency) || 'BRL';
+  const fmtAmt     = v => fmt(v, currency);
+
+  // Build modal HTML
+  const existing = document.getElementById('anteciparSerieModal');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'anteciparSerieModal';
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:480px">
+      <div class="modal-handle"></div>
+      <div class="modal-header">
+        <span class="modal-title">⏩ Antecipar Parcelas</span>
+        <button class="modal-close" onclick="document.getElementById('anteciparSerieModal').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:16px">
+          <div style="font-size:.78rem;font-weight:700;color:var(--text);margin-bottom:8px">${esc(sc.description || '—')}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div>
+              <div style="font-size:.62rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">Parcelas pendentes</div>
+              <div style="font-size:1.1rem;font-weight:800;font-family:var(--font-serif)">${pending.length}</div>
+            </div>
+            <div>
+              <div style="font-size:.62rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">Valor por parcela</div>
+              <div style="font-size:1.1rem;font-weight:800;font-family:var(--font-serif)">${fmtAmt(baseAmt)}</div>
+            </div>
+            <div>
+              <div style="font-size:.62rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">Total a consolidar</div>
+              <div style="font-size:1.2rem;font-weight:900;font-family:var(--font-serif);color:${isExpense?'var(--red)':'var(--accent)'}">
+                ${isExpense?'−':'+'}${fmtAmt(totalAmt)}
+              </div>
+            </div>
+            <div>
+              <div style="font-size:.62rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">Data da transação</div>
+              <div style="font-size:1rem;font-weight:700">${fmtDate(today)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:rgba(180,83,9,.07);border:1px solid rgba(180,83,9,.22);border-radius:10px;padding:12px 14px;margin-bottom:16px">
+          <div style="font-size:.78rem;color:#b45309;font-weight:600;margin-bottom:4px">⚠️ O que acontecerá:</div>
+          <ul style="font-size:.75rem;color:#b45309;margin:0;padding-left:16px;line-height:1.7">
+            <li>Todas as ${pending.length} parcelas pendentes serão consolidadas em <strong>uma única transação</strong> com data de hoje</li>
+            <li>Valor total: <strong>${fmtAmt(totalAmt)}</strong> (${pending.length} × ${fmtAmt(baseAmt)})</li>
+            <li>A transação programada será <strong>marcada como concluída</strong></li>
+            <li>Descrição inclui detalhes das parcelas antecipadas</li>
+          </ul>
+        </div>
+
+        <div style="font-size:.78rem;color:var(--muted);margin-bottom:4px;font-weight:600">Observação adicional (opcional)</div>
+        <textarea id="anteciparMemo" rows="2"
+          placeholder="Ex: Quitação antecipada, negociação de desconto…"
+          style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;font-family:inherit;font-size:.83rem;resize:vertical;background:var(--surface);color:var(--text);box-sizing:border-box"></textarea>
+
+        <div style="font-size:.72rem;color:var(--muted);margin-top:8px">
+          Parcelas: ${pending.slice(0,5).map(d=>fmtDate(d)).join(', ')}${pending.length>5?` … +${pending.length-5} mais`:''}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="document.getElementById('anteciparSerieModal').remove()">Cancelar</button>
+        <button class="btn btn-primary" id="anteciparConfirmBtn" onclick="_confirmarAntecipacao('${scId}')">
+          ⏩ Confirmar Antecipação
+        </button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('open'));
+}
+window.openAnteciparSerie = openAnteciparSerie;
+
+async function _confirmarAntecipacao(scId) {
+  const sc = state.scheduled.find(s => s.id === scId);
+  if (!sc) return;
+
+  const btn = document.getElementById('anteciparConfirmBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Processando…'; }
+
+  try {
+    const registered = new Set((sc.occurrences || []).map(o => o.scheduled_date));
+    const allOccs    = generateOccurrences(sc, 500);
+    const today      = localDateStr();
+    const pending    = allOccs.filter(d => !registered.has(d) && d >= today);
+
+    if (!pending.length) throw new Error('Nenhuma parcela pendente.');
+
+    const baseAmt   = Math.abs(parseFloat(sc.amount) || 0);
+    const totalAmt  = baseAmt * pending.length;
+    const isExpense = sc.type === 'expense' || sc.type === 'transfer' || sc.type === 'card_payment';
+    const finalAmt  = isExpense ? -totalAmt : totalAmt;
+    const currency  = sc.currency || (state.accounts.find(a => a.id === sc.account_id)?.currency) || 'BRL';
+    const extraMemo = (document.getElementById('anteciparMemo')?.value || '').trim();
+
+    // Build description with details
+    const fmtAmt  = v => fmt(v, currency);
+    const desc    = `${sc.description || 'Programado'} — Antecipação de ${pending.length} parcela${pending.length!==1?'s':''} (${fmtAmt(baseAmt)} cada)`;
+    const memo    = [
+      `Antecipação em ${fmtDate(today)}: ${pending.length} parcela${pending.length!==1?'s':''} × ${fmtAmt(baseAmt)} = ${fmtAmt(totalAmt)}`,
+      `Período: ${fmtDate(pending[0])} a ${fmtDate(pending[pending.length-1])}`,
+      `Ref. programado ID: ${scId}`,
+      extraMemo
+    ].filter(Boolean).join('\n');
+
+    // Insert consolidated transaction
+    const txPayload = {
+      family_id:    famId(),
+      date:         today,
+      description:  desc,
+      amount:       finalAmt,
+      account_id:   sc.account_id,
+      payee_id:     sc.payee_id || null,
+      category_id:  sc.category_id || null,
+      memo,
+      tags:         sc.tags || [],
+      is_transfer:  false,
+      status:       'confirmed',
+      currency:     currency,
+      updated_at:   new Date().toISOString(),
+    };
+
+    const { data: txData, error: txErr } = await sb.from('transactions').insert(txPayload).select().single();
+    if (txErr) throw txErr;
+
+    // Register all pending occurrences as executed, pointing to this tx
+    for (const d of pending) {
+      try {
+        await sb.from('scheduled_occurrences').insert({
+          scheduled_transaction_id: scId,
+          scheduled_date:  d,
+          actual_date:     today,
+          amount:          isExpense ? -baseAmt : baseAmt,
+          memo:            `Antecipada em ${fmtDate(today)}`,
+          transaction_id:  txData.id,
+          execution_status:'executed',
+          executed_at:     new Date().toISOString(),
+        });
+      } catch(occErr) {
+        console.warn('[antecipar] occurrence insert:', occErr?.message);
+      }
+    }
+
+    // Mark scheduled as finished
+    await sb.from('scheduled_transactions').update({ status: 'finished', updated_at: new Date().toISOString() }).eq('id', scId);
+
+    // Close modal and reload
+    document.getElementById('anteciparSerieModal')?.remove();
+    toast(`✅ ${pending.length} parcela${pending.length!==1?'s':''} antecipadas em uma transação de ${fmt(Math.abs(finalAmt), currency)}`, 'success');
+
+    // Reload state
+    if (typeof loadScheduled === 'function') await loadScheduled(true);
+    if (typeof renderScheduled === 'function') renderScheduled(state.scheduled || []);
+
+  } catch(e) {
+    toast('Erro na antecipação: ' + (e.message || e), 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '⏩ Confirmar Antecipação'; }
+  }
+}
+window._confirmarAntecipacao = _confirmarAntecipacao;
+
+/* ── ctsUpdateMode: visual toggle for Convert-to-Scheduled modal ─────────── */
+function ctsUpdateMode() {
+  const sel = document.querySelector('input[name="ctsMode"]:checked')?.value || 'keep';
+  const keepLabel    = document.getElementById('ctsModeKeepLabel');
+  const convertLabel = document.getElementById('ctsModeConvertLabel');
+  const dateLabel    = document.getElementById('ctsDateLabel');
+  const warning      = document.getElementById('ctsWarning');
+  const accent       = 'var(--accent)';
+  const border       = 'var(--border)';
+
+  if (keepLabel) {
+    keepLabel.style.borderColor  = sel === 'keep' ? accent : border;
+    keepLabel.style.background   = sel === 'keep' ? 'rgba(42,96,73,.06)' : 'transparent';
+  }
+  if (convertLabel) {
+    convertLabel.style.borderColor = sel === 'convert' ? accent : border;
+    convertLabel.style.background  = sel === 'convert' ? 'rgba(42,96,73,.06)' : 'transparent';
+  }
+  if (dateLabel) dateLabel.textContent = sel === 'keep' ? 'Data de início (próxima) *' : 'Data original *';
+
+  if (warning) {
+    if (sel === 'convert') {
+      warning.textContent = '⚠️ O lançamento original será deletado e o saldo da conta revertido. Esta ação cria uma programação equivalente a partir da data original.';
+      warning.style.display = '';
+    } else {
+      warning.style.display = 'none';
+    }
+  }
+}
+window.ctsUpdateMode = ctsUpdateMode;
+
+/* ── runScheduledManual: trigger pending auto-register immediately ─────────── */
+async function runScheduledManual() {
+  if (typeof runAutoRegister === 'function') {
+    toast('▶ Executando transações agendadas…', 'info');
+    try {
+      await runAutoRegister(true);
+      toast('✅ Transações agendadas processadas.', 'success');
+    } catch(e) {
+      toast('Erro ao executar: ' + (e.message||e), 'error');
+    }
+  } else if (typeof runScheduledAutoRegister === 'function') {
+    toast('▶ Executando transações agendadas…', 'info');
+    try {
+      await runScheduledAutoRegister();
+      toast('✅ Transações agendadas processadas.', 'success');
+    } catch(e) {
+      toast('Erro ao executar: ' + (e.message||e), 'error');
+    }
+  } else {
+    toast('Função de auto-registro não disponível.', 'warning');
+  }
+}
+window.runScheduledManual = runScheduledManual;
+
+
+function syncScheduledAutomationSummary() {
+  if (typeof _updateAutoConfirmHint === 'function') _updateAutoConfirmHint();
+}
+window.syncScheduledAutomationSummary = syncScheduledAutomationSummary;
+
+/* ── Programados Tab switcher (mobile) ──────────────────────────────────── */
+let _scActiveTab = 'scheduled';
+
+async function _scSwitchTab(tab) {
+  _scActiveTab = tab;
+
+  // Force update tab button states
+  document.querySelectorAll('.sc-tab').forEach(btn => {
+    const isActive = btn.id === 'scTab' + (tab === 'scheduled' ? 'Scheduled' : 'Receivables');
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive);
+  });
+
+  // Toggle panels
+  const listView     = document.getElementById('scListView');
+  const arTabContent = document.getElementById('scArTabContent');
+  if (listView)     listView.style.cssText     = tab === 'scheduled' ? '' : 'display:none !important';
+  if (arTabContent) arTabContent.style.cssText = tab === 'receivables' ? '' : 'display:none !important';
+
+  if (tab === 'receivables') {
+    // Render receivables directly into the tab containers (no ID swapping)
+    const tabBody  = document.getElementById('scArTabBody');
+    const tabTotal = document.getElementById('scArTabTotal');
+    const tabOver  = document.getElementById('scArTabOverdue');
+    const tabCount = document.getElementById('scArTabCount');
+    if (tabBody) tabBody.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">⏳ Carregando…</div>';
+
+    if (typeof loadReceivables === 'function') {
+      // Patch the DOM elements temporarily
+      const restore = [];
+      const remap = [
+        ['receivablesTotalAmt', 'scArTabTotal'],
+        ['receivablesOverdueAmt','scArTabOverdue'],
+        ['receivablesCount',    'scArTabCount'],
+        ['receivablesBody',     'scArTabBody'],
+      ];
+      remap.forEach(([from, to]) => {
+        const fromEl = document.getElementById(from);
+        const toEl   = document.getElementById(to);
+        if (fromEl && toEl) {
+          const origId = fromEl.id;
+          toEl.id   = from;   // tab element gets the ID loadReceivables() looks for
+          fromEl.id = from + '__hidden';
+          restore.push([fromEl, origId, toEl, to]);
+        }
+      });
+      try {
+        await loadReceivables();
+      } finally {
+        // Always restore IDs
+        restore.forEach(([fromEl, origId, toEl, to]) => {
+          fromEl.id = origId;
+          toEl.id   = to;
+        });
+      }
+    }
+  }
+}
+
+window._scSwitchTab = _scSwitchTab;

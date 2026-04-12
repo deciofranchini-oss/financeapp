@@ -273,7 +273,8 @@ function _buildCategoryFilterOptions() {
 }
 
 function _accountOptions(accounts, placeholder) {
-  const list = Array.isArray(accounts) ? accounts : [];
+  // Always exclude archived accounts from selection menus
+  const list = (Array.isArray(accounts) ? accounts : []).filter(a => !a.is_archived);
   const favs = list.filter(a => a.is_favorite);
   const rest = list.filter(a => !a.is_favorite);
   const renderOpt = (a, isFav=false) => `<option value="${a.id}">${isFav ? '⭐ ' : ''}${esc(a.name)} (${a.currency})</option>`;
@@ -296,9 +297,31 @@ function _accountOptions(accounts, placeholder) {
 // populateSelects is defined in reports.js (always loaded).
 // _accountOptions and _buildCategoryFilterOptions are helpers used by it.
 
-function openModal(id){document.getElementById(id).classList.add('open');}
-function closeModal(id){document.getElementById(id).classList.remove('open');}
-document.querySelectorAll('.modal-overlay').forEach(el=>{el.addEventListener('click',e=>{if(e.target===el)el.classList.remove('open');});});
+function _setModalState(el, isOpen){
+  if (!el) return;
+  if (isOpen) {
+    el.classList.add('open');
+    el.removeAttribute('aria-hidden');
+  } else {
+    // Blur focused descendants before aria-hidden to avoid browser warning
+    // that can leave the modal in a partially-blocked state
+    try {
+      const focused = el.querySelector(':focus');
+      if (focused) { focused.blur(); }
+    } catch(_) {}
+    el.classList.remove('open');
+    el.setAttribute('aria-hidden', 'true');
+    // NOTE: inert intentionally NOT used — causes pointer-event blocking on iOS Safari
+  }
+}
+function openModal(id){ _setModalState(document.getElementById(id), true); }
+function closeModal(id){ _setModalState(document.getElementById(id), false); }
+function closeAllModals(){
+  document.querySelectorAll('.modal-overlay').forEach(el => _setModalState(el, false));
+}
+document.querySelectorAll('.modal-overlay').forEach(el=>{
+  el.addEventListener('click', e => { if (e.target === el) _setModalState(el, false); });
+});
 
 function toast(msg,type='info'){
   // Auto-translate if message exists as direct-text key in i18n builtin
@@ -849,7 +872,7 @@ async function generateAutoTransactionDescription({ categoryName, payeeName, mem
   if (!cat && !pay && !mem) return fallback;
 
   try {
-    const apiKey = await getAppSetting('gemini_api_key', '').catch(() => '');
+    const apiKey = await getGeminiApiKey();
     if (!apiKey || !apiKey.startsWith('AIza')) return fallback;
 
     const prompt = `Você cria descrições curtas e padronizadas para lançamentos financeiros.
@@ -875,22 +898,21 @@ Supermercado do Décio no Pão de Açúcar
 Farmácia na Drogasil
 Presente da Chloe na Amazon`;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const _utilModel = (typeof getGeminiModel === 'function') ? await getGeminiModel() : 'gemini-2.5-flash';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${_utilModel}:generateContent?key=${apiKey}`;
+    let text;
+    try {
+      const json = await geminiRetryFetch(url, {
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 80 }
-      })
-    });
-    if (!resp.ok) return fallback;
-
-    const json = await resp.json().catch(() => null);
-    const text = _afdClean(json?.candidates?.[0]?.content?.parts?.map(p => p?.text || '').join(' ') || '');
+        generationConfig: { temperature: 0.1, maxOutputTokens: 80 },
+      }, { maxRetries: 1 });
+      text = _afdClean(_parseGeminiText(json));
+    } catch (_) {
+      return fallback;
+    }
     if (!text) return fallback;
 
-    const cleaned = text.replace(/^['"“”]+|['"“”]+$/g, '').replace(/\s+/g, ' ').trim();
+    const cleaned = text.replace(/^['“”“”]+|['“”“”]+$/g, '').replace(/\s+/g, ' ').trim();
     if (!cleaned || cleaned.length > 80) return fallback;
     return cleaned;
   } catch (_) {
@@ -928,3 +950,228 @@ async function ensureTransactionDescription(input) {
 window.buildAutoDescriptionFallback = buildAutoDescriptionFallback;
 window.generateAutoTransactionDescription = generateAutoTransactionDescription;
 window.ensureTransactionDescription = ensureTransactionDescription;
+
+/* ── Gemini utilities ────────────────────────────────────────────────────────
+ *
+ *  _geminiInjectThinking(body, url)
+ *    Auto-injects thinkingConfig:{thinkingBudget:0} for gemini-2.5-* models
+ *    so the model does NOT spend output tokens on internal reasoning.
+ *    Without this, 2.5-flash silently consumes up to 8 000+ tokens on thinking
+ *    before writing the actual response, causing MAX_TOKENS truncation and
+ *    broken JSON.  Always disable thinking for structured / fast responses.
+ *
+ *  geminiRetryFetch(url, body, opts?)
+ *    Central Gemini call helper used by all AI modules.
+ *    • Injects thinkingConfig automatically
+ *    • Retries on 429 / 503 with exponential backoff (3 retries max)
+ *    • Returns parsed response JSON; throws descriptive errors
+ *
+ *  _parseGeminiText(data)
+ *    Extracts the text content from a Gemini response object.
+ *    Joins all parts, strips Markdown fences, checks finishReason.
+ *    Throws on MAX_TOKENS / SAFETY / empty response.
+ *
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/** Inject thinkingConfig for 2.5 models (modifies a shallow copy, not the original). */
+function _geminiInjectThinking(body, url) {
+  // Detect model from URL: .../models/gemini-2.5-flash:generateContent...
+  const modelMatch = (url || '').match(/\/models\/([^:?/]+)/);
+  const modelName  = modelMatch ? modelMatch[1] : '';
+  if (!/gemini-2\.5/.test(modelName)) return body;             // not a 2.5 model — leave unchanged
+
+  const gc = body.generationConfig || {};
+  if (gc.thinkingConfig) return body;                           // already set by caller — respect it
+
+  return {
+    ...body,
+    generationConfig: {
+      ...gc,
+      thinkingConfig: { thinkingBudget: 0 },                   // disable thinking → all tokens go to output
+    },
+  };
+}
+window._geminiInjectThinking = _geminiInjectThinking;
+
+/**
+ * geminiRetryFetch(url, body, opts?)
+ *
+ * opts: {
+ *   maxRetries  : number          default 3
+ *   backoffMs   : number[]        default [5000, 12000, 25000]
+ *   onRetry     : fn(attempt, max, waitMs)  optional UI callback
+ * }
+ *
+ * Returns the parsed JSON response from Gemini.
+ * Uses the original (non-intercepted) fetch to avoid double-retry.
+ */
+const _geminiRawFetch = window.fetch.bind(window);  // capture BEFORE any wrapper is added
+
+async function geminiRetryFetch(url, body, opts = {}) {
+  const maxRetries = opts.maxRetries ?? 3;
+  const backoff    = opts.backoffMs  ?? [5000, 12000, 25000];
+  const onRetry    = opts.onRetry;
+
+  // Auto-inject thinkingConfig for 2.5 models
+  const preparedBody = _geminiInjectThinking(body, url);
+  const bodyStr      = JSON.stringify(preparedBody);
+
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      const wait = backoff[Math.min(attempt - 1, backoff.length - 1)];
+      if (typeof onRetry === 'function') onRetry(attempt, maxRetries, wait);
+      console.warn(`[Gemini] retry ${attempt}/${maxRetries}, waiting ${wait}ms`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+
+    let resp;
+    try {
+      resp = await _geminiRawFetch(url, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    bodyStr,
+      });
+    } catch (netErr) {
+      lastErr = new Error('Erro de rede: ' + netErr.message);
+      if (attempt < maxRetries) continue;
+      throw lastErr;
+    }
+
+    if (resp.ok) return resp.json();
+
+    const errBody = await resp.json().catch(() => ({}));
+    const errMsg  = errBody?.error?.message || `HTTP ${resp.status}`;
+
+    // Retryable errors
+    if ((resp.status === 429 || resp.status === 503) && attempt < maxRetries) {
+      lastErr = new Error(resp.status === 429
+        ? 'Limite de requisições. Tentando novamente…'
+        : 'Modelo com alta demanda. Tentando novamente…');
+      continue;
+    }
+
+    // 400 with responseMimeType → retry without it (model may not support JSON mode)
+    if (resp.status === 400 && preparedBody.generationConfig?.responseMimeType && attempt === 0) {
+      console.warn('[Gemini] responseMimeType rejected (400), retrying without it');
+      const fallbackBody = { ...preparedBody, generationConfig: { ...preparedBody.generationConfig } };
+      delete fallbackBody.generationConfig.responseMimeType;
+      return geminiRetryFetch(url, fallbackBody, { ...opts, maxRetries: opts.maxRetries ?? 3 });
+    }
+
+    // Known terminal errors
+    if (resp.status === 400 && errMsg.includes('API_KEY'))
+      throw new Error('Chave Gemini inválida. Verifique em Configurações → IA.');
+    if (resp.status === 429)
+      throw new Error('Limite de requisições atingido. Aguarde 1 minuto e tente novamente.');
+    if (resp.status === 503)
+      throw new Error('Modelo indisponível (alta demanda). Tente outro modelo em Configurações → IA.');
+
+    throw new Error(errMsg);
+  }
+  throw lastErr || new Error('Falha após múltiplas tentativas. Tente novamente em alguns minutos.');
+}
+window.geminiRetryFetch = geminiRetryFetch;
+
+/**
+ * _parseGeminiText(data)
+ * Extracts and validates the text response from a parsed Gemini JSON response.
+ * Strips Markdown fences. Throws on MAX_TOKENS / SAFETY / empty.
+ */
+function _parseGeminiText(data) {
+  const candidate  = data?.candidates?.[0];
+  const finishReason = candidate?.finishReason || '';
+
+  if (!candidate || !candidate.content) {
+    const blockReason = data?.promptFeedback?.blockReason;
+    if (blockReason) throw new Error('Prompt bloqueado pela IA: ' + blockReason);
+    throw new Error('Modelo não retornou resposta. Tente novamente.');
+  }
+  if (finishReason === 'MAX_TOKENS') {
+    throw new Error('Resposta truncada (MAX_TOKENS). Reduza o período de análise ou escolha outro modelo em Configurações → IA.');
+  }
+  if (finishReason === 'SAFETY' || finishReason === 'RECITATION') {
+    throw new Error('Resposta bloqueada pelo filtro de segurança da IA.');
+  }
+
+  const parts = candidate.content?.parts || [];
+  const raw   = parts.map(p => p.text || '').join('');
+  if (!raw.trim()) throw new Error('Modelo retornou resposta vazia. Tente novamente.');
+
+  // Strip Markdown fences
+  return raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+}
+window._parseGeminiText = _parseGeminiText;
+
+/**
+ * _parseGeminiJSON(data)
+ * Extracts and parses the JSON response from Gemini.
+ * - Prioritizes { over [ (almost all Gemini JSON responses are objects)
+ * - Uses bracket-counting (not lastIndexOf) to find the exact JSON boundary
+ * - Sanitizes common Gemini issues: control chars inside strings
+ */
+function _parseGeminiJSON(data) {
+  const text = _parseGeminiText(data);
+
+  // Find start: prefer first '{' (object) over first '[' (array)
+  // This avoids matching '[' in surrounding explanation text like "análise [dados]"
+  const objIdx = text.indexOf('{');
+  const arrIdx = text.indexOf('[');
+  const startIdx = objIdx === -1 ? arrIdx
+                 : arrIdx === -1 ? objIdx
+                 : Math.min(objIdx, arrIdx); // take whichever comes first if both exist
+
+  if (startIdx === -1) throw new Error('Resposta da IA não contém JSON. Tente novamente.');
+
+  // Bracket-counting to find the exact end of the JSON structure
+  let depth = 0, inStr = false, esc = false, endIdx = -1;
+  for (let i = startIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (esc)              { esc = false; continue; }
+    if (ch === '\\' && inStr) { esc = true; continue; }
+    if (ch === '"')       { inStr = !inStr; continue; }
+    if (inStr)            { continue; }
+    if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 0) { endIdx = i; break; }
+    }
+  }
+
+  const jsonStr = (endIdx > startIdx)
+    ? text.slice(startIdx, endIdx + 1)
+    : text.slice(startIdx);
+
+  // Attempt 1: direct parse
+  try { return JSON.parse(jsonStr); } catch(_) {}
+
+  // Attempt 2: sanitize control characters (raw \n, \t inside string values)
+  const sanitized = jsonStr.replace(/[\u0000-\u001F\u007F]/g, (ch) => {
+    const map = {'\n':'\\n', '\r':'\\r', '\t':'\\t', '\b':'\\b', '\f':'\\f'};
+    return map[ch] || '';
+  });
+  try { return JSON.parse(sanitized); } catch(_) {}
+
+  // Attempt 3: if JSON was truncated, find the last complete top-level value
+  // by scanning backwards from the end for a valid close bracket
+  try {
+    for (let i = sanitized.length - 1; i > 10; i--) {
+      const ch = sanitized[i];
+      if (ch === '}' || ch === ']') {
+        try {
+          return JSON.parse(sanitized.slice(0, i + 1));
+        } catch(_) { continue; }
+      }
+    }
+  } catch(_) {}
+
+  throw new Error('Resposta inválida da IA (JSON mal formado). Tente novamente. Detalhe: Verifique os filtros e reduza o período de análise.');
+}
+window._parseGeminiJSON = _parseGeminiJSON;
+
+
+/* ── Legacy: keep window.fetch unmodified ────────────────────────────────────
+   The old _geminiRetryInterceptor that wrapped window.fetch has been removed.
+   All AI modules now use geminiRetryFetch() directly, which handles retry +
+   thinkingConfig injection in one place without double-retry side effects.
+─────────────────────────────────────────────────────────────────────────────── */

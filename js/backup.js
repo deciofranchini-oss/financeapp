@@ -25,7 +25,15 @@ const BACKUP_TABLES = [
   'investment_price_history',
   'grocery_lists',
   'grocery_items',
-];
+  'dreams',
+  'dream_items',
+  'dream_contributions',
+  'ai_insight_snapshots',
+  'ai_insight_recommendations',
+  'financial_objectives',
+  'attachments',
+  'family_preferences'
+];;
 
 const BACKUP_RELATIONS = [
   ['family_members', 'family_id', 'families'],
@@ -158,6 +166,18 @@ async function _collectFamilyBackupPayload(fid) {
       : Promise.resolve({ data: [] }),
   ]);
 
+  // New modules — fetched separately (optional, won't break backup if missing)
+  const [dreamsRes, dreamItemsRes, dreamContribRes, aiSnapshotsRes, aiRecsRes, objectivesRes, familyPrefsRes, attachmentsRes] = await Promise.all([
+    qf('dreams').catch(() => ({ data: [] })),
+    qf('dream_items').catch(() => ({ data: [] })),
+    qf('dream_contributions').catch(() => ({ data: [] })),
+    qf('ai_insight_snapshots').catch(() => ({ data: [] })),
+    qf('ai_insight_recommendations').catch(() => ({ data: [] })),
+    qf('financial_objectives').catch(() => ({ data: [] })),
+    Promise.resolve(sb.from('family_preferences').select('*').eq('family_id', fid)).catch(() => ({ data: [] })),
+    qf('attachments').catch(() => ({ data: [] })),
+  ]);
+
   const payload = {
     families:                 _arr(familiesRes.data),
     family_members:           _arr(membersRes.data),
@@ -181,6 +201,15 @@ async function _collectFamilyBackupPayload(fid) {
     investment_price_history: _arr(invPriceRes.data),
     grocery_lists:            _arr(groceryListsRes.data),
     grocery_items:            _arr(groceryItemsRes.data),
+    // New modules (graceful fallback if tables don't exist)
+    dreams:                   _arr(dreamsRes?.data),
+    dream_items:              _arr(dreamItemsRes?.data),
+    dream_contributions:      _arr(dreamContribRes?.data),
+    ai_insight_snapshots:     _arr(aiSnapshotsRes?.data),
+    ai_insight_recommendations:_arr(aiRecsRes?.data),
+    financial_objectives:     _arr(objectivesRes?.data),
+    family_preferences:       _arr(familyPrefsRes?.data),
+    attachments:              _arr(attachmentsRes?.data),
   };
 
   const counts = {};
@@ -679,10 +708,12 @@ async function _restoreBackupData(d, statusEl, options = {}) {
 }
 
 async function _reloadAfterRestore() {
+  // Bust TTL cache — dados restaurados devem ser relidos do banco
+  if (typeof DB !== 'undefined' && typeof DB.bustAll === 'function') DB.bustAll();
   const tasks = [];
-  if (typeof loadAccounts === 'function') tasks.push(loadAccounts());
-  if (typeof loadCategories === 'function') tasks.push(loadCategories());
-  if (typeof loadPayees === 'function') tasks.push(loadPayees());
+  if (typeof loadAccounts === 'function') tasks.push(loadAccounts(true));
+  if (typeof loadCategories === 'function') tasks.push(loadCategories(true));
+  if (typeof loadPayees === 'function') tasks.push(loadPayees(true));
   if (typeof loadTransactions === 'function') tasks.push(loadTransactions());
   if (typeof loadBudgets === 'function') tasks.push(loadBudgets());
   if (typeof loadScheduled === 'function') tasks.push(loadScheduled());
@@ -1210,7 +1241,7 @@ function confirmClearDatabase() {
 function showClearDatabasePinConfirm() {
   const pin = prompt('🔐 Digite seu Masterpin para confirmar a limpeza:');
   if (pin === null) return;
-  if (pin !== getMasterPin()) { alert('❌ PIN incorreto. Operação cancelada.'); return; }
+  if (pin !== getMasterPin()) { toast('❌ PIN incorreto. Operação cancelada.', 'error'); return; }
   executeClearDatabase();
 }
 
@@ -1240,8 +1271,7 @@ async function executeClearDatabase() {
     state.txTotal = 0; state.txPage = 0;
     if(typeof populateSelects==='function') populateSelects();
     if (failed.length > 0) {
-      alert('⚠️ Limpeza parcial:\n\n• ' + failed.join('\n• '));
-      toast('Limpeza parcial — veja detalhes', 'error');
+      toast('⚠️ Limpeza parcial: ' + failed.join(', '), 'error');
     } else {
       toast('✓ Base de dados limpa! (' + cleared.length + ' tabelas)', 'success');
     }
@@ -1404,3 +1434,9 @@ async function exportAllExcelZip() {
   }
 }
 window.exportAllExcelZip = exportAllExcelZip;
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window.loadDbBackups                       = loadDbBackups;
+window.openDbBackupCreate                  = openDbBackupCreate;
+window.openDbBackupCreateForFamily         = openDbBackupCreateForFamily;
+window.openFamilyBackupManager             = openFamilyBackupManager;

@@ -52,16 +52,25 @@ const _accounts = {
     if (!force && _fresh('accounts') && state.accounts.length) return;
     return _once('accounts', () => _wrap('Carregando contas…', async () => {
       const cols = 'id,name,type,currency,color,icon,initial_balance,group_id,family_id,' +
-                   'active,is_favorite,best_purchase_day,due_day,iof_rate,is_brazilian';
-      const [ar, gr] = await Promise.all([
-        famQ(sb.from('accounts').select(cols).eq('active', true)).order('name'),
+                   'active,is_favorite,best_purchase_day,due_day,iof_rate,is_brazilian,' +
+                   'bank_name,bank_code,agency,account_number,iban,routing_number,swift_bic,' +
+                   'card_brand,card_type,card_issuer,card_limit,linked_dream_id,notes,' +
+                   'is_archived,archived_at,archive_reason,pix_key,pix_keys,balance';
+      const [ar, gr, arr] = await Promise.all([
+        famQ(sb.from('accounts').select(cols).eq('active', true).eq('is_archived', false)).order('name'),
         famQ(sb.from('account_groups').select('id,name,emoji,color,currency')).order('name'),
+        famQ(sb.from('accounts').select(cols).eq('active', true).eq('is_archived', true)).order('name'),
       ]);
       if (ar.error) throw ar.error;
       if (gr.error) console.warn('[DB] account_groups:', gr.error.message);
-      state.accounts      = ar.data || [];
-      state.groups        = gr.data || [];
-      state.accountGroups = state.groups;
+      state.accounts         = ar.data  || [];
+      state.archivedAccounts = arr.data || [];
+      state.groups           = gr.data  || [];
+      state.accountGroups    = state.groups;
+      // Apply per-member account restrictions (set by family owner)
+      if (typeof filterAllowedAccounts === 'function') {
+        state.accounts = filterAllowedAccounts(state.accounts);
+      }
       _touch('accounts');
       await _accounts.recalcBalances();
     }));
@@ -264,7 +273,7 @@ const _dashboard = {
 
       // Build month query with optional member filter
       let monthQ = famQ(sb.from('transactions')
-        .select('amount,brl_amount,currency,is_transfer')
+        .select('id,amount,brl_amount,currency,is_transfer,is_card_payment')
       ).gte('date', `${y}-${m}-01`).lte('date', `${y}-${m}-${String(last).padStart(2,'0')}`)
         .eq('status', 'confirmed');
       if (memberIds && memberIds.length > 0) monthQ = monthQ.in('family_member_id', memberIds);
@@ -276,8 +285,21 @@ const _dashboard = {
       ]);
 
       let income = 0, expense = 0;
-      (monthRes.data || []).filter(t => !t.is_transfer).forEach(t => {
-        const brl = t.brl_amount != null ? t.brl_amount : toBRL(t.amount, t.currency || 'BRL');
+      (monthRes.data || []).filter(t => !t.is_transfer && !t.is_card_payment).forEach(t => {
+        let brl = t.brl_amount != null ? t.brl_amount : toBRL(t.amount, t.currency || 'BRL');
+        // Apply linked-tx net factor (reimbursements / offsets)
+        if (typeof _txLinkFindGroup === 'function' && typeof _txLinkCache !== 'undefined' && _txLinkCache) {
+          const _grp = _txLinkFindGroup(t.id);
+          if (_grp && _grp.netMode === 'offset' && _grp.txIds.length > 1) {
+            const _linkedAmts = (_grp.txIds).map(id => {
+              const lt = (monthRes.data || []).find(x => x.id === id);
+              return lt ? (lt.brl_amount != null ? lt.brl_amount : toBRL(lt.amount, lt.currency || 'BRL')) : 0;
+            });
+            const _net  = _linkedAmts.reduce((s,a) => s+a, 0);
+            const _abs  = _linkedAmts.reduce((s,a) => s+Math.abs(a), 0) || 1;
+            brl = _net * (Math.abs(brl) / _abs);
+          }
+        }
         if (brl > 0) income += brl; else expense += Math.abs(brl);
       });
 
@@ -302,6 +324,7 @@ const _dashboard = {
       // Subtrair dívidas ativas (se módulo habilitado)
       let debtTotal = 0;
       try {
+        // Schema: debts.status ∈ {active,settled,suspended,renegotiated,archived}
         const { data: debtsData } = await Promise.resolve(
           famQ(sb.from('debts').select('current_balance,original_amount,currency').eq('status', 'active'))
         ).catch(() => ({ data: [] }));
@@ -313,7 +336,7 @@ const _dashboard = {
 
       const total = accountTotal - debtTotal;
 
-      return { income, expense, total, pendingCount: pendRes.count || 0 };
+      return { income, expense, total, pendingCount: pendRes.count || 0, debtTotal };
     });
   },
 
@@ -341,7 +364,7 @@ const _dashboard = {
 
       const { data } = await q;
       const agg = {}; // "YYYY-MM" → { inc, exp }
-      (data || []).filter(t => !t.is_transfer).forEach(t => {
+      (data || []).filter(t => !t.is_transfer && !t.is_card_payment).forEach(t => {
         const k = t.date.slice(0, 7);
         if (!agg[k]) agg[k] = { inc: 0, exp: 0 };
         const brl = t.brl_amount != null ? t.brl_amount : toBRL(t.amount, t.currency || 'BRL');

@@ -21,9 +21,18 @@ const ASSET_TYPES = [
 
 // Corretoras conhecidas — combo com "Outro" para entrada livre
 const KNOWN_BROKERS = [
-  'XP Investimentos', 'Clear', 'Rico', 'BTG Pactual', 'Itaú', 'Bradesco',
-  'Banco do Brasil', 'Santander', 'Caixa', 'NuInvest (Easynvest)', 'Avenue',
-  'Inter Invest', 'Toro Investimentos', 'Warren', 'Órama', 'Modal', 'Outro',
+  // Corretoras independentes
+  'XP Investimentos', 'Clear', 'Rico', 'BTG Pactual Digital', 'Toro Investimentos',
+  'Warren', 'Órama', 'Modal', 'NuInvest (Easynvest)', 'Avenue', 'Stake',
+  'Inter Invest', 'Genial Investimentos', 'Guide Investimentos', 'Mirae Asset',
+  'CM Capital', 'Ágora Investimentos', 'SWM', 'Vitreo', 'Kinea',
+  // Bancos com plataforma de investimentos
+  'Itaú', 'Bradesco', 'Banco do Brasil', 'Santander', 'Caixa',
+  'Nubank', 'C6 Bank', 'Banco Inter', 'Sicoob', 'Sicredi',
+  // Internacionais
+  'Interactive Brokers', 'TD Ameritrade', 'Charles Schwab', 'Fidelity',
+  'Binance', 'Coinbase', 'Kraken',
+  'Outro',
 ];
 
 // Module state
@@ -349,6 +358,7 @@ function _renderPositionRow(p, totalMV) {
       <span class="inv-pos-actions">
         <button class="btn-icon" onclick="openInvPositionDetail('${p.id}')" title="Histórico">📋</button>
         <button class="btn-icon" onclick="openInvTransactionModal(null,'${p.id}')" title="Nova movimentação">+</button>
+        <button class="btn-icon" onclick="openInvBalanceModal('${p.id}')" title="Informar saldo atual" style="font-size:.8rem">💰</button>
       </span>
     </div>`;
 }
@@ -477,8 +487,52 @@ async function _invSavePrice(pos, price, currency, date, source) {
 
 // ── Transaction modal (buy / sell) ──────────────────────────────────────────
 
+// Modos do modal de transacao de investimento
+// 'buysell'  — Compra/Venda com Qtd + Preco unitario (padrao)
+// 'simple'   — Apenas valor total investido (sem qtd/preco)
+// 'tax'      — Registrar taxa ou imposto sobre o ativo
+let _invTxModalMode = 'buysell';
+
+function _invSetModalMode(mode) {
+  _invTxModalMode = mode;
+  const isBuySell = mode === 'buysell';
+  const isSimple  = mode === 'simple';
+  const isTax     = mode === 'tax';
+
+  // Tabs
+  document.getElementById('invModeTabBuySell')?.classList.toggle('active', isBuySell);
+  document.getElementById('invModeTabSimple')?.classList.toggle('active', isSimple);
+  document.getElementById('invModeTabTax')?.classList.toggle('active', isTax);
+
+  // Secoes de modo
+  const secBuySell = document.getElementById('invSecBuySell');
+  const secSimple  = document.getElementById('invSecSimple');
+  const secTax     = document.getElementById('invSecTax');
+  if (secBuySell) secBuySell.style.display = isBuySell ? '' : 'none';
+  if (secSimple)  secSimple.style.display  = isSimple  ? '' : 'none';
+  if (secTax)     secTax.style.display     = isTax     ? '' : 'none';
+
+  // Corretora/fundo: apenas em Compra/Venda
+  const secBroker = document.getElementById('invSecCommonBroker');
+  if (secBroker) secBroker.style.display = isBuySell ? '' : 'none';
+
+  // Botao salvar
+  const btn = document.getElementById('invTxSaveBtn');
+  if (btn) {
+    if (isTax)     { btn.textContent = '💾 Registrar Taxa/Imposto'; btn.onclick = saveInvTax; }
+    else if (isSimple) { btn.textContent = '💾 Registrar Aporte';   btn.onclick = saveInvSimple; }
+    else           {
+      const txType = document.getElementById('invTxType')?.value || 'buy';
+      btn.textContent = txType === 'sell' ? '💾 Registrar Venda' : '💾 Registrar Compra';
+      btn.onclick = saveInvTransaction;
+    }
+  }
+}
+window._invSetModalMode = _invSetModalMode;
+
 function openInvTransactionModal(accountId = null, positionId = null) {
   document.getElementById('invTxModal')?.remove();
+  _invTxModalMode = 'buysell';
 
   const invAccs = _invAccounts();
   if (!invAccs.length) {
@@ -506,22 +560,17 @@ function openInvTransactionModal(accountId = null, positionId = null) {
     </div>
     <div class="modal-body">
       <input type="hidden" id="invTxPositionId" value="${positionId || ''}">
-
-      <!-- Buy / Sell tabs -->
-      <div class="tab-bar mb-4">
-        <button class="tab active" id="invTxBuyTab"  onclick="_invSetTxType('buy')">📥 Compra</button>
-        <button class="tab"        id="invTxSellTab" onclick="_invSetTxType('sell')">📤 Venda</button>
-      </div>
       <input type="hidden" id="invTxType" value="buy">
 
-      <div class="form-grid">
+      <!-- Campos comuns: conta, data, ticker, tipo ativo, nome -->
+      <div class="form-grid" style="margin-bottom:4px">
         <div class="form-group">
           <label>Conta de Investimentos *</label>
           <select id="invTxAccount" onchange="_invOnAccountChange()">${accOpts}</select>
         </div>
         <div class="form-group">
           <label>Data *</label>
-          <input type="date" id="invTxDate" value="${new Date().toISOString().slice(0,10)}">
+          <input type="date" lang="pt-BR" id="invTxDate" value="${new Date().toISOString().slice(0,10)}">
         </div>
         <div class="form-group">
           <label>Código do Ativo *</label>
@@ -533,76 +582,150 @@ function openInvTransactionModal(accountId = null, positionId = null) {
           <label>Tipo de Ativo *</label>
           <select id="invTxAssetType">${typeOpts}</select>
         </div>
-        <div class="form-group">
+        <div class="form-group full">
           <label>Nome / Descrição</label>
           <input type="text" id="invTxName" placeholder="Nome do ativo (opcional)"
             value="${pos ? esc(pos.name || '') : ''}">
         </div>
-        <div class="form-group">
-          <label>Quantidade *</label>
-          <input type="text" id="invTxQty" inputmode="decimal" placeholder="0"
-            oninput="_invCalcTotal()">
+      </div>
+
+      <!-- Tabs de modo -->
+      <div class="tab-bar mb-4" style="margin-top:8px">
+        <button class="tab active" id="invModeTabBuySell" onclick="_invSetModalMode('buysell')">📥 Compra / Venda</button>
+        <button class="tab" id="invModeTabSimple"  onclick="_invSetModalMode('simple')">💵 Valor Total</button>
+        <button class="tab" id="invModeTabTax"     onclick="_invSetModalMode('tax')">🏛️ Taxa / Imposto</button>
+      </div>
+
+      <!-- SECAO: Compra / Venda -->
+      <div id="invSecBuySell">
+        <div class="tab-bar mb-4" style="margin-bottom:12px">
+          <button class="tab active" id="invTxBuyTab"  onclick="_invSetTxType('buy')">📥 Compra</button>
+          <button class="tab"        id="invTxSellTab" onclick="_invSetTxType('sell')">📤 Venda</button>
         </div>
-        <div class="form-group">
-          <label>Preço Unitário (BRL) *</label>
-          <div class="amt-wrap">
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Quantidade *</label>
+            <input type="text" id="invTxQty" inputmode="decimal" placeholder="0"
+              oninput="_invCalcTotal();_invFmtQty(this)" onblur="_invFmtQtyBlur(this)">
+          </div>
+          <div class="form-group">
+            <label>Preço Unitário (BRL) *</label>
             <input type="text" id="invTxPrice" inputmode="decimal" placeholder="0,00"
-              oninput="_invCalcTotal()">
+              oninput="_invFmtPrice(this)" onblur="_invFmtPriceBlur(this)">
           </div>
-        </div>
-        <div class="form-group full">
-          <div style="display:flex;justify-content:space-between;align-items:center;
-            padding:10px 14px;background:var(--surface2);border-radius:var(--r-sm);border:1px solid var(--border)">
-            <span style="font-size:.82rem;font-weight:600">Total da operação:</span>
-            <span id="invTxTotal" style="font-size:1rem;font-weight:700;color:var(--accent)">R$ 0,00</span>
-          </div>
-          <div id="invTxCashWarning" style="display:none;font-size:.78rem;color:var(--amber,#b45309);margin-top:6px;
-            padding:6px 10px;background:rgba(245,158,11,.1);border-radius:6px">
-            ⚠️ Saldo em caixa insuficiente para esta compra.
-          </div>
-        </div>
-        <div class="form-group">
-          <label>Corretora</label>
-          <select id="invTxBroker" onchange="_invOnBrokerChange()">
-            <option value="">— Selecionar —</option>
-          </select>
-        </div>
-        <div class="form-group" id="invTxBrokerOtherGroup" style="display:none">
-          <label>Nome da Corretora</label>
-          <input type="text" id="invTxBrokerOther" placeholder="Nome da corretora…">
-        </div>
-        <div class="form-group full" id="invFundoPanel" style="display:none">
-          <div style="background:linear-gradient(135deg,rgba(30,92,66,.08),rgba(42,96,73,.05));border:1px solid rgba(42,96,73,.2);border-radius:10px;padding:12px 14px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-              <div style="font-size:.8rem;font-weight:700;color:var(--accent)">🤖 Enriquecer com IA</div>
-              <button type="button" onclick="_invEnrichFundoAI()" id="invFundoAiBtn"
-                style="font-size:.72rem;font-weight:700;padding:4px 12px;border-radius:20px;border:1.5px solid var(--accent);background:var(--accent-lt);color:var(--accent);cursor:pointer;font-family:var(--font-sans)">
-                🔍 Identificar Fundo
-              </button>
+          <div class="form-group full">
+            <div style="display:flex;justify-content:space-between;align-items:center;
+              padding:10px 14px;background:var(--surface2);border-radius:var(--r-sm);border:1px solid var(--border)">
+              <span style="font-size:.82rem;font-weight:600">Total da operação:</span>
+              <span id="invTxTotal" style="font-size:1rem;font-weight:700;color:var(--accent)">R$ 0,00</span>
             </div>
-            <div id="invFundoAiResult" style="font-size:.78rem;color:var(--muted);line-height:1.55">
-              Informe o código do ativo (ex: KDIF11, HGBS11) e clique em Identificar Fundo para buscar dados via IA.
-            </div>
-            <div id="invFundoIndexador" style="display:none;margin-top:8px">
-              <label style="font-size:.75rem;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Indexador</label>
-              <select id="invFundoIndexadorSel" style="width:100%;padding:7px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:.83rem;background:var(--surface);color:var(--text)">
-                <option value="">— Selecionar —</option>
-                <option value="CDI">CDI</option>
-                <option value="IPCA">IPCA</option>
-                <option value="IGP-M">IGP-M</option>
-                <option value="Selic">Selic</option>
-                <option value="INPC">INPC</option>
-                <option value="Prefixado">Prefixado</option>
-                <option value="Outro">Outro</option>
-              </select>
+            <div id="invTxCashWarning" style="display:none;font-size:.78rem;color:var(--amber,#b45309);margin-top:6px;
+              padding:6px 10px;background:rgba(245,158,11,.1);border-radius:6px">
+              ⚠️ Saldo em caixa insuficiente para esta compra.
             </div>
           </div>
-        </div>
-        <div class="form-group full">
-          <label>Observação</label>
-          <input type="text" id="invTxNotes" placeholder="Estratégia, notas…">
         </div>
       </div>
+
+      <!-- SECAO: Valor Total (modo simplificado) -->
+      <div id="invSecSimple" style="display:none">
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:var(--r-sm);border-left:3px solid var(--accent)">
+          Informe apenas o valor total aportado. O app registra o aporte sem controle de quantidade/preço unitário —
+          ideal para fundos, previdência ou quando você só quer acompanhar o saldo total.
+        </div>
+        <div class="form-grid">
+          <div class="form-group full">
+            <label>Valor Total Aportado (BRL) *</label>
+            <input type="text" id="invSimpleTotal" inputmode="decimal" placeholder="0,00"
+              style="font-size:1.1rem;font-weight:700;text-align:right"
+              oninput="_invFmtBalanceInput(this)" onblur="_invFmtPriceBlur(this)">
+          </div>
+          <div class="form-group full">
+            <label>Observação</label>
+            <input type="text" id="invSimpleNotes" placeholder="Estratégia, aporte programado…">
+          </div>
+        </div>
+      </div>
+
+      <!-- SECAO: Taxa / Imposto -->
+      <div id="invSecTax" style="display:none">
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:var(--r-sm);border-left:3px solid var(--amber,#b45309)">
+          Registre taxas de administração, corretagem, IOF, IR sobre rendimentos ou qualquer encargo sobre este ativo.
+          O valor será debitado da conta de investimentos.
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Tipo de Encargo *</label>
+            <select id="invTaxType">
+              <option value="taxa_adm">Taxa de Administração</option>
+              <option value="corretagem">Corretagem</option>
+              <option value="iof">IOF</option>
+              <option value="ir">IR sobre Rendimento</option>
+              <option value="emolumentos">Emolumentos / B3</option>
+              <option value="custódia">Taxa de Custódia</option>
+              <option value="outro">Outro</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Valor (BRL) *</label>
+            <input type="text" id="invTaxAmount" inputmode="decimal" placeholder="0,00"
+              style="text-align:right"
+              oninput="_invFmtBalanceInput(this)" onblur="_invFmtPriceBlur(this)">
+          </div>
+          <div class="form-group full">
+            <label>Descrição / Detalhamento</label>
+            <input type="text" id="invTaxNotes" placeholder="Ex: IR retido na fonte — competência Mar/2026">
+          </div>
+        </div>
+      </div>
+
+      <!-- Campos comuns: corretora, fundo, observacao (apenas em Compra/Venda) -->
+      <div id="invSecCommonBroker">
+        <div class="form-grid" style="margin-top:8px">
+          <div class="form-group">
+            <label>Corretora</label>
+            <select id="invTxBroker" onchange="_invOnBrokerChange()">
+              <option value="">— Selecionar —</option>
+            </select>
+          </div>
+          <div class="form-group" id="invTxBrokerOtherGroup" style="display:none">
+            <label>Nome da Corretora</label>
+            <input type="text" id="invTxBrokerOther" placeholder="Nome da corretora…">
+          </div>
+          <div class="form-group full" id="invFundoPanel" style="display:none">
+            <div style="background:linear-gradient(135deg,rgba(30,92,66,.08),rgba(42,96,73,.05));border:1px solid rgba(42,96,73,.2);border-radius:10px;padding:12px 14px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                <div style="font-size:.8rem;font-weight:700;color:var(--accent)">🤖 Enriquecer com IA</div>
+                <button type="button" onclick="_invEnrichFundoAI()" id="invFundoAiBtn"
+                  style="font-size:.72rem;font-weight:700;padding:4px 12px;border-radius:20px;border:1.5px solid var(--accent);background:var(--accent-lt);color:var(--accent);cursor:pointer;font-family:var(--font-sans)">
+                  🔍 Identificar Fundo
+                </button>
+              </div>
+              <div id="invFundoAiResult" style="font-size:.78rem;color:var(--muted);line-height:1.55">
+                Informe o código do ativo (ex: KDIF11, HGBS11) e clique em Identificar Fundo para buscar dados via IA.
+              </div>
+              <div id="invFundoIndexador" style="display:none;margin-top:8px">
+                <label style="font-size:.75rem;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Indexador</label>
+                <select id="invFundoIndexadorSel" style="width:100%;padding:7px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:.83rem;background:var(--surface);color:var(--text)">
+                  <option value="">— Selecionar —</option>
+                  <option value="CDI">CDI</option>
+                  <option value="IPCA">IPCA</option>
+                  <option value="IGP-M">IGP-M</option>
+                  <option value="Selic">Selic</option>
+                  <option value="INPC">INPC</option>
+                  <option value="Prefixado">Prefixado</option>
+                  <option value="Outro">Outro</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="form-group full">
+            <label>Observação</label>
+            <input type="text" id="invTxNotes" placeholder="Estratégia, notas…">
+          </div>
+        </div>
+      </div>
+
       <div id="invTxError" style="display:none;color:var(--red);font-size:.8rem;margin-top:8px;
         padding:8px 12px;background:#fff5f5;border:1px solid #fca5a5;border-radius:var(--r-sm)"></div>
     </div>
@@ -655,6 +778,42 @@ function _invOnBrokerChange() {
 }
 window._invOnBrokerChange = _invOnBrokerChange;
 
+// ── Formatação automática de qty / price ──────────────────────────────────
+function _invFmtQty(el) {
+  let v = el.value.replace(/[^\d.,]/g, '');
+  el.value = v;
+}
+function _invFmtQtyBlur(el) {
+  const v = parseFloat(el.value.replace(',', '.'));
+  if (!isNaN(v) && v > 0) el.value = v.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 6 });
+}
+
+// Mascara de preco: entrada automatica de 2 casas decimais (estilo centavos).
+// Conforme o usuario digita: "1" -> "0,01"; "12" -> "0,12"; "123" -> "1,23"
+function _invFmtPrice(el) {
+  const raw = el.value.replace(/\D/g, '');
+  if (!raw) { el.value = ''; _invCalcTotal(); return; }
+  const cents = parseInt(raw, 10);
+  el.value = (cents / 100).toFixed(2).replace('.', ',');
+  _invCalcTotal();
+}
+function _invFmtPriceBlur(el) {
+  const raw = el.value.replace(',', '.');
+  const v = parseFloat(raw);
+  if (!isNaN(v) && v > 0) {
+    el.value = v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+}
+// Leitura segura do campo de preco (suporta "1.234,56" e "1234,56")
+function _invReadPrice(el) {
+  if (!el) return 0;
+  return parseFloat(el.value.replace(/\./g, '').replace(',', '.')) || 0;
+}
+window._invFmtQty = _invFmtQty;
+window._invFmtQtyBlur = _invFmtQtyBlur;
+window._invFmtPrice = _invFmtPrice;
+window._invFmtPriceBlur = _invFmtPriceBlur;
+
 // ── Enriquecer fundo com Gemini ──
 async function _invEnrichFundoAI() {
   const ticker = document.getElementById('invTxTicker')?.value?.trim()?.toUpperCase();
@@ -681,16 +840,13 @@ Dado o código de ativo "${ticker}", identifique:
 Responda APENAS em JSON no formato:
 {"name":"","type":"","indexador":"CDI|IPCA|IGP-M|Selic|Prefixado|N/A","description":"","gestora":""}`;
 
-    const resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + key, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    const _invModel = (typeof getGeminiModel === 'function') ? await getGeminiModel() : 'gemini-2.5-flash';
+    const _invUrl = `https://generativelanguage.googleapis.com/v1beta/models/${_invModel}:generateContent?key=${key}`;
+    const raw = await geminiRetryFetch(_invUrl, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 1000, temperature: 0.5 },
     });
-    if (!resp.ok) throw new Error('Gemini API: ' + resp.status);
-    const raw = await resp.json();
-    const text = raw.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const clean = text.replace(/```json|```/g, '').trim();
-    const data = JSON.parse(clean);
+    const data = _parseGeminiJSON(raw);
 
     // Preencher campos do formulário
     if (data.name) {
@@ -753,7 +909,7 @@ function _invOnAccountChange() {
 
 function _invCalcTotal() {
   const qty   = parseFloat(document.getElementById('invTxQty')?.value?.replace(',','.')) || 0;
-  const price = parseFloat(document.getElementById('invTxPrice')?.value?.replace(',','.')) || 0;
+  const price = _invReadPrice(document.getElementById('invTxPrice'));
   const total = qty * price;
   const el    = document.getElementById('invTxTotal');
   if (el) el.textContent = fmt(total);
@@ -779,7 +935,7 @@ async function saveInvTransaction() {
   const assetT  = document.getElementById('invTxAssetType').value;
   const name    = document.getElementById('invTxName').value.trim();
   const qtyRaw  = parseFloat(document.getElementById('invTxQty').value.replace(',','.'));
-  const priceRaw= parseFloat(document.getElementById('invTxPrice').value.replace(',','.'));
+  const priceRaw= _invReadPrice(document.getElementById('invTxPrice'));
   const notesRaw  = document.getElementById('invTxNotes').value.trim();
   const brokerSel = document.getElementById('invTxBroker')?.value || '';
   const brokerOth = document.getElementById('invTxBrokerOther')?.value?.trim() || '';
@@ -940,11 +1096,23 @@ async function openInvPositionDetail(positionId) {
 
   const txRows = txs.map(tx => `
     <tr>
-      <td>${fmtDate(tx.date)}</td>
-      <td><span class="badge" style="background:${tx.type==='buy'?'#dcfce7':'#fee2e2'};color:${tx.type==='buy'?'#15803d':'#b91c1c'}">${tx.type==='buy'?'Compra':'Venda'}</span></td>
-      <td>${(+(tx.quantity)).toFixed(4)}</td>
-      <td>${fmt(tx.unit_price)}</td>
-      <td class="${tx.type==='buy'?'amount-neg':'amount-pos'}">${tx.type==='buy'?'-':'+'}${fmt(tx.total_brl)}</td>
+      <td style="padding:6px 8px">${fmtDate(tx.date)}</td>
+      <td style="padding:6px 8px;text-align:center"><span class="badge" style="background:${tx.type==='buy'?'#dcfce7':'#fee2e2'};color:${tx.type==='buy'?'#15803d':'#b91c1c'}">${tx.type==='buy'?'Compra':'Venda'}</span></td>
+      <td style="padding:6px 8px;text-align:right">${(+(tx.quantity)).toFixed(4)}</td>
+      <td style="padding:6px 8px;text-align:right">${fmt(tx.unit_price)}</td>
+      <td style="padding:6px 8px;text-align:right" class="${tx.type==='buy'?'amount-neg':'amount-pos'}">${tx.type==='buy'?'-':'+'}${fmt(tx.total_brl)}</td>
+      <td style="padding:6px 4px;text-align:center;white-space:nowrap">
+        <button onclick="openEditInvTransaction('${tx.id}')"
+          title="Editar movimentacao"
+          style="background:none;border:none;cursor:pointer;font-size:.85rem;color:var(--muted);padding:2px 5px;border-radius:6px;transition:all .15s"
+          onmouseover="this.style.color='var(--accent)';this.style.background='var(--accent-lt)'"
+          onmouseout="this.style.color='var(--muted)';this.style.background='none'">✏️</button>
+        <button onclick="deleteInvTransaction('${tx.id}','${pos.id}')"
+          title="Excluir movimentacao"
+          style="background:none;border:none;cursor:pointer;font-size:.85rem;color:var(--muted);padding:2px 5px;border-radius:6px;transition:all .15s"
+          onmouseover="this.style.color='var(--danger,#dc2626)';this.style.background='rgba(220,38,38,.08)'"
+          onmouseout="this.style.color='var(--muted)';this.style.background='none'">🗑️</button>
+      </td>
     </tr>`).join('');
 
   const modal = document.createElement('div');
@@ -1371,7 +1539,7 @@ async function deleteInvTransaction(txId, positionId) {
 
     // Excluir transactions financeira vinculada (se existir)
     if (invTx.tx_id) {
-      await sb.from('transactions').delete().eq('id', invTx.tx_id).catch(() => {});
+      try { await sb.from('transactions').delete().eq('id', invTx.tx_id); } catch(_) {}
     }
 
     // Atualizar position
@@ -1399,6 +1567,444 @@ async function deleteInvTransaction(txId, positionId) {
     toast('Erro ao excluir: ' + (e.message || e), 'error');
   }
 }
+// ── Atualizar saldo total do ativo ──────────────────────────────────────────
+// O usuario informa o saldo financeiro atual (R$) da posicao.
+// O app calcula o preco unitario implicito = saldoInformado / quantity
+// e registra como novo current_price no historico.
+function openInvBalanceModal(positionId) {
+  const pos = _inv.positions.find(p => p.id === positionId);
+  if (!pos) return;
+  const t      = _invAssetType(pos.asset_type);
+  const mv     = _invMarketValue(pos);
+  const cost   = _invCost(pos);
+  const qty    = +(pos.quantity) || 0;
+  const curPnl = mv - cost;
+
+  document.getElementById('invBalanceModal')?.remove();
+  const d = document.createElement('div');
+  d.className = 'modal-overlay open';
+  d.id = 'invBalanceModal';
+  d.style.zIndex = '10015';
+  d.innerHTML = `
+  <div class="modal" style="max-width:420px"><div class="modal-handle"></div>
+    <div class="modal-header">
+      <span class="modal-title">${t.emoji} Atualizar Saldo — ${esc(pos.ticker)}</span>
+      <button class="modal-close" onclick="closeModal('invBalanceModal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:var(--surface2);border-radius:var(--r-sm);padding:12px 14px;margin-bottom:16px;font-size:.83rem;line-height:1.7">
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Posição atual:</span> <strong>${qty.toLocaleString('pt-BR',{maximumFractionDigits:6})} ${esc(pos.ticker)}</strong></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Custo total:</span> <strong>${fmt(cost)}</strong></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Valor de mercado atual:</span> <strong>${mv ? fmt(mv) : '—'}</strong></div>
+      </div>
+      <div class="form-group">
+        <label style="font-weight:700">Saldo atual da posição (R$) *</label>
+        <input type="text" id="invBalanceInput" inputmode="decimal" placeholder="0,00"
+          style="font-size:1.1rem;font-weight:700;text-align:right"
+          oninput="_invFmtBalanceInput(this)" onblur="_invFmtPriceBlur(this)">
+        <div style="font-size:.75rem;color:var(--muted);margin-top:4px">
+          Informe o valor financeiro total atual desta posição.
+        </div>
+      </div>
+      <div id="invBalancePreview" style="display:none;margin-top:12px;padding:12px 14px;border-radius:var(--r-sm);border:1px solid var(--border);font-size:.83rem;line-height:1.8"></div>
+      <div id="invBalanceErr" style="display:none;color:var(--danger,#dc2626);font-size:.8rem;margin-top:8px;padding:8px 12px;background:#fff5f5;border:1px solid #fca5a5;border-radius:var(--r-sm)"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('invBalanceModal')">Cancelar</button>
+      <button class="btn btn-primary" id="invBalanceSaveBtn" onclick="saveInvBalance('${positionId}')">
+        💾 Consolidar Saldo
+      </button>
+    </div>
+  </div>`;
+  document.body.appendChild(d);
+  setTimeout(() => document.getElementById('invBalanceInput')?.focus(), 80);
+}
+window.openInvBalanceModal = openInvBalanceModal;
+
+function _invFmtBalanceInput(el) {
+  const raw = el.value.replace(/\D/g, '');
+  if (!raw) { el.value = ''; _invUpdateBalancePreview(); return; }
+  el.value = (parseInt(raw, 10) / 100).toFixed(2).replace('.', ',');
+  _invUpdateBalancePreview();
+}
+window._invFmtBalanceInput = _invFmtBalanceInput;
+
+function _invUpdateBalancePreview() {
+  const preview = document.getElementById('invBalancePreview');
+  if (!preview) return;
+  const rawVal = document.getElementById('invBalanceInput')?.value || '';
+  const newBalance = parseFloat(rawVal.replace(/\./g,'').replace(',','.')) || 0;
+  // Find the position via the save button's onclick attribute
+  const btn = document.getElementById('invBalanceSaveBtn');
+  if (!btn) return;
+  const posId = btn.getAttribute('onclick').match(/'([^']+)'/)?.[1];
+  const pos = posId ? _inv.positions.find(p => p.id === posId) : null;
+  if (!pos || newBalance <= 0) { preview.style.display = 'none'; return; }
+  const qty    = +(pos.quantity) || 0;
+  const cost   = _invCost(pos);
+  const pnl    = newBalance - cost;
+  const pct    = cost ? (pnl / cost * 100) : 0;
+  const newPrice = qty > 0 ? newBalance / qty : 0;
+  const pnlColor = pnl >= 0 ? 'var(--green,#16a34a)' : 'var(--danger,#dc2626)';
+  preview.style.display = '';
+  preview.innerHTML = `
+    <div style="font-weight:700;margin-bottom:6px;font-size:.85rem">Resumo da consolidação:</div>
+    <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Novo preço unitário calculado:</span><strong>${fmt(newPrice)}</strong></div>
+    <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Ganho / Perda:</span>
+      <strong style="color:${pnlColor}">${pnl >= 0 ? '+' : ''}${fmt(pnl)} (${pct.toFixed(2)}%)</strong></div>
+    <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Novo valor de mercado:</span><strong>${fmt(newBalance)}</strong></div>
+  `;
+}
+
+async function saveInvBalance(positionId) {
+  const btn    = document.getElementById('invBalanceSaveBtn');
+  const errEl  = document.getElementById('invBalanceErr');
+  const rawVal = document.getElementById('invBalanceInput')?.value || '';
+  const newBalance = parseFloat(rawVal.replace(/\./g,'').replace(',','.')) || 0;
+
+  if (errEl) errEl.style.display = 'none';
+  if (!newBalance || newBalance <= 0) {
+    if (errEl) { errEl.textContent = 'Informe um saldo valido maior que zero.'; errEl.style.display = ''; }
+    return;
+  }
+
+  const pos = _inv.positions.find(p => p.id === positionId);
+  if (!pos) return;
+  const qty = +(pos.quantity) || 0;
+  if (qty <= 0) {
+    if (errEl) { errEl.textContent = 'Esta posicao tem quantidade zero — registre uma compra primeiro.'; errEl.style.display = ''; }
+    return;
+  }
+
+  const newPrice = newBalance / qty;
+  if (btn) { btn.disabled = true; btn.textContent = 'Salvando...'; }
+
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    await _invSavePrice(pos, newPrice, pos.currency || 'BRL', today, 'manual');
+    toast(`Saldo de ${esc(pos.ticker)} consolidado: ${fmt(newBalance)}`, 'success');
+    closeModal('invBalanceModal');
+    await loadInvestments(true);
+    DB.accounts.bust();
+    await DB.accounts.load(true);
+    _invAugmentAccountBalances();
+    _renderInvestmentsPage();
+    if (state.currentPage === 'dashboard') loadDashboard?.();
+  } catch(e) {
+    if (errEl) { errEl.textContent = e.message || 'Erro ao salvar'; errEl.style.display = ''; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Consolidar Saldo'; }
+  }
+}
+window.saveInvBalance = saveInvBalance;
+
+// ── Editar transacao de investimento ───────────────────────────────────────
+// Abre o mesmo modal de nova transacao pre-preenchido com os dados existentes.
+// Ao salvar: reverte o efeito da transacao original na posicao (replay sem ela)
+// e aplica a nova versao — mantendo avg_cost e qty corretos.
+async function openEditInvTransaction(txId) {
+  const invTx = _inv.transactions.find(t => t.id === txId);
+  if (!invTx) { toast('Movimentação não encontrada', 'error'); return; }
+  const pos = _inv.positions.find(p => p.id === invTx.position_id);
+  if (!pos) { toast('Posição não encontrada', 'error'); return; }
+
+  let linkedTxNotes = '';
+  if (invTx.tx_id) {
+    const { data: linked } = await sb.from('transactions').select('memo').eq('id', invTx.tx_id).maybeSingle();
+    linkedTxNotes = linked?.memo || '';
+  }
+
+  closeModal('invDetailModal');
+  openInvTransactionModal(invTx.account_id, pos.id);
+
+  await new Promise(r => setTimeout(r, 80));
+
+  const modal = document.getElementById('invTxModal');
+  if (!modal) return;
+
+  // Titulo
+  const titleEl = modal.querySelector('#invTxModalTitle');
+  if (titleEl) titleEl.textContent = 'Editar Movimentação';
+
+  // Garantir modo Compra/Venda
+  _invSetModalMode('buysell');
+  // Esconder tabs de modo (nao faz sentido trocar de modo na edicao)
+  const modeTabs = modal.querySelector('.tab-bar');
+  if (modeTabs) modeTabs.style.display = 'none';
+
+  _invSetTxType(invTx.type);
+
+  const dateEl = document.getElementById('invTxDate');
+  if (dateEl) dateEl.value = (invTx.date||'').slice(0,10);
+
+  const tickerEl = document.getElementById('invTxTicker');
+  if (tickerEl) { tickerEl.value = pos.ticker; tickerEl.readOnly = true; tickerEl.style.opacity = '.6'; }
+
+  const nameEl = document.getElementById('invTxName');
+  if (nameEl) nameEl.value = pos.name || pos.ticker;
+
+  const assetEl = document.getElementById('invTxAssetType');
+  if (assetEl) { assetEl.value = pos.asset_type || 'outro'; _invToggleFundoPanel(assetEl.value); }
+
+  const qtyEl = document.getElementById('invTxQty');
+  if (qtyEl) qtyEl.value = (+(invTx.quantity)).toLocaleString('pt-BR', { maximumFractionDigits: 6 });
+
+  const priceEl = document.getElementById('invTxPrice');
+  if (priceEl) {
+    const pv = +(invTx.unit_price) || 0;
+    priceEl.value = pv.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  const notesEl = document.getElementById('invTxNotes');
+  if (notesEl) notesEl.value = invTx.notes || linkedTxNotes || '';
+
+  // Substituir o botao salvar por versao sem onclick no HTML (evita double-fire)
+  const oldBtn = document.getElementById('invTxSaveBtn');
+  if (oldBtn) {
+    const newBtn = oldBtn.cloneNode(true);
+    newBtn.textContent = '💾 Salvar Edição';
+    newBtn.removeAttribute('onclick');
+    newBtn.addEventListener('click', () => saveEditInvTransaction(txId, pos.id));
+    oldBtn.replaceWith(newBtn);
+  }
+
+  _invCalcTotal();
+}
+window.openEditInvTransaction = openEditInvTransaction;
+
+// ── Salvar aporte em modo Valor Total (simplificado) ──────────────────────
+// Registra o valor aportado como 1 unidade a preco = valor total.
+// Isso preserva a logica de avg_cost/qty sem exigir qtd do usuario.
+async function saveInvSimple() {
+  const btn    = document.getElementById('invTxSaveBtn');
+  const errEl  = document.getElementById('invTxError');
+  const accId  = document.getElementById('invTxAccount')?.value;
+  const date   = document.getElementById('invTxDate')?.value;
+  const ticker = document.getElementById('invTxTicker')?.value?.trim()?.toUpperCase();
+  const assetT = document.getElementById('invTxAssetType')?.value;
+  const name   = document.getElementById('invTxName')?.value?.trim();
+  const rawVal = document.getElementById('invSimpleTotal')?.value || '';
+  const total  = parseFloat(rawVal.replace(/\./g,'').replace(',','.')) || 0;
+  const notes  = document.getElementById('invSimpleNotes')?.value?.trim() || '';
+
+  if (errEl) errEl.style.display = 'none';
+  if (!accId)   { _invShowErr('Selecione a conta'); return; }
+  if (!date)    { _invShowErr('Informe a data'); return; }
+  if (!ticker)  { _invShowErr('Informe o código do ativo'); return; }
+  if (total <= 0) { _invShowErr('Informe o valor total aportado'); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando…'; }
+
+  try {
+    const posId = document.getElementById('invTxPositionId')?.value;
+    let position = posId
+      ? _inv.positions.find(p => p.id === posId)
+      : _inv.positions.find(p => p.account_id === accId && p.ticker === ticker);
+
+    if (!position) {
+      const { data: newPos, error: posErr } = await sb.from('investment_positions').insert({
+        family_id:  famId(), account_id: accId, ticker,
+        asset_type: assetT, name: name || ticker,
+        quantity: 0, avg_cost: 0, currency: 'BRL',
+      }).select().single();
+      if (posErr) throw posErr;
+      position = newPos;
+      _inv.positions.push(position);
+    }
+
+    // Registrar como 1 unidade ao preco = total (avg_cost acumula corretamente)
+    const oldQty  = +(position.quantity) || 0;
+    const oldCost = +(position.avg_cost)  || 0;
+    const newQty  = oldQty + 1;
+    const newAvgCost = (oldQty * oldCost + total) / newQty;
+
+    const { error: updErr } = await sb.from('investment_positions').update({
+      quantity: newQty, avg_cost: newAvgCost,
+      name: name || position.name || ticker,
+      asset_type: assetT || position.asset_type,
+      updated_at: new Date().toISOString(),
+    }).eq('id', position.id);
+    if (updErr) throw updErr;
+
+    // Transacao financeira
+    const txDesc = `Aporte: ${ticker} — ${fmt(total)}`;
+    const { data: txData, error: txErr } = await sb.from('transactions').insert({
+      family_id: famId(), account_id: accId, date,
+      description: txDesc, amount: -total,
+      memo: notes || null, status: 'confirmed', is_transfer: false,
+    }).select().single();
+    if (txErr) throw txErr;
+
+    // investment_transaction com qty=1, unit_price=total
+    await sb.from('investment_transactions').insert({
+      family_id: famId(), position_id: position.id, account_id: accId,
+      tx_id: txData.id, type: 'buy',
+      quantity: 1, unit_price: total, total_brl: total,
+      date, notes: (notes ? notes + ' · ' : '') + '[aporte simplificado]',
+    });
+
+    await _invSavePrice(position, total, 'BRL', date, 'manual');
+
+    toast(`✅ Aporte de ${fmt(total)} em ${ticker} registrado!`, 'success');
+    closeModal('invTxModal');
+    await loadInvestments(true);
+    DB.accounts.bust(); await DB.accounts.load(true);
+    _invAugmentAccountBalances(); _renderInvestmentsPage();
+    if (state.currentPage === 'dashboard') loadDashboard?.();
+  } catch(e) {
+    _invShowErr(e.message || 'Erro ao salvar');
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Registrar Aporte'; }
+  }
+}
+window.saveInvSimple = saveInvSimple;
+
+// ── Salvar taxa ou imposto sobre investimento ──────────────────────────────
+async function saveInvTax() {
+  const btn    = document.getElementById('invTxSaveBtn');
+  const errEl  = document.getElementById('invTxError');
+  const accId  = document.getElementById('invTxAccount')?.value;
+  const date   = document.getElementById('invTxDate')?.value;
+  const ticker = document.getElementById('invTxTicker')?.value?.trim()?.toUpperCase();
+  const taxType = document.getElementById('invTaxType')?.value;
+  const rawVal  = document.getElementById('invTaxAmount')?.value || '';
+  const amount  = parseFloat(rawVal.replace(/\./g,'').replace(',','.')) || 0;
+  const notes   = document.getElementById('invTaxNotes')?.value?.trim() || '';
+
+  if (errEl) errEl.style.display = 'none';
+  if (!accId)   { _invShowErr('Selecione a conta'); return; }
+  if (!date)    { _invShowErr('Informe a data'); return; }
+  if (!ticker)  { _invShowErr('Informe o código do ativo'); return; }
+  if (amount <= 0) { _invShowErr('Informe o valor da taxa/imposto'); return; }
+
+  const TAX_LABELS = {
+    taxa_adm: 'Taxa de Administração', corretagem: 'Corretagem',
+    iof: 'IOF', ir: 'IR sobre Rendimento',
+    emolumentos: 'Emolumentos/B3', custódia: 'Taxa de Custódia', outro: 'Encargo',
+  };
+  const label = TAX_LABELS[taxType] || 'Taxa';
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando…'; }
+
+  try {
+    // Apenas debita da conta — nao altera qty/avg_cost da posicao
+    const txDesc = `${label}: ${ticker}${notes ? ' — ' + notes : ''}`;
+    const { error: txErr } = await sb.from('transactions').insert({
+      family_id: famId(), account_id: accId, date,
+      description: txDesc, amount: -amount,
+      memo: notes || null, status: 'confirmed', is_transfer: false,
+    });
+    if (txErr) throw txErr;
+
+    toast(`✅ ${label} de ${fmt(amount)} registrada em ${ticker}!`, 'success');
+    closeModal('invTxModal');
+    DB.accounts.bust(); await DB.accounts.load(true);
+    _invAugmentAccountBalances(); _renderInvestmentsPage();
+    if (state.currentPage === 'dashboard') loadDashboard?.();
+  } catch(e) {
+    _invShowErr(e.message || 'Erro ao salvar');
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Registrar Taxa/Imposto'; }
+  }
+}
+window.saveInvTax = saveInvTax;
+
+async function saveEditInvTransaction(originalTxId, positionId) {
+  const btn    = document.getElementById('invTxSaveBtn');
+  const type   = document.getElementById('invTxType').value;
+  const date   = document.getElementById('invTxDate').value;
+  const qtyRaw = parseFloat(document.getElementById('invTxQty').value.replace(',','.'));
+  const priceRaw = _invReadPrice(document.getElementById('invTxPrice'));
+  const notesRaw = document.getElementById('invTxNotes').value.trim();
+  const brokerSel = document.getElementById('invTxBroker')?.value || '';
+  const brokerOth = document.getElementById('invTxBrokerOther')?.value?.trim() || '';
+  const broker    = brokerSel === 'Outro' ? brokerOth : brokerSel;
+  const notes     = [notesRaw, broker ? `Corretora: ${broker}` : ''].filter(Boolean).join(' · ') || '';
+
+  if (!date)              { _invShowErr('Informe a data'); return; }
+  if (isNaN(qtyRaw) || qtyRaw <= 0)    { _invShowErr('Informe a quantidade'); return; }
+  if (!priceRaw || priceRaw <= 0){ _invShowErr('Informe o preço unitário'); return; }
+
+  const total = qtyRaw * priceRaw;
+  if (btn) { btn.disabled = true; btn.textContent = 'Salvando...'; }
+
+  try {
+    const originalInvTx = _inv.transactions.find(t => t.id === originalTxId);
+    if (!originalInvTx) throw new Error('Movimentacao original nao encontrada.');
+
+    // Replay de todas as transacoes EXCETO a que esta sendo editada
+    const remaining = _inv.transactions
+      .filter(t => t.position_id === positionId && t.id !== originalTxId)
+      .slice()
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    // Construir a versao editada como objeto temporario
+    const editedTx = { type, date, quantity: qtyRaw, unit_price: priceRaw };
+
+    // Inserir a tx editada na ordem cronologica correta
+    const allTxs = [...remaining, editedTx].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    // Recalcular qty e avg_cost
+    let recalcQty = 0, recalcCost = 0;
+    for (const t of allTxs) {
+      if (t.type === 'buy') {
+        const newQty = recalcQty + t.quantity;
+        recalcCost = newQty > 0
+          ? (recalcQty * recalcCost + t.quantity * t.unit_price) / newQty
+          : t.unit_price;
+        recalcQty = newQty;
+      } else {
+        recalcQty = Math.max(0, recalcQty - t.quantity);
+      }
+    }
+
+    // 1. Atualizar investment_transaction
+    const { error: invTxErr } = await sb.from('investment_transactions').update({
+      type, date,
+      quantity:   qtyRaw,
+      unit_price: priceRaw,
+      total_brl:  total,
+      notes:      notes || null,
+    }).eq('id', originalTxId);
+    if (invTxErr) throw invTxErr;
+
+    // 2. Atualizar transacao financeira vinculada (se existir)
+    if (originalInvTx.tx_id) {
+      const txAmount = type === 'buy' ? -total : total;
+      const txDesc   = `${type === 'buy' ? 'Compra' : 'Venda'}: ${_inv.positions.find(p=>p.id===positionId)?.ticker || ''} ${qtyRaw}x @ ${fmt(priceRaw)}`;
+      try {
+        await sb.from('transactions').update({
+          date, amount: txAmount, description: txDesc, memo: notes || null,
+        }).eq('id', originalInvTx.tx_id);
+      } catch(_) {}
+    }
+
+    // 3. Atualizar posicao com valores recalculados
+    const { error: posErr } = await sb.from('investment_positions').update({
+      quantity:   recalcQty,
+      avg_cost:   recalcCost,
+      updated_at: new Date().toISOString(),
+    }).eq('id', positionId);
+    if (posErr) throw posErr;
+
+    // 4. Atualizar historico de preco na data
+    const pos2 = _inv.positions.find(p => p.id === positionId);
+    if (pos2) await _invSavePrice(pos2, priceRaw, pos2.currency || 'BRL', date, 'manual');
+
+    toast('Movimentacao atualizada com sucesso!', 'success');
+    closeModal('invTxModal');
+
+    await loadInvestments(true);
+    DB.accounts.bust();
+    await DB.accounts.load(true);
+    _invAugmentAccountBalances();
+    _renderInvestmentsPage();
+    setTimeout(() => openInvPositionDetail(positionId), 300);
+
+  } catch(e) {
+    _invShowErr(e.message || 'Erro ao salvar edicao');
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar Edicao'; }
+  }
+}
+window.saveEditInvTransaction = saveEditInvTransaction;
+
 window.deleteInvTransaction = deleteInvTransaction;
 
 async function deleteInvPosition(positionId) {
@@ -1448,3 +2054,10 @@ async function deleteInvPosition(positionId) {
   }
 }
 window.deleteInvPosition = deleteInvPosition;
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window._invBrlPrice                        = _invBrlPrice;
+window._invMarketValue                     = _invMarketValue;
+window.applyInvestmentsFeature             = applyInvestmentsFeature;
+window.invTotalPortfolioValue              = invTotalPortfolioValue;
+window.loadInvestments                     = loadInvestments;

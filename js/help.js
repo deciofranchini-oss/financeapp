@@ -64,6 +64,19 @@ function _helpContent() {
             fr: `<p>Regroupez les comptes par banque, personne ou usage.</p><ol><li>Allez dans <strong>Comptes</strong></li><li>Cliquez sur <strong>+ Nouveau groupe</strong></li><li>Définissez le nom et la couleur</li></ol>`,
           },
         },
+
+        {
+          id: 'accounts-pix',
+          title: { pt: 'Múltiplas chaves PIX', en: 'Multiple PIX keys', es: 'Múltiples claves PIX', fr: 'Plusieurs clés PIX' },
+          body: {
+            pt: `<p>Cada conta suporta até <strong>3 chaves PIX</strong> de tipos distintos: CPF, CNPJ, e-mail, telefone ou chave aleatória.</p>
+<ol><li>Edite a conta em <strong>Contas</strong></li><li>Na seção PIX, clique em <strong>+ Adicionar</strong></li><li>Selecione o tipo e informe a chave</li></ol>
+<p>As chaves ficam visíveis nos detalhes com botão ⎘ para copiar.</p>`,
+            en: `<p>Each account supports up to <strong>3 PIX keys</strong> of different types: CPF, CNPJ, email, phone, or random key. Edit the account, click <strong>+ Add</strong> in the PIX section.</p>`,
+            es: `<p>Cada cuenta admite hasta <strong>3 claves PIX</strong> de distintos tipos. Edite la cuenta y haga clic en <strong>+ Agregar</strong> en la sección PIX.</p>`,
+            fr: `<p>Chaque compte prend en charge jusqu'à <strong>3 clés PIX</strong> de types différents. Modifiez le compte et cliquez sur <strong>+ Ajouter</strong> dans la section PIX.</p>`,
+          },
+        },
       ],
     },
     {
@@ -152,6 +165,33 @@ function _helpContent() {
             fr: `<p>Les transactions programmées automatisent l'enregistrement des transactions récurrentes.</p><ol><li>Allez dans <strong>Programmés</strong></li><li>Cliquez sur <strong>+ Nouveau programmé</strong></li><li>Remplissez les détails et définissez la fréquence</li></ol>`,
           },
         },
+
+        {
+          id: 'scheduled-splits',
+          title: { pt: 'Divisão por categoria e membro', en: 'Split by category and member', es: 'División por categoría y miembro', fr: 'Répartition par catégorie et membre' },
+          body: {
+            pt: `<p>Na aba <strong>✂️ Divisão</strong> do modal de transação programada, divida o valor por categoria ou por membro da família.</p>
+<ul><li><strong>Por categoria:</strong> distribua entre múltiplas categorias com valor exato — use <em>Auto-completar</em> para o último item</li><li><strong>Por membro:</strong> distribua por valor fixo ou percentual</li></ul>
+<p>A divisão fica salva na programação e é aplicada automaticamente em cada lançamento gerado pelo auto-registro.</p>`,
+            en: `<p>In the <strong>✂️ Split</strong> tab of the scheduled transaction modal, divide the amount by category or family member.</p>
+<p>The split is saved and applied automatically to each auto-registered occurrence.</p>`,
+            es: `<p>En la pestaña <strong>✂️ División</strong>, divida el importe por categoría o miembro. La división se aplica automáticamente en cada registro.</p>`,
+            fr: `<p>Dans l'onglet <strong>✂️ Répartition</strong>, divisez le montant par catégorie ou membre. La répartition est appliquée automatiquement.</p>`,
+          },
+        },
+        {
+          id: 'scheduled-convert',
+          title: { pt: 'Converter transação → programada', en: 'Convert transaction → scheduled', es: 'Convertir transacción → programada', fr: 'Convertir transaction → programmée' },
+          body: {
+            pt: `<p>No modal de edição de qualquer transação, clique em <strong>📅 Criar Programação</strong> e escolha:</p>
+<ul><li><strong>📌 Manter + criar próximas:</strong> original permanece, programação começa no futuro</li><li><strong>🔄 Converter:</strong> original é excluída e substituída pela programação desde a data original</li></ul>
+<div class="help-tip">💡 A confirmação de modo evita exclusões acidentais.</div>`,
+            en: `<p>In any transaction modal, click <strong>📅 Create Schedule</strong> and choose:</p>
+<ul><li><strong>📌 Keep + create next:</strong> original stays, scheduling starts from future date</li><li><strong>🔄 Convert:</strong> original deleted, schedule takes over from original date</li></ul>`,
+            es: `<p>En cualquier modal de transacción, haga clic en <strong>📅 Crear programación</strong> y elija el modo.</p>`,
+            fr: `<p>Dans n'importe quelle fenêtre de transaction, cliquez sur <strong>📅 Créer une programmation</strong> et choisissez le mode.</p>`,
+          },
+        },
       ],
     },
     {
@@ -177,6 +217,36 @@ function _helpContent() {
             en: `<p>Shows how your account balances will evolve, considering scheduled transactions.</p><ol><li>Select the forecast period</li><li>Choose which accounts to include</li><li>The app combines real transactions with future scheduled ones</li><li>The chart and table show the balance day by day</li></ol><div class="help-tip">💡 Use the forecast to identify critical months where the balance might go negative.</div>`,
             es: `<p>Muestra cómo evolucionarán los saldos de sus cuentas considerando las transacciones programadas.</p><ol><li>Seleccione el período de previsión</li><li>Elija las cuentas a incluir</li><li>La app combina transacciones reales con las programadas futuras</li></ol>`,
             fr: `<p>Montre comment les soldes évolueront en tenant compte des transactions programmées.</p><ol><li>Sélectionnez la période de prévision</li><li>Choisissez les comptes à inclure</li><li>L'app combine transactions réelles et futures programmées</li></ol>`,
+          },
+        },
+
+        {
+          id: 'reports-beneficiarios',
+          title: { pt: 'Relatório de Beneficiários', en: 'Payees Report', es: 'Informe de Beneficiarios', fr: 'Rapport Bénéficiaires' },
+          body: {
+            pt: `<p>Vá em <strong>Relatórios → aba Beneficiários 👥</strong> para ver um painel completo de gastos e receitas por beneficiário ou fonte pagadora.</p>
+<h4>Filtros</h4><ul><li>Período: este mês, trimestre, ano, últimos 12 meses ou personalizado</li><li>Contas e categorias: multi-seleção</li><li>Tipo: beneficiários / fontes pagadoras / sem cadastro</li><li>Ordenar por: maior valor, mais transações, nome, mais recente</li></ul>
+<p>Clique em qualquer linha para ver o <strong>drill-down</strong> com todas as transações no período.</p>
+<div class="help-tip">💡 Use o filtro <em>Sem cadastro</em> para encontrar lançamentos sem beneficiário e cadastrar em massa.</div>`,
+            en: `<p>Go to <strong>Reports → Payees tab 👥</strong> to see a full analytics panel of spending and income by payee or income source.</p>
+<p>Filters: period, accounts, categories, type and sort order. Click any row for a transaction drill-down.</p>`,
+            es: `<p>Vaya a <strong>Informes → pestaña Beneficiarios 👥</strong> para ver el panel analítico completo. Use los filtros de período, cuentas, categorías y tipo.</p>`,
+            fr: `<p>Allez dans <strong>Rapports → onglet Bénéficiaires 👥</strong> pour voir le panneau analytique complet. Cliquez sur une ligne pour le détail des transactions.</p>`,
+          },
+        },
+        {
+          id: 'forecast-signchange',
+          title: { pt: 'Indicadores de saldo negativo', en: 'Negative balance indicators', es: 'Indicadores de saldo negativo', fr: 'Indicateurs de solde négatif' },
+          body: {
+            pt: `<p>A previsão de fluxo de caixa marca visualmente o momento em que o saldo de uma conta cruza o zero.</p>
+<ul><li><strong>Barra vermelha ⚠:</strong> saldo fica negativo a partir daqui</li><li><strong>Barra verde ✓:</strong> saldo volta ao positivo</li><li><strong>Linha vermelha:</strong> a transação que causou o cruzamento</li><li><strong>Badge inline:</strong> exibido na descrição da transação causadora</li></ul>
+<div class="help-tip">💡 Use esses indicadores para antecipar quando precisará de uma entrada de caixa.</div>`,
+            en: `<p>The cash flow forecast visually marks when an account balance crosses zero.</p>
+<ul><li><strong>Red bar ⚠:</strong> balance goes negative from here</li><li><strong>Green bar ✓:</strong> balance returns to positive</li><li><strong>Red row:</strong> the crossing transaction</li></ul>`,
+            es: `<p>La previsión marca visualmente cuándo el saldo cruza cero.</p>
+<ul><li><strong>Barra roja ⚠:</strong> saldo negativo desde aquí</li><li><strong>Barra verde ✓:</strong> saldo vuelve a positivo</li></ul>`,
+            fr: `<p>La prévision marque visuellement quand le solde croise zéro.</p>
+<ul><li><strong>Barre rouge ⚠:</strong> solde négatif à partir d'ici</li><li><strong>Barre verte ✓:</strong> solde revient positif</li></ul>`,
           },
         },
       ],
@@ -347,12 +417,12 @@ function _helpContent() {
         },
         {
           id: 'ai-setup',
-          title: { pt: 'Configurando a chave de API Gemini', en: 'Setting up the Gemini API key', es: 'Configurar la clave API de Gemini', fr: "Configurer la clé API Gemini" },
+          title: { pt: 'Chave IA Gemini — Como funciona e configurar', en: 'Gemini AI Key — How it works', es: 'Clave IA Gemini', fr: 'Clé IA Gemini' },
           body: {
-            pt: `<p>O AI Insights usa o modelo Gemini do Google. Para ativar, você precisa de uma chave de API gratuita.</p><h4>Como obter a chave</h4><ol><li>Acesse <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></li><li>Faça login com sua conta Google</li><li>Clique em <strong>Get API Key → Create API Key</strong></li><li>Copie a chave gerada (começa com "AIza…")</li></ol><h4>Como configurar no app</h4><ol><li>Acesse <strong>Configurações → AI & Automação</strong></li><li>Cole a chave no campo <strong>Chave API Gemini</strong></li><li>Salve. O módulo AI Insights ficará disponível no menu.</li></ol><div class="help-warning">⚠️ Mantenha sua chave de API em sigilo. Não compartilhe com terceiros.</div><div class="help-tip">💡 A chave gratuita do Google AI Studio tem limite generoso para uso pessoal e familiar.</div>`,
-            en: `<p>AI Insights uses Google's Gemini model. To activate, you need a free API key.</p><h4>How to get the key</h4><ol><li>Go to <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></li><li>Sign in with your Google account</li><li>Click <strong>Get API Key → Create API Key</strong></li><li>Copy the generated key (starts with "AIza…")</li></ol><h4>How to set it up in the app</h4><ol><li>Go to <strong>Settings → AI & Automation</strong></li><li>Paste the key in the <strong>Gemini API Key</strong> field</li><li>Save. The AI Insights module will become available in the menu.</li></ol><div class="help-warning">⚠️ Keep your API key secret. Do not share it with third parties.</div>`,
-            es: `<p>AI Insights usa el modelo Gemini de Google. Para activarlo, necesita una clave API gratuita.</p><h4>Cómo obtener la clave</h4><ol><li>Vaya a <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></li><li>Inicie sesión con su cuenta de Google</li><li>Haga clic en <strong>Get API Key → Create API Key</strong></li><li>Copie la clave generada (comienza con "AIza…")</li></ol><h4>Cómo configurar en la app</h4><ol><li>Vaya a <strong>Configuración → IA y Automatización</strong></li><li>Pegue la clave en el campo <strong>Clave API Gemini</strong></li></ol>`,
-            fr: `<p>AI Insights utilise le modèle Gemini de Google. Pour l'activer, vous avez besoin d'une clé API gratuite.</p><h4>Comment obtenir la clé</h4><ol><li>Allez sur <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></li><li>Connectez-vous avec votre compte Google</li><li>Cliquez sur <strong>Get API Key → Create API Key</strong></li><li>Copiez la clé générée (commence par "AIza…")</li></ol><h4>Comment configurer dans l'app</h4><ol><li>Allez dans <strong>Paramètres → IA et Automatisation</strong></li><li>Collez la clé dans le champ <strong>Clé API Gemini</strong></li></ol>`,
+            pt: `<p>O Family FinTrack usa o <strong>Google Gemini</strong> como motor de IA: leitura de recibos, sugestão de categorias, AI Insights e transações pelo Telegram.</p><h4>Como a chave funciona</h4><p>Existem duas formas de acesso à IA:</p><div class="help-card-grid"><div class="help-mini-card" style="border-left:3px solid var(--accent)"><strong>IA Compartilhada</strong>O administrador configura uma chave global. Você usa automaticamente, sem configurar nada.</div><div class="help-mini-card" style="border-left:3px solid #7c3aed"><strong>Chave Própria da Família</strong>Você cria sua própria chave gratuita no Google e configura no app. Controle total e privacidade máxima.</div></div><h4>Prioridade de uso</h4><ol><li><strong>Chave da família</strong> &mdash; se configurada, é sempre usada primeiro</li><li><strong>IA compartilhada</strong> &mdash; usada se não houver chave própria</li><li><strong>Sem IA</strong> &mdash; app funciona normalmente, sem recursos de IA</li></ol><h4>Como criar sua própria chave (passo a passo)</h4><div class="help-warning">Este processo leva menos de 2 minutos e a chave é completamente gratuita.</div><ol><li>Acesse <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--accent)">aistudio.google.com/app/apikey</a></li><li>Faça login com sua conta Google (Gmail)</li><li>Clique em <strong>Create API key</strong></li><li>Selecione ou crie um projeto Google (o nome não importa)</li><li>Copie a chave gerada &mdash; ela começa com <code>AIzaSy</code></li><li>No Family FinTrack, abra <strong>Configurações &rarr; IA</strong></li><li>Selecione <strong>Usar minha própria chave Gemini</strong></li><li>Cole a chave no campo e clique em <strong>Salvar chave</strong></li></ol><div class="help-tip">Feito! O indicador ficará verde confirmando que a chave está ativa.</div><h4>Custos e limites</h4><div class="help-card-grid"><div class="help-mini-card"><strong>Gratuito</strong>1.500 requisições/dia &mdash; suficiente para uso familiar</div><div class="help-mini-card"><strong>Pago</strong>A partir de US$&thinsp;0,10/milhão de tokens &mdash; só se ultrapassar o limite</div><div class="help-mini-card"><strong>Modelo padrão</strong>Gemini 2.5 Flash &mdash; rápido e econômico</div></div><h4>Segurança</h4><p>Sua chave fica armazenada de forma segura no banco de dados da sua família, acessível apenas pelos membros da sua família.</p><div class="help-warning">Nunca compartilhe sua chave publicamente. Se suspeitar de uso indevido, revogue a chave no Google AI Studio.</div><h4>Perguntas frequentes</h4><p><strong>Preciso de cartão de crédito?</strong> Não. A camada gratuita não exige cartão.</p><p><strong>O que acontece sem chave?</strong> O app funciona normalmente, apenas sem funções de IA.</p><p><strong>Posso trocar de modo?</strong> Sim, a qualquer momento em Configurações &rarr; IA.</p>`,
+            en: `<p>Family FinTrack uses <strong>Google Gemini</strong> for receipt reading, category suggestions, AI Insights, and Telegram transactions.</p><h4>How the key works</h4><p>Two ways to access AI:</p><div class="help-card-grid"><div class="help-mini-card" style="border-left:3px solid var(--accent)"><strong>Shared AI</strong>The administrator sets up a global key. You use it automatically.</div><div class="help-mini-card" style="border-left:3px solid #7c3aed"><strong>Family Key</strong>Create your own free Google key and configure it in the app.</div></div><h4>Priority order</h4><ol><li><strong>Family key</strong> &mdash; always used first if configured</li><li><strong>Shared AI</strong> &mdash; used if no family key</li><li><strong>No AI</strong> &mdash; app works but without AI features</li></ol><h4>Step-by-step setup</h4><div class="help-warning">Takes less than 2 minutes. The key is free.</div><ol><li>Go to <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--accent)">aistudio.google.com/app/apikey</a></li><li>Sign in with your Google account</li><li>Click <strong>Create API key</strong></li><li>Select or create a Google project</li><li>Copy the key &mdash; starts with <code>AIzaSy</code></li><li>In Family FinTrack: <strong>Settings &rarr; AI</strong></li><li>Select <strong>Use my own Gemini key</strong></li><li>Paste the key and click <strong>Save key</strong></li></ol><div class="help-tip">Green indicator = key active.</div><h4>Costs</h4><div class="help-card-grid"><div class="help-mini-card"><strong>Free</strong>1,500 requests/day &mdash; enough for family use</div><div class="help-mini-card"><strong>Paid</strong>From US$0.10/million tokens &mdash; only above free tier</div></div><div class="help-warning">Never share your key publicly. Revoke it at Google AI Studio if compromised.</div>`,
+            es: `<p>Family FinTrack usa <strong>Google Gemini</strong> para lectura de recibos, sugerencias de categorías, AI Insights y transacciones por Telegram.</p><h4>Cómo funciona la clave</h4><div class="help-card-grid"><div class="help-mini-card"><strong>IA Compartida</strong>El administrador configura una clave global. Usted la usa automáticamente.</div><div class="help-mini-card"><strong>Clave Propia</strong>Cree su propia clave gratuita en Google.</div></div><h4>Configurar su propia clave</h4><ol><li>Acceda a <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com/app/apikey</a></li><li>Inicie sesión con Google y haga clic en <strong>Create API key</strong></li><li>Copie la clave (comienza con <code>AIzaSy</code>)</li><li>En la app: <strong>Configuración &rarr; IA &rarr; Usar mi propia clave</strong> &rarr; pegue y guarde</li></ol>`,
+            fr: `<p>Family FinTrack utilise <strong>Google Gemini</strong> pour la lecture de reçus et les analyses IA.</p><h4>Fonctionnement</h4><div class="help-card-grid"><div class="help-mini-card"><strong>IA Partagée</strong>L'administrateur configure une clé globale. Vous l'utilisez automatiquement.</div><div class="help-mini-card"><strong>Clé Propre</strong>Créez votre propre clé gratuite sur Google.</div></div><h4>Configuration pas-à-pas</h4><ol><li>Allez sur <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com/app/apikey</a></li><li>Connectez-vous et cliquez <strong>Create API key</strong></li><li>Copiez la clé (commence par <code>AIzaSy</code>)</li><li>Dans l'app&nbsp;: <strong>Paramètres &rarr; IA &rarr; Utiliser ma propre clé</strong> &rarr; collez et sauvegardez</li></ol>`,
           },
         },
       ],
@@ -993,6 +1063,53 @@ function _helpContent() {
         },
       ],
     },
+
+    {
+      id: 'iof', icon: '🌍', color: '#b45309',
+      title: { pt: 'IOF Internacional', en: 'International IOF', es: 'IOF Internacional', fr: 'IOF International' },
+      articles: [
+        {
+          id: 'iof-intro',
+          title: { pt: 'IOF automático e configurável', en: 'Automatic & configurable IOF', es: 'IOF automático y configurable', fr: 'IOF automatique et configurable' },
+          body: {
+            pt: `<p>O <strong>IOF</strong> é calculado e lançado automaticamente em compras internacionais. Ative em <strong>Contas → editar → IOF Internacional</strong> e configure a taxa (padrão 4,38%).</p>
+<h4>Categoria e Beneficiário padrão do IOF</h4>
+<p>Em <strong>Categorias</strong>, clique no botão <strong>IOF</strong> em qualquer categoria para defini-la como padrão para todos os lançamentos de IOF. O mesmo vale para <strong>Beneficiários</strong> (ex: "Receita Federal").</p>
+<p>Ao trocar o padrão, o app oferece migrar <strong>todo o histórico</strong> em lote — com barra de progresso e atualização em blocos de 50.</p>
+<div class="help-tip">💡 Se usar um cartão internacional frequentemente, configure a categoria e o beneficiário do IOF uma vez e nunca mais precise ajustar manualmente.</div>`,
+            en: `<p><strong>IOF</strong> is automatically calculated and recorded on international purchases. Enable in <strong>Accounts → edit → International IOF</strong>.</p>
+<p>In <strong>Categories</strong> and <strong>Payees</strong>, click the <strong>IOF</strong> button to set the default for all IOF transactions. When changing defaults, the app offers bulk migration of all existing IOF history.</p>`,
+            es: `<p>El <strong>IOF</strong> se calcula y registra automáticamente en compras internacionales. En <strong>Categorías</strong> y <strong>Beneficiarios</strong>, haga clic en el botón <strong>IOF</strong> para definir el predeterminado.</p>`,
+            fr: `<p>L'<strong>IOF</strong> est calculé et enregistré automatiquement sur les achats internationaux. Dans <strong>Catégories</strong> et <strong>Bénéficiaires</strong>, cliquez sur le bouton <strong>IOF</strong> pour définir le défaut.</p>`,
+          },
+        },
+      ],
+    },
+    {
+      id: 'dashboard-advanced', icon: '🏠', color: '#0f766e',
+      title: { pt: 'Dashboard — Avançado', en: 'Dashboard — Advanced', es: 'Panel — Avanzado', fr: 'Tableau de bord — Avancé' },
+      articles: [
+        {
+          id: 'dashboard-personalize',
+          title: { pt: 'Personalização e cards paralelos', en: 'Customization and parallel cards', es: 'Personalización y tarjetas paralelas', fr: 'Personnalisation et cartes parallèles' },
+          body: {
+            pt: `<p>Clique em <strong>⚙️</strong> no Dashboard para personalizar quais cards exibir, sua ordem e layout.</p>
+<h4>Vincular cards lado a lado 🔗</h4>
+<p>Clique no ícone de corrente (🔗) em qualquer card no painel de personalização para exibi-lo <strong>lado a lado</strong> com o próximo card no desktop — ideal para telas largas.</p>
+<h4>Botão "+" nas contas favoritas</h4>
+<p>Cada card de conta favorita tem um botão verde <strong>+</strong> que abre o modal de nova transação <strong>pré-selecionando aquela conta</strong> — sem precisar navegar para Lançamentos.</p>
+<div class="help-tip">💡 As preferências são salvas por usuário no banco e sincronizadas entre dispositivos.</div>`,
+            en: `<p>Click <strong>⚙️</strong> on the Dashboard to customize which cards to show, their order and layout.</p>
+<h4>Link cards side by side 🔗</h4>
+<p>Click the chain icon (🔗) on any card in the customization panel to display it side-by-side with the next card on desktop.</p>
+<h4>"+" button on favorite accounts</h4>
+<p>Each favorite account card has a green <strong>+</strong> button that opens the new transaction modal with that account pre-selected.</p>`,
+            es: `<p>Haga clic en <strong>⚙️</strong> para personalizar el panel. Use el ícono de cadena (🔗) para mostrar tarjetas lado a lado. El botón <strong>+</strong> verde en cuentas favoritas abre el modal de transacción con esa cuenta preseleccionada.</p>`,
+            fr: `<p>Cliquez sur <strong>⚙️</strong> pour personnaliser le tableau de bord. Utilisez l'icône chaîne (🔗) pour afficher des cartes côte à côte. Le bouton <strong>+</strong> vert sur les comptes favoris ouvre la fenêtre de nouvelle transaction.</p>`,
+          },
+        },
+      ],
+    },
   ];
 }
 
@@ -1549,3 +1666,11 @@ function getPeriodColor(period) {
     default: return '#1F6B4F';
   }
 }
+
+/* ── Privacy page scroll helper ──────────────────────────────────────────── */
+function privScrollTo(sectionId) {
+  const el = document.getElementById(sectionId);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+window.privScrollTo = privScrollTo;
+

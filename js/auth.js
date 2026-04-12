@@ -147,7 +147,7 @@ async function _loadCurrentUserContext(authCtx = null) {
   {
     const { data: byUid } = await sb
       .from('app_users')
-      .select('id, family_id, avatar_url, role, name, preferred_family_id, preferred_language, whatsapp_number, telegram_chat_id, preferred_form_mode, notify_on_tx, notify_tx_email, notify_tx_wa, notify_tx_tg')
+      .select('id, family_id, avatar_url, role, name, preferred_family_id, preferred_language, whatsapp_number, telegram_chat_id, preferred_form_mode, notify_on_tx, notify_tx_email, notify_tx_wa, notify_tx_tg, two_fa_enabled, two_fa_channel, notify_login, chat_tx_enabled')
       .eq('auth_uid', user.id)
       .maybeSingle();
     appUserRow = byUid || null;
@@ -159,7 +159,7 @@ async function _loadCurrentUserContext(authCtx = null) {
       // otherwise rely on app_users_own_row policy which also allows email match
       const { data: byEmail } = await sb
         .from('app_users')
-        .select('id, family_id, avatar_url, role, name, preferred_family_id, preferred_language, whatsapp_number, telegram_chat_id, preferred_form_mode, notify_on_tx, notify_tx_email, notify_tx_wa, notify_tx_tg')
+        .select('id, family_id, avatar_url, role, name, preferred_family_id, preferred_language, whatsapp_number, telegram_chat_id, preferred_form_mode, notify_on_tx, notify_tx_email, notify_tx_wa, notify_tx_tg, two_fa_enabled, two_fa_channel, notify_login, chat_tx_enabled')
         .eq('email', user.email)
         .maybeSingle();
       appUserRow = byEmail || null;
@@ -307,8 +307,14 @@ async function _loadCurrentUserContext(authCtx = null) {
     notify_tx_email:      !!appUserRow?.notify_tx_email,
     notify_tx_wa:         !!appUserRow?.notify_tx_wa,
     notify_tx_tg:         !!appUserRow?.notify_tx_tg,
+    chat_tx_enabled:      appUserRow?.chat_tx_enabled !== false,
     ...caps
   };
+
+  // Restore intro-banner states with user-scoped keys now that currentUser is known
+  try { if (typeof _restoreModuleIntroStates === 'function') _restoreModuleIntroStates(); } catch(_) {}
+  // Start realtime sync for module flags (all family members see changes immediately)
+  try { if (typeof _initModuleFlagRealtimeSync === 'function') _initModuleFlagRealtimeSync(); } catch(_) {}
 
   // Apply user language preference from DB (preferred_language column)
   // DB is authoritative — it was saved by saveMyProfile() / quickSetLang()
@@ -455,12 +461,48 @@ function focusFieldSafely(elementId, delay = 100) {
 
 
 // ── Show / hide login screen ──
+// ── Login screen touch-lock (prevents iOS bounce/drag on backdrop) ───────────
+function _lgnTouchLock(e) {
+  // Allow touch inside the scrollable content area — block everything else
+  const wrap = document.getElementById('loginScreen')?.querySelector('.lgn-centered-wrap');
+  if (wrap && wrap.contains(e.target)) return;
+  e.preventDefault();
+}
+
+function _lockLoginScreen() {
+  document.addEventListener('touchmove', _lgnTouchLock, { passive: false });
+}
+
+function _unlockLoginScreen() {
+  document.removeEventListener('touchmove', _lgnTouchLock, { passive: false });
+}
+
 function showLoginScreen() {
-  // Ensure sb is initialized whenever login screen is shown —
-  // guards against iOS/Safari timing issues where createClient failed silently
+  // Inicializar aba Senha como activa por padrão (se não estiver já)
+  if (typeof switchLoginTab === 'function') {
+    const magic = document.getElementById('loginPanelMagic');
+    if (magic && magic.style.display === 'none') { /* already on password tab */ }
+    else if (!magic) { /* panel not present yet */ }
+    // Don't force switch here — let the caller set tab if needed
+  }
+  // Se estamos em app.html (não em login.html), redireciona para a página de login dedicada.
+  // Isso acontece quando a sessão expira enquanto o app está aberto.
+  if (window.location.pathname.endsWith('app.html') || window.location.pathname === '/') {
+    // Preserva params de URL caso existam (invite links, etc.)
+    const dest = 'login.html' + window.location.search + window.location.hash;
+    window.location.replace(dest);
+    return;
+  }
+
+  // Contexto de login.html — comportamento normal
+  // Ensure sb is initialized whenever login screen is shown
   if (!sb && typeof ensureSupabaseClient === 'function') {
     sb = ensureSupabaseClient();
   }
+  // Exibir o loginScreen (começa display:none no HTML para evitar flicker e bugs de select iOS)
+  const _ls = document.getElementById('loginScreen');
+  if (_ls) { _ls.style.display = 'flex'; _ls.style.opacity = ''; _ls.style.transition = ''; }
+  _lockLoginScreen(); // block backdrop drag/bounce on mobile
   // Hide main app
   const mainApp = document.getElementById('mainApp');
   const sidebar = document.getElementById('sidebar');
@@ -468,6 +510,14 @@ function showLoginScreen() {
   if (mainApp) { mainApp.style.display = 'none'; mainApp.style.visibility = 'hidden'; mainApp.style.opacity = '0'; }
   if (sidebar) sidebar.style.display = 'none';
   if (sidebarOverlay) sidebarOverlay.style.display = 'none';
+
+  try {
+    document.querySelectorAll('.modal-overlay').forEach(el => {
+      el.classList.remove('open');
+      el.setAttribute('aria-hidden', 'true');
+      if ((el.style.display || '').trim() === 'flex') el.style.removeProperty('display');
+    });
+  } catch(_) {}
 
   const ls = document.getElementById('loginScreen');
   if (ls) {
@@ -523,9 +573,11 @@ function _clearRememberedCredentials() {
 function hideLoginScreen() {
   const ls = document.getElementById('loginScreen');
   if (ls) {
+    _unlockLoginScreen(); // restore normal touch behavior on the document
     ls.style.transition = 'opacity .2s ease';
     ls.style.opacity = '0';
-    setTimeout(() => { ls.style.display = 'none'; ls.style.opacity = ''; ls.style.transition = ''; }, 200);
+    ls.style.pointerEvents = 'none'; // Impedir interação imediatamente — não esperar 200ms
+    setTimeout(() => { ls.style.display = 'none'; ls.style.opacity = ''; ls.style.transition = ''; ls.style.pointerEvents = ''; }, 200);
   }
   const mainApp = document.getElementById('mainApp');
   const sidebar = document.getElementById('sidebar');
@@ -642,18 +694,22 @@ function toggleLoginPwd() {
 }
 
 // ── Login ──
+let _loginInProgress = false;
+
 async function doLogin() {
+  if (_loginInProgress) return;
+  _loginInProgress = true;
   const email    = document.getElementById('loginEmail').value.trim().toLowerCase();
   const password = document.getElementById('loginPassword').value;
   const errEl    = document.getElementById('loginError');
   const btn      = document.getElementById('loginBtn');
   errEl.style.display = 'none';
-  if (!email || !password) { showLoginErr('Preencha e-mail e senha.'); return; }
+  if (!email || !password) { showLoginErr('Preencha e-mail e senha.'); _loginInProgress = false; return; }
 
   btn.disabled = true; btn.textContent = 'Verificando...';
   try {
     if (!sb && typeof ensureSupabaseClient === 'function') sb = ensureSupabaseClient();
-    if (!sb) { showLoginErr('Sem conexão com o servidor. Verifique a configuração.'); btn.disabled = false; btn.textContent = 'Entrar'; return; }
+    if (!sb) { showLoginErr('Sem conexão com o servidor. Verifique a configuração.'); btn.disabled = false; btn.textContent = 'Entrar'; _loginInProgress = false; return; }
     const { data: authData, error } = await sb.auth.signInWithPassword({ email, password });
     if (error) {
       const msg = (error.message || '').toLowerCase().includes('confirm')
@@ -670,7 +726,7 @@ async function doLogin() {
 
     // Gate: check app_users approval status before entering the app
     const { data: appUser } = await sb
-      .from('app_users').select('approved,active,must_change_pwd').eq('email', email).maybeSingle();
+      .from('app_users').select('approved,active,must_change_pwd,two_fa_enabled').eq('email', email).maybeSingle();
 
     if (appUser && !appUser.approved) {
       await sb.auth.signOut();
@@ -687,6 +743,7 @@ async function doLogin() {
     if (appUser?.must_change_pwd) {
       document.getElementById('loginFormArea').style.display = 'none';
       document.getElementById('changePwdArea').style.display = '';
+      _loginInProgress = false;
       return;
     }
 
@@ -702,6 +759,7 @@ async function doLogin() {
       if (appUserFull && !_is2FATrusted(appUserFull.id)) {
         // Interromper login normal — iniciar fluxo 2FA
         await _initiate2FA(authData, appUserFull);
+        _loginInProgress = false; // 2FA flow takes over; permitir novo clique se usuário cancela
         return; // onLoginSuccess() será chamado após verificação do código
       }
     }
@@ -714,23 +772,14 @@ async function doLogin() {
         const _newHash = await hashPassword(password);
         await sb.from('app_users').update({ password_hash: _newHash }).eq('id', _pwRow.id);
       }
-    } catch(_) {}
-    // Upgrade legacy SHA-256 hash to PBKDF2 transparently on login
-    try {
-      const { data: _pwRow } = await sb.from('app_users')
-        .select('id,password_hash').eq('email', email).maybeSingle();
-      if (_pwRow?.password_hash && !_pwRow.password_hash.startsWith('pbkdf2:')) {
-        const _newHash = await hashPassword(password);
-        await sb.from('app_users').update({ password_hash: _newHash }).eq('id', _pwRow.id);
-      }
       // Store Supabase Auth UID in app_users for RLS policies
       // This is the critical bridge: app_users.auth_uid = auth.uid()
       if (_pwRow?.id && authData?.user?.id) {
-        await sb.from('app_users')
-          .update({ auth_uid: authData.user.id })
-          .eq('id', _pwRow.id)
-          .then(() => {})  // fire-and-forget, non-blocking
-          .catch(() => {}); // ignore error if column doesn't exist yet
+        try {
+          await sb.from('app_users')
+            .update({ auth_uid: authData.user.id })
+            .eq('id', _pwRow.id);
+        } catch(_) {} // ignore error if column doesn't exist yet
       }
     } catch(_) {} // non-blocking — upgrade is best-effort
     await _loadCurrentUserContext(authData);
@@ -740,6 +789,7 @@ async function doLogin() {
     showLoginErr('Erro: ' + (e?.message || e));
   } finally {
     btn.disabled = false; btn.textContent = 'Entrar';
+    _loginInProgress = false;
   }
 }
 function showLoginErr(msg) {
@@ -794,47 +844,81 @@ async function doMagicLink() {
       btn.disabled = false; btn.textContent = '✉️ Enviar Link de Acesso';
       return;
     }
-    // Verify the e-mail exists AND is approved in app_users before sending
-    // the OTP — avoids leaking info about unknown e-mails via timing, and
-    // prevents unapproved users from ever receiving an access link.
-    const { data: appUser } = await sb
-      .from('app_users')
-      .select('approved,active')
-      .eq('email', email)
-      .maybeSingle();
 
-    if (!appUser) {
-      // Neutral message — do not confirm whether the e-mail is registered
-      _showMagicLinkSent();
-      return;
-    }
-    if (!appUser.approved) {
-      errEl.textContent = 'Sua conta ainda aguarda aprovação do administrador.';
-      errEl.style.display = '';
-      btn.disabled = false;
-      btn.textContent = '✉️ Enviar Link de Acesso';
-      return;
-    }
-    if (!appUser.active) {
-      errEl.textContent = 'Sua conta está inativa. Contate o administrador.';
-      errEl.style.display = '';
-      btn.disabled = false;
-      btn.textContent = '✉️ Enviar Link de Acesso';
-      return;
+    // ── Verify approval in app_users (best-effort — RLS may block anon reads) ──
+    // If the query fails due to RLS or network, we proceed to send the OTP anyway
+    // and let Supabase reject unknown emails via shouldCreateUser:false.
+    let appUser = null;
+    let appUserQueryFailed = false;
+    try {
+      const { data, error: qErr } = await sb
+        .from('app_users')
+        .select('approved,active')
+        .eq('email', email)
+        .maybeSingle();
+      if (qErr) {
+        // RLS blocked the anon read — log but don't abort
+        console.warn('[magicLink] app_users query blocked (RLS?):', qErr.message);
+        appUserQueryFailed = true;
+      } else {
+        appUser = data;
+      }
+    } catch(qEx) {
+      console.warn('[magicLink] app_users query exception:', qEx.message);
+      appUserQueryFailed = true;
     }
 
-    // Send the magic link via Supabase OTP
-    const redirectTo = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
+    // Only gate on approval if the query actually returned a result
+    if (!appUserQueryFailed) {
+      if (!appUser) {
+        // Email not in app_users — show neutral message, don't reveal this fact
+        _showMagicLinkSent();
+        return;
+      }
+      if (!appUser.approved) {
+        errEl.textContent = 'Sua conta ainda aguarda aprovação do administrador.';
+        errEl.style.display = '';
+        btn.disabled = false;
+        btn.textContent = '✉️ Enviar Link de Acesso';
+        return;
+      }
+      if (!appUser.active) {
+        errEl.textContent = 'Sua conta está inativa. Contate o administrador.';
+        errEl.style.display = '';
+        btn.disabled = false;
+        btn.textContent = '✉️ Enviar Link de Acesso';
+        return;
+      }
+    }
+
+    // ── Send the magic link via Supabase OTP ──────────────────────────────────
+    const redirectTo = _getAuthCallbackUrl();
     const { error } = await sb.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: redirectTo, shouldCreateUser: false },
+      options: {
+        emailRedirectTo: redirectTo,
+        shouldCreateUser: false,  // never create new auth users from magic link
+      },
     });
-    if (error) throw error;
+
+    if (error) {
+      // Surface the real Supabase error to the user
+      // Common errors: "Email rate limit exceeded", "User not found", etc.
+      throw error;
+    }
 
     _showMagicLinkSent();
 
   } catch(e) {
-    errEl.textContent = 'Erro: ' + (e.message || e);
+    let msg = e.message || String(e);
+    // Humanise common Supabase error codes
+    if (msg.includes('rate limit') || msg.includes('429'))
+      msg = 'Limite de envios atingido. Aguarde alguns minutos e tente novamente.';
+    else if (msg.includes('not found') || msg.includes('no user'))
+      msg = 'E-mail não encontrado. Verifique o endereço digitado.';
+    else if (msg.includes('Email link') || msg.includes('disabled'))
+      msg = 'Magic link desativado neste projeto. Contate o administrador.';
+    errEl.textContent = 'Erro: ' + msg;
     errEl.style.display = '';
     btn.disabled = false;
     btn.textContent = '✉️ Enviar Link de Acesso';
@@ -921,6 +1005,11 @@ async function onLoginSuccess() {
     await _acceptPendingInvite().catch(() => {});
   }
 
+  // Load per-member access restrictions (module/account restrictions set by owner)
+  if (typeof loadMyAccessRestrictions === 'function') {
+    loadMyAccessRestrictions().catch(() => {});
+  }
+
   const platformInfo = (typeof detectLoginPlatform === 'function') ? detectLoginPlatform() : { isWindows:false };
   const loginLogo = document.getElementById('loginLogoImg');
   if (loginLogo && !platformInfo.isWindows) loginLogo.classList.add('exiting');
@@ -937,6 +1026,9 @@ async function onLoginSuccess() {
 
   // Apply access request visibility based on admin setting
   if (typeof initAccessRequestVisibility === 'function') initAccessRequestVisibility().catch(()=>{});
+
+  // Check for Telegram chat_id in URL (e.g. after bot redirect)
+  _checkTelegramChatIdUrl().catch(() => {});
 
   // If the user has no family_id and is not a global admin/owner,
   // launch the wizard so they can create their own family as Owner.
@@ -958,7 +1050,29 @@ async function onLoginSuccess() {
 function _registerMagicLinkGate() {
   if (!sb) return;
   sb.auth.onAuthStateChange(async (event, session) => {
+
+    // ── Sessão encerrada ou token inválido → redirecionar para login ────────
+    // Cobre: logout remoto, expiração de refresh token, revogação de sessão.
+    // Só age se o app já estava aberto (loginScreen oculto = usuário logado).
+    if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
+      // Se foi doLogout() quem chamou signOut(), ele mesmo fará o redirect — não agir aqui
+      if (_loginInProgress) return;
+      const loginScreen = document.getElementById('loginScreen');
+      const appAlreadyOpen = !loginScreen || loginScreen.style.display === 'none';
+      if (appAlreadyOpen) {
+        currentUser = null;
+        try { closeAllModals?.(); } catch(_) {}
+        showLoginScreen();
+        showLoginFormArea();
+        showLoginErr('Sua sessão expirou. Por favor, faça login novamente.');
+      }
+      return;
+    }
+
     if (event !== 'SIGNED_IN' || !session?.user?.email) return;
+
+    // Do NOT interfere if doLogin() is already handling this auth event
+    if (_loginInProgress) return;
 
     // Do NOT interfere if the recovery password form is visible
     const recoveryArea = document.getElementById('recoveryPwdArea');
@@ -1009,6 +1123,8 @@ function _registerMagicLinkGate() {
 // ── Update UI with current user ──
 function updateUserUI() {
   if (!currentUser) return;
+  // Sinaliza para o dashboard que deve exibir saudação na próxima visita
+  window._dashGreetingPending = true;
   const nameEl  = document.getElementById('currentUserName');
   const emailEl = document.getElementById('currentUserEmail');
   if (nameEl)  nameEl.textContent  = currentUser.name || currentUser.email;
@@ -1050,9 +1166,14 @@ function updateUserUI() {
       }
     });
   });
-  // Audit: sempre visível — apenas garante que não esteja escondido
+  // Audit: visível para todos os usuários autenticados — usa classe .audit-visible
+  // (igual ao padrão admin-visible, para que !important do CSS seja respeitado)
   document.querySelectorAll('[data-nav="audit"]').forEach(el => {
-    el.style.display = '';
+    if (el.id === 'auditNavTopbar') {
+      el.classList.add('audit-visible');
+    } else {
+      el.style.display = '';
+    }
   });
   const adminSec = document.getElementById('adminNavSection');
   if (adminSec) adminSec.style.display = isAdmin ? '' : 'none';
@@ -1064,7 +1185,8 @@ function updateUserUI() {
       if (typeof _cfgUpdateFeedbackBadge === 'function') _cfgUpdateFeedbackBadge();
     }, 1500);
   }
-
+  // Receivables badge — always update after login
+  setTimeout(() => { _updateReceivablesBadge().catch(() => {}); }, 2000);
   // Family switcher (only when user has 2+ families)
   _renderFamilySwitcher();
 
@@ -1111,7 +1233,13 @@ function applyPermissions() {
   });
 });
 // Audit sempre visível para todos os usuários autenticados
-document.querySelectorAll('[data-nav="audit"]').forEach(el => { el.style.display = ''; });
+document.querySelectorAll('[data-nav="audit"]').forEach(el => {
+  if (el.id === 'auditNavTopbar') {
+    el.classList.add('audit-visible');
+  } else {
+    el.style.display = '';
+  }
+});
 if (!p.can_admin) {
   const adminSec = document.getElementById('adminNavSection');
   if (adminSec) adminSec.style.display = 'none';
@@ -1154,6 +1282,9 @@ function toggleUserMenu(e) {
 
   // ── Family switcher inside menu ──
   _renderUserMenuFamilies();
+
+  // ── Chat Tx toggle state ──
+  _refreshChatTxToggle();
 
   // ── Position dropdown relative to avatar button, safe for mobile ──
   const btn   = document.getElementById('topbarUserBtn');
@@ -1203,6 +1334,179 @@ function closeUserMenu() {
   if (dd) dd.style.display = 'none';
   document.removeEventListener('click', _closeUserMenuOutside);
 }
+
+/* ── Chat Tx toggle — Transações por Chat (Telegram / WhatsApp) ──────────── */
+
+function _refreshChatTxToggle() {
+  const track  = document.getElementById('chatTxToggleTrack');
+  const logBtn = document.getElementById('chatTxLogBtn');
+  if (!track) return;
+  const enabled = currentUser?.chat_tx_enabled !== false; // default true
+  track.style.background = enabled ? 'var(--accent)' : '';
+  track.classList.toggle('active', enabled);
+  if (logBtn) logBtn.style.display = enabled ? '' : 'none';
+}
+
+/* ── Histórico de transações criadas via chat ─────────────────────────────── */
+async function openChatTxLog() {
+  document.getElementById('chatTxLogModal')?.remove();
+
+  const html = `
+  <div class="modal-overlay open" id="chatTxLogModal"
+    onclick="if(event.target===this)closeModal('chatTxLogModal')">
+    <div class="modal" style="max-width:520px;max-height:90dvh;display:flex;flex-direction:column">
+      <div class="modal-handle"></div>
+      <div class="modal-header">
+        <span class="modal-title">💬 Histórico via Chat</span>
+        <button class="modal-close" onclick="closeModal('chatTxLogModal')">✕</button>
+      </div>
+      <div class="modal-body" style="flex:1;overflow-y:auto;padding:0" id="chatTxLogBody">
+        <div style="padding:24px;text-align:center;color:var(--muted);font-size:.82rem">⏳ Carregando…</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('chatTxLogModal')">Fechar</button>
+      </div>
+    </div>
+  </div>`;
+
+  document.body.insertAdjacentHTML('beforeend', html);
+  const body = document.getElementById('chatTxLogBody');
+
+  try {
+    if (!sb || !currentUser?.id) throw new Error('Sessão não encontrada.');
+
+    // Load last 50 chat pending actions for this user (all statuses)
+    const { data: actions, error } = await sb
+      .from('chat_pending_actions')
+      .select('id,status,parsed_payload,created_at,channel')
+      .eq('user_id', currentUser.id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+
+    if (!actions?.length) {
+      body.innerHTML = '<div style="padding:32px;text-align:center;color:var(--muted);font-size:.83rem">Nenhuma transação via chat ainda.<br>Mande uma mensagem para o bot!</div>';
+      return;
+    }
+
+    const E = typeof esc === 'function' ? esc : s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    const F = typeof fmt === 'function' ? fmt : v => 'R$'+Number(v).toFixed(2);
+    const fmtDt = iso => {
+      try { return new Date(iso).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+      catch { return iso?.slice(0,16).replace('T',' ') || '—'; }
+    };
+
+    const statusConfig = {
+      confirmed: { label:'Confirmada', color:'#16a34a', bg:'rgba(22,163,74,.08)', icon:'✅' },
+      cancelled:  { label:'Cancelada',  color:'#dc2626', bg:'rgba(220,38,38,.08)', icon:'❌' },
+      pending:    { label:'Pendente',   color:'#d97706', bg:'rgba(217,119,6,.08)', icon:'⏳' },
+      expired:    { label:'Expirada',   color:'#9ca3af', bg:'rgba(156,163,175,.08)', icon:'⏱' },
+    };
+
+    const rows = actions.map(a => {
+      const p   = a.parsed_payload || {};
+      const st  = statusConfig[a.status] || statusConfig.expired;
+      const amt = p.amount ? (p.type === 'income' ? '+' : '-') + F(Math.abs(p.amount)) : '—';
+      const amtColor = p.type === 'income' ? '#16a34a' : '#dc2626';
+      const ch  = a.channel === 'telegram' ? '✈️' : '💬';
+      const inferIcon = { parser:'📝', memory:'🧠', context:'🔄', ai:'🤖', image:'📷' }[p.inferred_by] || '❓';
+      return `
+      <div style="display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--border)">
+        <div style="width:36px;height:36px;border-radius:9px;flex-shrink:0;
+          background:${st.bg};border:1px solid ${st.color}30;
+          display:flex;align-items:center;justify-content:center;font-size:1rem">
+          ${st.icon}
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+            <span style="font-size:.83rem;font-weight:700;color:var(--text);
+              overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              ${E(p.description || '—')}
+            </span>
+            <span style="font-size:.6rem;padding:1px 5px;border-radius:6px;
+              background:${st.bg};color:${st.color};font-weight:700;flex-shrink:0">
+              ${st.label}
+            </span>
+          </div>
+          <div style="font-size:.67rem;color:var(--muted)">
+            ${ch} ${fmtDt(a.created_at)}
+            ${p.category_name ? ' · ' + E(p.category_name) : ''}
+            ${p.account_name  ? ' · ' + E(p.account_name)  : ''}
+            <span style="margin-left:4px">${inferIcon}</span>
+          </div>
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-size:.88rem;font-weight:800;color:${amtColor}">${amt}</div>
+          <div style="font-size:.62rem;color:var(--muted);margin-top:2px">${p.date || ''}</div>
+        </div>
+      </div>`;
+    }).join('');
+
+    // Summary stats
+    const total     = actions.length;
+    const confirmed = actions.filter(a => a.status === 'confirmed').length;
+    const cancelled = actions.filter(a => a.status === 'cancelled').length;
+    const pending   = actions.filter(a => a.status === 'pending').length;
+
+    const summary = `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 16px;border-bottom:1px solid var(--border)">
+      <div style="background:rgba(22,163,74,.07);border:1px solid rgba(22,163,74,.2);border-radius:9px;padding:8px;text-align:center">
+        <div style="font-size:1.1rem;font-weight:800;color:#16a34a">${confirmed}</div>
+        <div style="font-size:.63rem;color:var(--muted);font-weight:600">Confirmadas</div>
+      </div>
+      <div style="background:rgba(220,38,38,.07);border:1px solid rgba(220,38,38,.2);border-radius:9px;padding:8px;text-align:center">
+        <div style="font-size:1.1rem;font-weight:800;color:#dc2626">${cancelled}</div>
+        <div style="font-size:.63rem;color:var(--muted);font-weight:600">Canceladas</div>
+      </div>
+      <div style="background:rgba(217,119,6,.07);border:1px solid rgba(217,119,6,.2);border-radius:9px;padding:8px;text-align:center">
+        <div style="font-size:1.1rem;font-weight:800;color:#d97706">${pending}</div>
+        <div style="font-size:.63rem;color:var(--muted);font-weight:600">Pendentes</div>
+      </div>
+    </div>`;
+
+    body.innerHTML = summary + `<div style="padding:4px 0">${rows}</div>`;
+  } catch(e) {
+    if (body) body.innerHTML = `<div style="padding:20px;color:#dc2626;text-align:center;font-size:.82rem">❌ ${typeof esc==='function'?esc(e.message):e.message}</div>`;
+  }
+}
+window.openChatTxLog = openChatTxLog;
+
+async function _toggleChatTxEnabled() {
+  const newVal = !(currentUser?.chat_tx_enabled !== false);
+  // Optimistic UI update
+  if (currentUser) currentUser.chat_tx_enabled = newVal;
+  _refreshChatTxToggle();
+
+  if (!sb || !currentUser) return;
+  try {
+    const { data: appRow } = await sb
+      .from('app_users')
+      .select('id')
+      .eq('auth_uid', (await sb.auth.getUser())?.data?.user?.id)
+      .maybeSingle();
+    if (!appRow) return;
+    const { error } = await sb
+      .from('app_users')
+      .update({ chat_tx_enabled: newVal })
+      .eq('id', appRow.id);
+    if (error) {
+      // Rollback on error
+      if (currentUser) currentUser.chat_tx_enabled = !newVal;
+      _refreshChatTxToggle();
+      toast('Erro ao salvar preferência de chat: ' + error.message, 'error');
+    } else {
+      const label = newVal ? 'ativadas' : 'desativadas';
+      toast(`Transações por chat ${label}.`, 'success');
+    }
+  } catch (e) {
+    if (currentUser) currentUser.chat_tx_enabled = !newVal;
+    _refreshChatTxToggle();
+    console.warn('[chatTxToggle]', e);
+  }
+}
+
+window._toggleChatTxEnabled = _toggleChatTxEnabled;
 
 /* ══════════════════════════════════════════════════════════════════
    MY PROFILE MODAL — avatar + senha num único lugar
@@ -1319,6 +1623,12 @@ function openMyProfile() {
 
   openModal('myProfileModal');
   setTimeout(() => document.getElementById('myProfilePwd1')?.focus(), 200);
+  // Apply notification channel visibility (respects admin settings)
+  if (typeof loadNotifChannelSettings === 'function') {
+    loadNotifChannelSettings().catch(() => {});
+  } else if (typeof _applyNotifChannelVisibility === 'function') {
+    _applyNotifChannelVisibility();
+  }
 }
 
 function previewMyProfileAvatar(input) {
@@ -1503,7 +1813,9 @@ async function saveMyProfile() {
   const tgChanged = telegramChatId !== String(currentUser.telegram_chat_id || '');
 
   const newName = (document.getElementById('myProfileNameInput')?.value || '').trim();
-  const nameChanged = newName && newName !== (currentUser?.name || '');
+  // nameChanged: true if input differs from stored name
+  // Note: allow empty name (user clearing it) only if original was not empty
+  const nameChanged = (newName !== (currentUser?.name || '')) && (newName || (currentUser?.name || ''));
   const newFormMode = document.getElementById('myProfileFormMode')?.value || 'tabs';
   const fmChanged = newFormMode !== (currentUser?.preferred_form_mode || 'tabs');
   const notifyOnTx      = !!(document.getElementById('myProfileNotifyOnTx')?.checked);
@@ -1514,7 +1826,26 @@ async function saveMyProfile() {
                        || notifyTxEmail   !== !!(currentUser?.notify_tx_email)
                        || notifyTxWa      !== !!(currentUser?.notify_tx_wa)
                        || notifyTxTg      !== !!(currentUser?.notify_tx_tg);
-  if (!avatarFile && !avatarRemove && !pwd1 && !prefFamChanged && !langChanged && !waChanged && !tgChanged && !fmChanged && !nameChanged && !notifyChanged) {
+
+  // 2FA state — detect change to avoid skipping when it's the only thing modified
+  const twoFaEnabled  = !!(document.getElementById('myProfile2faEnabled')?.checked);
+  const twoFaChannel  = document.getElementById('twoFaChanTelegram')?.checked ? 'telegram' : 'email';
+  const twoFaChanged  = twoFaEnabled !== !!(currentUser?.two_fa_enabled)
+                     || twoFaChannel !== (currentUser?.two_fa_channel || 'email');
+
+  // Detect changes in alert preferences (toast duration / style / sound)
+  const alertStyle    = document.getElementById('myProfileAlertStyle')?.value    || 'toast';
+  const alertDuration = document.getElementById('myProfileAlertDuration')?.value || '3200';
+  const alertSound    = !!(document.getElementById('myProfileAlertSound')?.checked);
+  const _storedStyle    = (typeof getAlertStyle    === 'function') ? String(getAlertStyle())    : 'toast';
+  const _storedDuration = (typeof getAlertDuration === 'function') ? String(getAlertDuration()) : '3200';
+  const _storedSound    = (typeof getAlertSound    === 'function') ? getAlertSound()            : false;
+  const alertPrefsChanged = alertStyle    !== _storedStyle
+                         || alertDuration !== _storedDuration
+                         || alertSound    !== _storedSound;
+
+  if (!avatarFile && !avatarRemove && !pwd1 && !prefFamChanged && !langChanged && !waChanged && !tgChanged && !fmChanged && !nameChanged && !notifyChanged && !twoFaChanged && !alertPrefsChanged) {
+    toast('Nenhuma alteração detectada.', 'info');
     closeModal('myProfileModal');
     return;
   }
@@ -1523,8 +1854,17 @@ async function saveMyProfile() {
 
   try {
     // 1. Avatar
-    const { data: appRow } = await sb.from('app_users').select('id').eq('email', currentUser.email).maybeSingle();
-    if (!appRow) throw new Error('Usuário não encontrado.');
+    // Try auth_uid first (RLS-native), fallback to email
+    const _authUid = (await sb.auth.getUser())?.data?.user?.id || currentUser?.auth_uid || null;
+    let { data: appRow } = _authUid
+      ? await sb.from('app_users').select('id').eq('auth_uid', _authUid).maybeSingle()
+      : await sb.from('app_users').select('id').eq('email', currentUser.email).maybeSingle();
+    if (!appRow) {
+      // Fallback: try by email
+      const { data: appRow2 } = await sb.from('app_users').select('id').eq('email', currentUser.email).maybeSingle();
+      appRow = appRow2;
+    }
+    if (!appRow) throw new Error('Usuário não encontrado. Verifique se sua sessão está ativa.');
 
     let newAvatarUrl = currentUser.avatar_url;
     if (avatarFile) {
@@ -1574,6 +1914,7 @@ async function saveMyProfile() {
       if ('notify_tx_email' in updatePayload) currentUser.notify_tx_email = notifyTxEmail;
       if ('notify_tx_wa'    in updatePayload) currentUser.notify_tx_wa    = notifyTxWa;
       if ('notify_tx_tg'    in updatePayload) currentUser.notify_tx_tg    = notifyTxTg;
+      if ('chat_tx_enabled' in updatePayload) currentUser.chat_tx_enabled = updatePayload.chat_tx_enabled;
       if ('name' in updatePayload) {
         currentUser.name = newName;
         // Refresh cover header name
@@ -1591,11 +1932,34 @@ async function saveMyProfile() {
     }
 
     // 1b. 2FA settings
-    if (appRow) {
-      try {
-        if (typeof _save2FASettings === 'function') await _save2FASettings(appRow.id);
-      } catch(e2fa) {
-        console.warn('[2FA save]', e2fa.message);
+    // Enabling 2FA: _confirm2FASetup() saves to DB after a successful test.
+    // _window._2faSetupVerified flag is set by _confirm2FASetup to signal it's done.
+    // Disabling or channel-only change: save directly (no test required).
+    if (appRow && twoFaChanged) {
+      if (twoFaEnabled && !currentUser?.two_fa_enabled) {
+        // Enabling for the first time — require test only if not yet verified this session
+        if (!window._2faSetupVerified) {
+          // Don't block the save — just show toast and skip 2FA update
+          toast('⚠️ Clique em "Testar 2FA" para verificar o canal antes de ativar.', 'warning');
+          // Continue saving other profile fields — just skip 2FA save
+        } else {
+          // Test was passed — save 2FA
+          window._2faSetupVerified = false;
+          try {
+            await _save2FASettings(appRow.id);
+            currentUser.two_fa_enabled = twoFaEnabled;
+            currentUser.two_fa_channel = twoFaChannel;
+          } catch(e2fa) { console.warn('[2FA save]', e2fa.message); }
+        }
+      } else {
+        // Disabling, channel change, or no real change — save directly, no test required
+        try {
+          await _save2FASettings(appRow.id);
+          currentUser.two_fa_enabled = twoFaEnabled;
+          currentUser.two_fa_channel = twoFaChannel;
+        } catch(e2fa) {
+          console.warn('[2FA save]', e2fa.message);
+        }
       }
     }
 
@@ -1608,9 +1972,20 @@ async function saveMyProfile() {
       await sb.from('app_users').update({ password_hash: hash, must_change_pwd: false }).eq('id', appRow.id);
     }
 
-    toast(t('profile.updated'), 'success');
-    if (typeof _saveFormModeFromProfile === 'function') _saveFormModeFromProfile();
-    if (typeof saveAlertPrefsFromProfile === 'function') saveAlertPrefsFromProfile();
+    // Save alert/toast preferences (style, duration, sound) — stored in localStorage + Supabase
+    if (typeof saveAlertPrefsFromProfile === 'function') {
+      await saveAlertPrefsFromProfile().catch(()=>{});
+    }
+
+    toast('✓ Perfil atualizado com sucesso!', 'success');
+    // Form mode already saved in updatePayload — no separate call needed
+    // Alert preferences already saved in updatePayload — sync topbar badge
+    if (typeof _checkPendingApprovals === 'function') _checkPendingApprovals().catch(()=>{});
+    // Refresh topbar display name and avatar
+    const _tbName = document.getElementById('topbarUserName') || document.querySelector('.sb-user-display-name');
+    if (_tbName && currentUser?.name) _tbName.textContent = currentUser.name;
+    const _topAvatar = document.querySelector('.topbar-avatar-img');
+    if (_topAvatar && currentUser?.avatar_url) _topAvatar.src = currentUser.avatar_url;
     closeModal('myProfileModal');
   } catch(e) {
     if (errEl) { errEl.textContent = 'Erro: ' + (e.message || e); errEl.style.display = ''; }
@@ -1621,24 +1996,45 @@ async function saveMyProfile() {
 
 // ── Logout ──
 async function doLogout() {
-  try { await sb?.auth?.signOut(); } catch(e) {}
-  localStorage.removeItem('ft_session_token');
-  localStorage.removeItem('ft_user_id');
-  currentUser = null;
-  // Reset charts
-  Object.values(state.chartInstances||{}).forEach(c => c?.destroy?.());
-  state.chartInstances = {};
-  // Close any open modals/overlays before showing login
-  document.querySelectorAll('.modal-overlay, .modal-backdrop, [id$="Modal"]').forEach(el => {
-    el.style.display = 'none';
+  // ── Bloqueia onAuthStateChange (SIGNED_OUT) de agir em paralelo
+  _loginInProgress = true;
+
+  // ── PASSO 1 (SÍNCRONO): remover a sessão do localStorage AGORA.
+  // Feito antes de qualquer await para que, mesmo que o resto falhe,
+  // o fast-redirect em login.html não encontre sessão válida.
+  const SESSION_KEYS = [
+    'family-fintrack-auth',   // chave principal (storageKey do supabase createClient)
+    'ft_session_token',       // legado
+    'ft_user_id',             // legado
+    'ft_login_redirect',      // flag de redirect
+    'ft_remember_me_session', // sessão remember-me
+  ];
+  SESSION_KEYS.forEach(k => {
+    try { localStorage.removeItem(k); }   catch(_) {}
+    try { sessionStorage.removeItem(k); } catch(_) {}
   });
-  // Clear login form for security
-  const emailEl = document.getElementById('loginEmail');
-  const passEl = document.getElementById('loginPassword');
-  if (emailEl) emailEl.value = '';
-  if (passEl) passEl.value = '';
-  // Reload the page for a completely clean state
-  window.location.reload();
+  // Remove também qualquer chave residual do Supabase (sb-*-auth-token)
+  try {
+    Object.keys(localStorage).forEach(k => {
+      if ((k.startsWith('sb-') || k.includes('supabase')) && k.includes('auth')) {
+        localStorage.removeItem(k);
+      }
+    });
+  } catch(_) {}
+
+  // ── PASSO 2: parar timers de background
+  try { if (typeof _stopFxAutoRefresh === 'function') _stopFxAutoRefresh(); } catch(_) {}
+
+  // ── PASSO 3: notificar Supabase (fire-and-forget — não bloqueia a navegação)
+  // scope:'local' = apenas limpa storage local, sem chamada de rede (rápido)
+  try { sb?.auth?.signOut({ scope: 'local' }).catch(() => {}); } catch(_) {}
+
+  // ── PASSO 4: limpar estado em memória
+  currentUser = null;
+  try { Object.values(state.chartInstances || {}).forEach(c => c?.destroy?.()); state.chartInstances = {}; } catch(_) {}
+
+  // ── PASSO 5: navegar para login com replace (evita histórico para o app)
+  window.location.replace('login.html');
 }
 
 // ── Clear App Cache ──
@@ -1714,6 +2110,12 @@ function showLoginFormArea() {
   document.getElementById('loginFormArea').style.display = '';
   document.getElementById('loginError').style.display = 'none';
   document.getElementById('regError').style.display = 'none';
+  // Restaurar elementos de cabeçalho ocultos pelo modo 2FA
+  ['lgn-logo-wrap','lgn-form-title','lgn-form-sub'].forEach(cls => {
+    document.querySelectorAll('.' + cls).forEach(el => { el.style.display = ''; });
+  });
+  const formInner = document.querySelector('.lgn-form-inner');
+  if (formInner) formInner.classList.remove('lgn-2fa-mode');
   focusFieldSafely('loginEmail');
 }
 
@@ -1724,6 +2126,48 @@ function showForgotPwdForm() {
   document.getElementById('forgotPwdError').style.display = 'none';
   document.getElementById('forgotPwdError').textContent = '';
   focusFieldSafely('forgotPwdEmail');
+}
+
+// Returns the dedicated reset-password page URL — always used as redirectTo
+// for resetPasswordForEmail so Supabase never redirects to the landing page.
+function _getResetPasswordUrl() {
+  const { origin, pathname } = window.location;
+  const base = pathname.endsWith('/')
+    ? pathname
+    : pathname.substring(0, pathname.lastIndexOf('/') + 1);
+  return origin + base + 'reset-password.html';
+}
+
+function _getRegisterUrl(email, name, userId) {
+  const { origin, pathname } = window.location;
+  const base = pathname.endsWith('/')
+    ? pathname
+    : pathname.substring(0, pathname.lastIndexOf('/') + 1);
+  const p = new URLSearchParams();
+  if (email)  p.set('email',  email);
+  if (name)   p.set('name',   name);
+  if (userId) p.set('uid',    userId);
+  return origin + base + 'register.html?' + p.toString();
+}
+
+// Returns auth-callback.html URL — used as redirectTo for magic links,
+// invite links, and email confirmations so the correct flow is handled.
+function _getAuthCallbackUrl() {
+  const { origin, pathname } = window.location;
+  const base = pathname.endsWith('/')
+    ? pathname
+    : pathname.substring(0, pathname.lastIndexOf('/') + 1);
+  return origin + base + 'auth-callback.html';
+}
+
+// Returns app.html URL — used as redirectTo for magic links / OTP so the
+// user lands on the app after clicking the email link (not on the landing page).
+function _getAppHtmlUrl() {
+  const { origin, pathname } = window.location;
+  const base = pathname.endsWith('/')
+    ? pathname
+    : pathname.substring(0, pathname.lastIndexOf('/') + 1);
+  return origin + base + 'app.html';
 }
 
 async function doForgotPwd() {
@@ -1741,7 +2185,7 @@ async function doForgotPwd() {
     if (!sb) {
       throw new Error('Conexão com o servidor não iniciada. Verifique a configuração do Supabase nas configurações do app.');
     }
-    const redirectTo = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
+    const redirectTo = _getResetPasswordUrl();
     const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
     if (error) throw error;
     errEl.textContent = '✅ Se este e-mail estiver cadastrado, você receberá o link de recuperação em breve. Verifique também a pasta de spam.';
@@ -1927,7 +2371,7 @@ function switchUATab(tab) {
   if (pane) { pane.style.display = 'flex'; pane.style.flexDirection = 'column'; }
   const tabId = 'uaTab' + tab.charAt(0).toUpperCase() + tab.slice(1);
   document.getElementById(tabId)?.classList.add('active');
-  if (tab === 'pending')  { if (typeof loadPendingApprovals === 'function') loadPendingApprovals(); }
+  if (tab === 'pending')  { _renderPendingTab(); }
   if (tab === 'users')    { if (typeof loadUserAdmin === 'function') loadUserAdmin(); }
   if (tab === 'families') { if (typeof loadFamiliesAdmin === 'function') loadFamiliesAdmin(); }
   if (tab === 'waitlist') { if (typeof loadWaitlist === 'function') loadWaitlist(); }
@@ -1980,6 +2424,11 @@ async function _renderPendingTab() {
     const initials = (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
     const uid      = esc(u.id);
     const uname    = esc(u.name || u.email || '');
+    // Badge de convite enviado
+    const alreadyInvited = !!(u.invite_sent_at || u._invite_sent);
+    const invBadge = alreadyInvited
+      ? '<span style="font-size:.63rem;background:#dcfce7;color:#16a34a;padding:2px 7px;border-radius:10px;font-weight:700;margin-left:6px">✉️ Convite enviado</span>'
+      : '';
 
     html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px 16px">'
       // — Linha superior: avatar + nome + idade
@@ -1996,6 +2445,7 @@ async function _renderPendingTab() {
       + '<select id="pendingFam_' + uid + '" style="flex:1;min-width:140px;height:32px;font-size:.8rem;border:1px solid var(--border);border-radius:6px;padding:0 8px;background:var(--surface);color:var(--text)">'
       + famOptions
       + '</select>'
+      + '<button class="btn btn-ghost btn-sm" data-uid="' + uid + '" data-uname="' + uname + '" data-uemail="' + esc(u.email||'') + '" onclick="_sendPendingInviteLink(this.dataset.uid,this.dataset.uname,this.dataset.uemail)" style="color:var(--accent);border-color:var(--accent);height:32px;white-space:nowrap" title="Envia link do register.html por email">✉️ Convidar</button>'
       + '<button class="btn btn-primary btn-sm" data-uid="' + uid + '" data-uname="' + uname + '" onclick="_inlineApprove(this.dataset.uid,this.dataset.uname)" style="background:#16a34a;height:32px;white-space:nowrap">&#9989; Aprovar</button>'
       + '<button class="btn btn-ghost btn-sm" data-uid="' + uid + '" data-uname="' + uname + '" onclick="_inlineReject(this.dataset.uid,this.dataset.uname)" style="color:#dc2626;height:32px">&#10005; Rejeitar</button>'
       + '</div>'
@@ -2063,7 +2513,7 @@ async function _inlineApprove(userId, userName) {
     if (signUpErr2) console.warn('[approve] signUp:', signUpErr2.message);
 
     // Email de boas-vindas
-    await _sendApprovalEmail(userEmail, displayName, familyName);
+    await _sendApprovalEmail(userEmail, displayName, familyName, userId);
 
     toast('✓ ' + displayName + ' aprovado!' + (createNewFamily ? ' Criará família no primeiro login.' : familyName ? ' Família: ' + familyName : ''), 'success');
     await _checkPendingApprovals();
@@ -2084,8 +2534,33 @@ async function _inlineReject(userId, userName) {
   await _renderPendingTab();
 }
 
+// ── Enviar link de registro (register.html) para usuário pendente ────────────
+async function _sendPendingInviteLink(userId, userName, userEmail) {
+  if (!userEmail) { toast('E-mail não disponível.', 'error'); return; }
+  if (!confirm('Enviar link de cadastro para ' + (userName || userEmail) + '?\n\nO usuário receberá um email com o link para register.html com os dados pré-preenchidos.')) return;
 
-// ══════════════════════════════════════════════════════════════════════════════
+  try {
+    // Fetch full user record for name
+    const { data: row } = await sb.from('app_users').select('name,email').eq('id', userId).maybeSingle();
+    const name  = row?.name  || userName  || '';
+    const email = row?.email || userEmail || '';
+
+    await _sendApprovalEmail(email, name, null, userId);
+    toast('✉️ Link de cadastro enviado para ' + (name || email) + '!', 'success');
+
+    // Mark invite_sent_at in app_users if column exists
+    try { await sb.from('app_users')
+      .update({ invite_sent_at: new Date().toISOString() })
+      .eq('id', userId); } catch(_) {};
+
+    await _renderPendingTab();
+  } catch(e) {
+    toast('Erro ao enviar convite: ' + e.message, 'error');
+  }
+}
+window._sendPendingInviteLink = _sendPendingInviteLink;
+
+
 //  COPY FAMILY DATA — copies ALL data from source family → target family
 //  Target family data is wiped first, then repopulated with remapped UUIDs.
 //  Admin-only operation.
@@ -2378,355 +2853,313 @@ async function executeCopyFamily(srcId, srcName) {
 
 
 async function loadFamiliesList() {
-  // ── Carregar famílias ──────────────────────────────────────────────────────
+  const el = document.getElementById('familiesList');
+  if (!el) return;
+  el.innerHTML = '<div style="text-align:center;padding:28px;color:var(--muted);font-size:.83rem">⏳ Carregando…</div>';
+
   let families = [];
   try {
     const { data: rpcData, error: rpcErr } = await sb.rpc('get_manageable_families');
     if (!rpcErr && Array.isArray(rpcData)) {
       families = rpcData;
+      // If RPC doesn't return is_demo, enrich from direct query
+      const hasDemoCol = families.length === 0 || 'is_demo' in families[0];
+      if (!hasDemoCol) {
+        try {
+          const { data: rawFams } = await sb.from('families').select('id,is_demo').in('id', families.map(f => f.id));
+          const demoMap = {};
+          (rawFams || []).forEach(r => { demoMap[r.id] = !!r.is_demo; });
+          families = families.map(f => ({ ...f, is_demo: demoMap[f.id] ?? false }));
+        } catch(_) {}
+      }
     } else {
       const { data, error } = await sb.from('families').select('*').order('name');
       if (error) throw error;
       families = data || [];
     }
   } catch(e) {
-    const el = document.getElementById('familiesList');
-    if (el) el.innerHTML = `<div style="background:var(--amber-lt);border:1px solid var(--amber);border-radius:8px;padding:14px;font-size:.82rem">
-      ⚠️ <strong>Não foi possível carregar as famílias.</strong><br>
-      Verifique as RPCs de gestão de família no Supabase.<br><br>
-      <span style="color:var(--muted)">Erro técnico: ${esc(e?.message || 'desconhecido')}</span>
-    </div>`;
+    el.innerHTML = '<div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);'
+      + 'border-radius:8px;padding:14px;font-size:.82rem;color:var(--text)">⚠️ Erro: ' + esc(e?.message||'desconhecido') + '</div>';
     return;
   }
-  _families = (families || []).map(f => ({
-    ...f,
-    name: (f?.name && f.name !== f.id) ? f.name : _familyDisplayName(f.id, f?.name || '')
-  })).map(f => ({ ...f, name: _familyDisplayName(f.id, f.name || '') || f.id }));
 
-  const el = document.getElementById('familiesList');
-  if (!el) return;
+  _families = (families||[]).map(f => ({
+    ...f,
+    name: _familyDisplayName(f.id, f.name||''),
+  }));
 
   if (!_families.length) {
-    el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">Nenhuma família cadastrada. Clique em "+ Nova Família" para começar.</div>';
+    el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);font-size:.83rem">Nenhuma família cadastrada. Clique em "＋ Nova" para começar.</div>';
     return;
   }
 
-  // ── Carregar membros via RPC SECURITY DEFINER (bypassa RLS) ──────────────
+  // ── Load all members in one query ─────────────────────────────────────────
   let allMembers = [];
   try {
-    const { data: rpcData, error: rpcErr } = await sb.rpc('get_all_family_members');
-    if (!rpcErr && rpcData) {
+    const { data: rpcData } = await sb.rpc('get_all_family_members');
+    if (rpcData) {
       allMembers = rpcData;
     } else {
-      // Fallback: join direto (funciona se RLS permitir)
-      const { data: fmData } = await sb
-        .from('family_members')
-        .select('member_id:id, user_id, family_id, member_role:role, created_at, user_name:app_users(name), user_email:app_users(email), user_role:app_users(role), user_active:app_users(active), user_avatar:app_users(avatar_url)')
+      const { data } = await sb.from('family_members')
+        .select('id,user_id,family_id,role,app_users(name,email,role,active)')
         .order('family_id');
-      allMembers = (fmData || []).map(r => ({
+      allMembers = (data||[]).map(r => ({
         ...r,
-        user_name:   r.user_name?.name   || '—',
-        user_email:  r.user_email?.email || '—',
-        user_role:   r.user_role?.role   || 'user',
-        user_active: r.user_active?.active ?? true,
-        user_avatar: r.user_avatar?.avatar_url || null,
+        user_name:  r.app_users?.name  || '—',
+        user_email: r.app_users?.email || '—',
+        user_role:  r.app_users?.role  || 'user',
+        user_active:r.app_users?.active ?? true,
+        member_role:r.role || 'user',
       }));
     }
   } catch(_) {}
 
-  // ── Carregar todos os usuários aprovados para o dropdown "Adicionar" ──────
-  const { data: allUsers } = await sb
-    .from('app_users')
-    .select('id,name,email,role,active,approved')
-    .eq('approved', true)
-    .order('name');
-
-  // Índice: family_id → membros
   const membersByFamily = {};
   allMembers.forEach(m => {
     if (!membersByFamily[m.family_id]) membersByFamily[m.family_id] = [];
     membersByFamily[m.family_id].push(m);
   });
 
-  // Índice: user_id → set de family_ids (para saber se já é membro)
-  const familiesByUser = {};
-  allMembers.forEach(m => {
-    if (!familiesByUser[m.user_id]) familiesByUser[m.user_id] = new Set();
-    familiesByUser[m.user_id].add(m.family_id);
-  });
-
-  const roleBadgeClass = r =>
-    r === 'owner' ? 'style="background:#fef3c7;color:#92400e;border:1px solid #f59e0b"'
-    : r === 'admin' ? 'style="background:#fef3c7;color:#b45309"'
-    : r === 'viewer' ? 'style="background:var(--bg2);color:var(--muted)"'
-    : 'style="background:var(--accent-lt);color:var(--accent)"';
-
-  const roleIcon = r => ({ owner:'👑', admin:'🔧', user:'👤', viewer:'👁' })[r] || '👤';
-  const roleLabel = r => ({ owner:'Owner', admin:'Admin', user:'Usuário', viewer:'Visualizador' })[r] || r;
-
-  const isGlobalAdmin = currentUser?.role === 'admin'; // owner vê só as suas famílias
-
-  // If not global admin, show only families where user is owner
+  const isGlobalAdmin = currentUser?.role === 'admin';
+  const fc = window._familyFeaturesCache || {};
   const visibleFamilies = isGlobalAdmin ? _families : _ownedFamilies();
 
   if (!visibleFamilies.length && !isGlobalAdmin) {
-    el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);font-size:.83rem">Você não é owner de nenhuma família.<br>Apenas owners podem gerenciar famílias.</div>';
+    el.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);font-size:.83rem">Você não é owner de nenhuma família.</div>';
     return;
   }
 
-  // Pre-load feature flags so checkboxes show correct state
-  if (!window._familyFeaturesCache) window._familyFeaturesCache = {};
-  try {
-    const flagKeys = visibleFamilies.flatMap(f =>
-      ['grocery_enabled_','prices_enabled_','investments_enabled_'].map(p => p + f.id));
-    const { data: flagRows } = await sb.from('app_settings')
-      .select('key,value').in('key', flagKeys);
-    (flagRows||[]).forEach(r => {
-      window._familyFeaturesCache[r.key] = (r.value===true||r.value==='true');
-    });
-  } catch {}
-  const _fc = window._familyFeaturesCache;
+  // ── Searchable compact table ──────────────────────────────────────────────
+  const countBadge = document.getElementById('familiesCount');
+  if (countBadge) countBadge.textContent = visibleFamilies.length + ' família' + (visibleFamilies.length!==1?'s':'');
 
-  // Show "+ Nova Família" button only to global admins and family owners
-  const newFamBtn = document.querySelector('#uaFamilies .btn-primary');
-  if (newFamBtn) newFamBtn.style.display = '';
+  function _famRow(f) {
+    const fid     = f.id;
+    const members = membersByFamily[fid] || [];
+    const mCount  = members.length;
+    const isDemoF = !!f.is_demo;
 
-  // ── Build tab strip + panels ─────────────────────────────────────────────
-  // One tab per family; each tab shows that family's panel when clicked.
-  // Mobile-first: tab strip scrolls horizontally, all panels stacked below tabs.
+    const modIcons = [
+      fc['grocery_enabled_'+fid]      ? '🛒' : null,
+      fc['investments_enabled_'+fid]  ? '📈' : null,
+      fc['prices_enabled_'+fid]       ? '🏷️' : null,
+      fc['ai_insights_enabled_'+fid]  ? '🤖' : null,
+      fc['dreams_enabled_'+fid]       ? '🌟' : null,
+    ].filter(Boolean).join('');
 
-  const fmcEscape = s => String(s||'').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-
-  function _familyTab(f, isActive) {
-    const members = membersByFamily[f.id] || [];
-    const name    = esc(_familyDisplayName(f.id, f.name || ''));
-    return `<button
-      class="fam-tab${isActive ? ' active' : ''}"
-      onclick="_switchFamTab('${f.id}')"
-      id="famTab-${f.id}"
-      title="${name}">
-      <span class="fam-tab-icon">🏠</span>
-      <span class="fam-tab-name">${name}</span>
-      <span class="fam-tab-count">${members.length}</span>
-    </button>`;
-  }
-
-  function _memberRow(m, fid) {
-    const roleOpts = ['owner','admin','user','viewer'].map(r => {
-      const icons = {owner:'👑',admin:'🔧',user:'👤',viewer:'👁'};
-      const labels = {owner:'Owner',admin:'Admin',user:'Usuário',viewer:'Visualizador'};
-      return `<option value="${r}" ${m.member_role===r?'selected':''}>${icons[r]} ${labels[r]}</option>`;
-    }).join('');
-    return `
-      <div class="fam-member-row">
-        <div class="fam-member-info">
-          ${_userAvatarHtml({ avatar_url: m.user_avatar, role: m.user_role, name: m.user_name }, 32)}
-          <div class="fam-member-text">
-            <div class="fam-member-name">${esc(m.user_name||'—')}</div>
-            <div class="fam-member-email">${esc(m.user_email||'—')}</div>
-          </div>
+    return `<div class="fam-list-row" id="famRow-${fid}"
+        style="display:flex;align-items:center;gap:10px;padding:11px 14px;
+          border-bottom:1px solid var(--border);cursor:pointer;transition:background .12s;
+          background:var(--surface)"
+        onmouseover="this.style.background='var(--surface2)'"
+        onmouseout="if(!this.classList.contains('fam-row-open'))this.style.background='var(--surface)'"
+        onclick="_toggleFamDetail('${fid}')">
+      <div style="width:34px;height:34px;border-radius:10px;background:var(--accent-lt,#f0fdf4);
+          border:1.5px solid var(--accent-muted,#bbf7d0);display:flex;align-items:center;
+          justify-content:center;font-size:1rem;flex-shrink:0">🏠</div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:.86rem;font-weight:700;color:var(--text)">${esc(f.name||f.id)}</span>
+          ${isDemoF ? '<span style="font-size:.58rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;background:rgba(245,158,11,.15);color:#b45309;border:1px solid rgba(245,158,11,.3);border-radius:100px;padding:1px 6px">🎭 Demo</span>' : ''}
+          ${modIcons ? `<span style="font-size:.7rem;letter-spacing:1px">${modIcons}</span>` : ''}
         </div>
-        <div class="fam-member-actions">
-          <select class="fam-role-select" data-uid="${m.user_id}" data-fid="${fid}" onchange="updateMemberRole(this)">
-            ${roleOpts}
-          </select>
-          <button class="fam-remove-btn" title="Remover"
-            onclick="removeUserFromFamily('${m.user_id}','${fmcEscape(m.user_name||m.user_email)}','${fmcEscape(_familyDisplayName(fid, ''))}','${fid}')">✕</button>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:1px;display:flex;gap:8px">
+          <span>${mCount} membro${mCount!==1?'s':''}</span>
+          ${f.description ? '<span>·</span><span>' + esc(f.description) + '</span>' : ''}
         </div>
-      </div>`;
-  }
-
-  function _familyPanel(f, members, available, isActive) {
-    const fid   = f.id;
-    const fname = _familyDisplayName(fid, f.name || '');
-    const _groceryOn     = !!(_fc['grocery_enabled_'     + fid]);
-    const _pricesOn      = !!(_fc['prices_enabled_'      + fid]);
-    const _investmentsOn = !!(_fc['investments_enabled_' + fid]);
-    const _aiInsightsOn  = !!(_fc['ai_insights_enabled_' + fid]);
-    const _dreamsOn      = !!(_fc['dreams_enabled_'      + fid]);
-    const isOwner    = isGlobalAdmin || members.some(m => m.user_id === currentUser?.id && m.member_role === 'owner');
-
-    const membersHtml = members.length
-      ? members.map(m => _memberRow(m, fid)).join('')
-      : `<div class="fam-empty">Nenhum usuário vinculado ainda</div>`;
-
-    const addRow = available.length ? `
-      <div class="fam-section">
-        <div class="fam-section-title">➕ Adicionar usuário existente</div>
-        <div class="fam-add-form">
-          <select id="addMemberSel-${fid}" class="fam-select">
-            <option value="">— Selecionar usuário —</option>
-            ${available.map(u => `<option value="${u.id}">${esc(u.name||u.email)}</option>`).join('')}
-          </select>
-          <select id="addMemberRole-${fid}" class="fam-select fam-select-role">
-            <option value="user">Usuário</option>
-            <option value="admin">Admin</option>
-            <option value="viewer">Visualizador</option>
-            <option value="owner">Owner</option>
-          </select>
-          <button class="btn btn-primary fam-btn-full" onclick="addUserToFamily('${fid}')">+ Adicionar</button>
-        </div>
-      </div>` : '';
-
-    const inviteRow = `
-      <div class="fam-section">
-        <div class="fam-section-title">📨 Convidar por e-mail</div>
-        <div class="fam-invite-form">
-          <input type="email" id="inviteEmail-${fid}" placeholder="email@exemplo.com" class="fam-input"
-            onkeydown="if(event.key==='Enter')inviteToFamily('${fid}','${fmcEscape(fname)}')">
-          <select id="inviteRole-${fid}" class="fam-select fam-select-role">
-            <option value="user">👤 Usuário</option>
-            <option value="admin">🔧 Admin</option>
-            <option value="viewer">👁 Visualizador</option>
-            <option value="owner">👑 Owner</option>
-          </select>
-          <button class="btn btn-primary fam-btn-full" id="inviteBtn-${fid}"
-            onclick="inviteToFamily('${fid}','${fmcEscape(fname)}')">📨 Convidar</button>
-        </div>
-      </div>`;
-
-    const modulesRow = `
-      <div class="fam-section">
-        <div class="fam-section-title">🧩 Módulos</div>
-        <div class="fam-modules">
-          <button id="famGroceryBtn-${fid}"
-            class="fam-mod-chip${_groceryOn?' active':''}"
-            onclick="_famToggleModule('${fid}','grocery_enabled_','famGroceryBtn-${fid}','applyGroceryFeature')">
-            🛒 Mercado <span class="fam-mod-dot">${_groceryOn?'●':'○'}</span>
-          </button>
-          <button id="famPricesBtn-${fid}"
-            class="fam-mod-chip${_pricesOn?' active':''}"
-            onclick="_famToggleModule('${fid}','prices_enabled_','famPricesBtn-${fid}','applyPricesFeature')">
-            🏷️ Preços <span class="fam-mod-dot">${_pricesOn?'●':'○'}</span>
-          </button>
-          <button id="famInvestBtn-${fid}"
-            class="fam-mod-chip${_investmentsOn?' active':''}"
-            onclick="_famToggleModule('${fid}','investments_enabled_','famInvestBtn-${fid}','applyInvestmentsFeature')">
-            📈 Investimentos <span class="fam-mod-dot">${_investmentsOn?'●':'○'}</span>
-          </button>
-          <button id="famAiInsightsBtn-${fid}"
-            class="fam-mod-chip${_aiInsightsOn?' active':''}"
-            onclick="_famToggleModule('${fid}','ai_insights_enabled_','famAiInsightsBtn-${fid}','applyAiInsightsFeature')">
-            🤖 AI Insights <span class="fam-mod-dot">${_aiInsightsOn?'●':'○'}</span>
-          </button>
-          <button id="famDreamsBtn-${fid}"
-            class="fam-mod-chip${_dreamsOn?' active':''}"
-            onclick="_famToggleModule('${fid}','dreams_enabled_','famDreamsBtn-${fid}','applyDreamsFeature')">
-            🌟 Sonhos <span class="fam-mod-dot">${_dreamsOn?'●':'○'}</span>
-          </button>
-        </div>
-      </div>`;
-
-    const adminActions = isOwner ? `
-      <div class="fam-section fam-danger-zone">
-        <div class="fam-section-title">⚙️ Ações</div>
-        <div class="fam-action-grid">
-          <button class="fam-action-btn" onclick="editFamily('${fid}')">✏️ Editar</button>
-          <button class="fam-action-btn" onclick="openDbBackupCreateForFamily('${fid}','${fmcEscape(fname)}')">📸 Backup</button>
-          <button class="fam-action-btn" onclick="openFamilyBackupManager('${fid}','${fmcEscape(fname)}')">🗂️ Snapshots</button>
-          <button class="fam-action-btn fam-action-warn" id="wipeFamBtn-${fid}"
-            onclick="wipeFamilyData('${fid}','${fmcEscape(f.name)}')">🗑️ Dados</button>
-          <button class="fam-action-btn fam-action-danger"
-            onclick="deleteFamily('${fid}','${fmcEscape(f.name)}')">✕ Excluir</button>
-          <button class="fam-action-btn fam-action-copy"
-            onclick="openCopyFamilyModal('${fid}','${fmcEscape(fname)}')"
-            title="Copiar todos os dados desta família para outra família">📋 Copiar</button>
-        </div>
-      </div>` : '';
-
-    const compositionSection = isOwner ? `
-      <div class="fam-section">
-        <div class="fam-section-header">
-          <div class="fam-section-title">👨‍👩‍👧 Membros da Família
-            <span id="fmcBadge-${fid}" class="fam-badge-muted">carregando…</span>
-          </div>
-          <button class="btn btn-primary btn-sm fam-btn-sm"
-            onclick="openFamilyMemberFormForFamily('${fid}')">+ Membro</button>
-        </div>
-        <div id="fmcList-${fid}" class="fam-fmc-list">
-          <div class="fam-loading">Carregando…</div>
-        </div>
-      </div>` : '';
-
-    return `
-      <div class="fam-panel${isActive ? ' active' : ''}" id="famPanel-${fid}">
-        <!-- Header -->
-        <div class="fam-panel-header">
-          <div class="fam-panel-title">
-            <span class="fam-panel-icon">🏠</span>
-            <div>
-              <div class="fam-panel-name">${esc(fname)}</div>
-              <div class="fam-panel-meta">
-                ${members.length} membro${members.length!==1?'s':''}${f.description ? ' · ' + esc(f.description) : ''}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Modules -->
-        ${modulesRow}
-
-        <!-- Users -->
-        <div class="fam-section">
-          <div class="fam-section-title">👤 Usuários vinculados</div>
-          <div class="fam-members-list">${membersHtml}</div>
-        </div>
-
-        ${addRow}
-        ${inviteRow}
-        ${compositionSection}
-        ${adminActions}
-      </div>`;
-  }
-
-  // Build tab strip
-  const tabsHtml = `
-    <div class="fam-tabs" id="famTabsStrip">
-      ${visibleFamilies.map((f, i) => _familyTab(f, i === 0)).join('')}
+      </div>
+      <svg class="fam-row-arrow" id="famArrow-${fid}" width="14" height="14" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+          style="flex-shrink:0;transition:transform .2s;color:var(--muted)">
+        <polyline points="6 9 12 15 18 9"/>
+      </svg>
+    </div>
+    <div id="famDetail-${fid}" style="display:none;border-bottom:2px solid var(--accent);
+        background:var(--surface2)">
+      ${_famDetailPanel(f, members, isGlobalAdmin)}
     </div>`;
+  }
 
-  // Build all panels
-  const panelsHtml = visibleFamilies.map((f, i) => {
-    const members  = membersByFamily[f.id] || [];
-    const available = (allUsers||[]).filter(u => !familiesByUser[u.id]?.has(f.id));
-    return _familyPanel(f, members, available, i === 0);
-  }).join('');
+  function _famDetailPanel(f, members, isAdmin) {
+    const fid    = f.id;
+    const fname  = esc(f.name||f.id);
+    const fmcE   = s => String(s||'').replace(/'/g,"\\x27").replace(/"/g,'&quot;');
 
-  el.innerHTML = tabsHtml + `<div class="fam-panels">${panelsHtml}</div>`;
+    // Module toggles compact row
+    const mods = [
+      { key:'grocery_enabled_',     emoji:'🛒', label:'Mercado',       fn:'applyGroceryFeature'     },
+      { key:'prices_enabled_',      emoji:'🏷️',  label:'Preços',        fn:'applyPricesFeature'      },
+      { key:'investments_enabled_', emoji:'📈', label:'Investimentos',  fn:'applyInvestmentsFeature' },
+      { key:'ai_insights_enabled_', emoji:'🤖', label:'AI Insights',   fn:'applyAiInsightsFeature'  },
+      { key:'dreams_enabled_',      emoji:'🌟', label:'Sonhos',         fn:'applyDreamsFeature'      },
+    ].map(m => {
+      const on = !!(window._familyFeaturesCache?.[m.key+fid]);
+      const bid = 'famMod-'+m.key+fid;
+      return `<button id="${bid}" class="fam-mod-chip${on?' active':''}"
+          onclick="_famToggleModule('${fid}','${m.key}','${bid}','${m.fn}')">
+          ${m.emoji} ${m.label} <span class="fam-mod-dot">${on?'●':'○'}</span>
+        </button>`;
+    }).join('');
 
-  // Load family composition (members) for each visible family where user is owner/admin
-  setTimeout(async () => {
-    for (const f of visibleFamilies) {
-      const members_for_f = membersByFamily[f.id] || [];
-      const isOwnerOfThis  = isGlobalAdmin ||
-        members_for_f.some(m => m.user_id === currentUser?.id && m.member_role === 'owner');
-      if (isOwnerOfThis && typeof _loadAndRenderFmcForFamily === 'function') {
-        _loadAndRenderFmcForFamily(f.id).catch(() => {});
+    // Members compact list
+    const isOwnerOrAdmin = currentUser?.role === 'admin' ||
+      (currentUser?.families||[]).some(x => x.id === fid && ['owner','admin'].includes(x.role));
+
+    const memHtml = members.length
+      ? members.map(m => {
+          const roleOpts = ['owner','admin','user','viewer'].map(r =>
+            `<option value="${r}" ${m.member_role===r?'selected':''}>${{owner:'👑',admin:'🔧',user:'👤',viewer:'👁'}[r]} ${r}</option>`
+          ).join('');
+          const accessBtn = isOwnerOrAdmin && m.member_role !== 'owner'
+            ? `<button title="Controle de acesso" onclick="openMemberAccessModal('${fid}','${esc(m.user_id)}','${fmcE(m.user_name||m.user_email)}')"
+                style="background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;
+                  color:var(--accent);font-size:.75rem;padding:2px 7px;white-space:nowrap">🔐</button>`
+            : '';
+          return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:.8rem;font-weight:600;color:var(--text)">${esc(m.user_name||'—')}</div>
+              <div style="font-size:.68rem;color:var(--muted)">${esc(m.user_email||'')}</div>
+            </div>
+            <select class="fam-role-select" data-uid="${m.user_id}" data-fid="${fid}"
+                onchange="updateMemberRole(this)" style="font-size:.72rem;padding:3px 6px">
+              ${roleOpts}
+            </select>
+            ${accessBtn}
+            <button title="Remover" onclick="removeUserFromFamily('${m.user_id}','${fmcE(m.user_name||m.user_email)}','${fmcE(f.name||'')}','${fid}')"
+              style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:.8rem;padding:2px 5px">✕</button>
+          </div>`;
+        }).join('')
+      : '<div style="font-size:.76rem;color:var(--muted);padding:8px 0">Nenhum membro vinculado.</div>';
+
+    // Demo toggle (admin only)
+    const demoToggle = isAdmin ? `
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 0;font-size:.8rem;color:var(--muted)">
+        <input type="checkbox" id="famDemoChk-${fid}" ${f.is_demo?'checked':''} onchange="_toggleFamilyDemo('${fid}', this.checked)"
+          style="width:14px;height:14px;accent-color:var(--accent)">
+        🎭 Família de Demonstração
+      </label>` : '';
+
+    return `<div style="padding:14px 16px;display:flex;flex-direction:column;gap:14px">
+
+      <!-- Modules -->
+      <div>
+        <div style="font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px">🧩 Módulos</div>
+        <div class="fam-modules">${mods}</div>
+      </div>
+
+      <!-- Members -->
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div style="font-size:.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)">👤 Usuários</div>
+          <div style="display:flex;gap:6px">
+            <input id="famAddSel-${fid}" placeholder="Buscar usuário…" list="famAddList-${fid}"
+              style="font-size:.72rem;padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);width:150px"
+              oninput="_famFilterUsers('${fid}',this.value)" onkeydown="if(event.key==='Enter')_famAddUserByInput('${fid}')">
+            <datalist id="famAddList-${fid}"></datalist>
+            <button onclick="_famAddUserByInput('${fid}')"
+              style="font-size:.72rem;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">+ Add</button>
+          </div>
+        </div>
+        <div id="famMemList-${fid}">${memHtml}</div>
+      </div>
+
+      <!-- Actions -->
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding-top:4px;border-top:1px solid var(--border)">
+        <button onclick="editFamily('${fid}')" class="fam-action-btn">✏️ Editar</button>
+        <button onclick="openDbBackupCreateForFamily('${fid}','${fmcE(f.name||'')}')" class="fam-action-btn">📸 Backup</button>
+        <button onclick="openCopyFamilyModal('${fid}','${fmcE(f.name||'')}')" class="fam-action-btn">📋 Copiar</button>
+        <button onclick="wipeFamilyData('${fid}','${fmcE(f.name||'')}')" class="fam-action-btn fam-action-warn">🗑️ Limpar dados</button>
+        <button onclick="deleteFamily('${fid}','${fmcE(f.name||'')}')" class="fam-action-btn fam-action-danger">✕ Excluir</button>
+        ${demoToggle}
+      </div>
+
+    </div>`;
+  }
+
+  // ── Search filter ─────────────────────────────────────────────────────────
+  const searchHtml = `<div style="padding:10px 14px;border-bottom:1px solid var(--border);
+      position:sticky;top:0;background:var(--surface);z-index:2">
+    <input id="famSearchInput" placeholder="🔍 Buscar família…" oninput="_filterFamList(this.value)"
+      style="width:100%;padding:7px 10px;border:1.5px solid var(--border);border-radius:9px;
+        font-size:.82rem;font-family:inherit;background:var(--surface2);color:var(--text)">
+  </div>`;
+
+  el.innerHTML = searchHtml + visibleFamilies.map(_famRow).join('');
+
+  // Pre-fill add datalist for all visible families
+  const { data: allUsers } = await sb.from('app_users').select('id,name,email').eq('approved',true).order('name');
+  (allUsers||[]).forEach(u => {
+    visibleFamilies.forEach(f => {
+      const dl = document.getElementById('famAddList-'+f.id);
+      if (dl) {
+        const opt = document.createElement('option');
+        opt.value = u.name || u.email;
+        opt.dataset.uid = u.id;
+        dl.appendChild(opt);
       }
-    }
-  }, 0);
-
-  // Sync button states from cache (in case cache updated after render)
-  setTimeout(() => {
-    const fc = window._familyFeaturesCache || {};
-    for (const f of visibleFamilies) {
-      const gBtn = document.getElementById('famGroceryBtn-' + f.id);
-      const pBtn = document.getElementById('famPricesBtn-'  + f.id);
-      if (gBtn) {
-        const on = !!fc['grocery_enabled_' + f.id];
-        gBtn.classList.toggle('active', on);
-        const dot = gBtn.querySelector('.fam-mod-dot');
-        if (dot) dot.textContent = on ? '●' : '○';
-      }
-      if (pBtn) {
-        const on = !!fc['prices_enabled_' + f.id];
-        pBtn.classList.toggle('active', on);
-        const dot = pBtn.querySelector('.fam-mod-dot');
-        if (dot) dot.textContent = on ? '●' : '○';
-      }
-    }
-  }, 100);
+    });
+  });
+  window._famAllUsers = allUsers||[];
 }
+
+// ── Expand/collapse family detail ─────────────────────────────────────────────
+function _toggleFamDetail(fid) {
+  const detail = document.getElementById('famDetail-'+fid);
+  const arrow  = document.getElementById('famArrow-'+fid);
+  const row    = document.getElementById('famRow-'+fid);
+  if (!detail) return;
+  const isOpen = detail.style.display !== 'none';
+  detail.style.display = isOpen ? 'none' : '';
+  if (arrow) arrow.style.transform = isOpen ? '' : 'rotate(180deg)';
+  if (row) {
+    row.classList.toggle('fam-row-open', !isOpen);
+    row.style.background = isOpen ? '' : 'var(--surface2)';
+  }
+}
+window._toggleFamDetail = _toggleFamDetail;
+
+// ── Filter families by search ──────────────────────────────────────────────
+function _filterFamList(q) {
+  const term = (q||'').toLowerCase().trim();
+  document.querySelectorAll('.fam-list-row').forEach(row => {
+    const fid    = row.id.replace('famRow-','');
+    const detail = document.getElementById('famDetail-'+fid);
+    const text   = (row.textContent||'').toLowerCase();
+    const show   = !term || text.includes(term);
+    row.style.display   = show ? '' : 'none';
+    if (detail && !show) detail.style.display = 'none';
+  });
+}
+window._filterFamList = _filterFamList;
+
+// ── Quick add user to family from inline input ─────────────────────────────
+async function _famAddUserByInput(fid) {
+  const inp = document.getElementById('famAddSel-'+fid);
+  const val = (inp?.value||'').trim();
+  if (!val) return;
+  const allU = window._famAllUsers || [];
+  const user = allU.find(u => (u.name||'').toLowerCase() === val.toLowerCase()
+    || (u.email||'').toLowerCase() === val.toLowerCase());
+  if (!user) { toast('Usuário não encontrado: ' + val, 'warning'); return; }
+  try {
+    const { error } = await sb.from('family_members').upsert(
+      { user_id: user.id, family_id: fid, role: 'user' },
+      { onConflict: 'user_id,family_id' }
+    );
+    if (error) throw error;
+    inp.value = '';
+    toast('✓ ' + (user.name||user.email) + ' adicionado', 'success');
+    await loadFamiliesList();
+  } catch(e) { toast('Erro: ' + e.message, 'error'); }
+}
+window._famAddUserByInput = _famAddUserByInput;
+
+// ── Filter users datalist ──────────────────────────────────────────────────
+function _famFilterUsers(fid, val) {
+  // datalist handles native filtering; this is for future custom dropdown if needed
+}
+window._famFilterUsers = _famFilterUsers;
+
 
 // ── Toggle módulo de família (Mercado / Preços) ──────────────────────────
 async function _famToggleModule(famId, keyPrefix, btnId, applyFn) {
@@ -2749,6 +3182,15 @@ async function _famToggleModule(famId, keyPrefix, btnId, applyFn) {
 
   // Aplicar sidebar imediatamente
   try { if (applyFn && typeof window[applyFn]==='function') await window[applyFn](); } catch {}
+
+  // Also update _fpCache via family_prefs so isDreamsEnabled / isModuleEnabled sees new value
+  // This is critical — without it _fpCache stays stale and the module appears stuck
+  const modName = keyPrefix.replace(/_enabled_$/, '');
+  if (typeof updateFamilyPreferences === 'function') {
+    try {
+      await updateFamilyPreferences({ modules: { [modName]: nowOn } });
+    } catch(e) { console.debug('[famToggleModule] family_prefs update:', e.message); }
+  }
 
   // Persistir no banco — RPC primeiro, depois upsert padrão
   let saved = false;
@@ -2777,11 +3219,31 @@ function showFamilyForm(id='') {
   document.getElementById('fDesc').value = '';
   document.getElementById('familyFormTitle').textContent = id ? 'Editar Família' : 'Nova Família';
   document.getElementById('familyFormArea').style.display = '';
+
+  // is_demo toggle — only visible to global admins
+  const isAdmin = currentUser?.role === 'admin';
+  const demoRow = document.getElementById('fDemoRow');
+  const demoChk = document.getElementById('fIsDemo');
+  if (demoRow) demoRow.style.display = isAdmin ? '' : 'none';
+  if (demoChk) demoChk.checked = false;
+
   if (id) {
-    const f = _families.find(x => x.id === id) || (currentUser?.families || []).find(x => x.id === id);
+    // Always read from _families (freshly loaded) first, fallback to currentUser.families
+    const f = (_families || []).find(x => x.id === id)
+           || (currentUser?.families || []).find(x => x.id === id);
     if (f) {
       document.getElementById('fName').value = _familyDisplayName(id, f.name || '');
-      document.getElementById('fDesc').value = f.description||'';
+      document.getElementById('fDesc').value = f.description || '';
+      if (demoChk && isAdmin) {
+        // If is_demo not in cache yet, fetch directly
+        if (f.is_demo === undefined) {
+          sb.from('families').select('is_demo').eq('id', id).maybeSingle()
+            .then(({ data }) => { if (demoChk) demoChk.checked = !!(data?.is_demo); })
+            .catch(() => {});
+        } else {
+          demoChk.checked = !!(f.is_demo);
+        }
+      }
     }
   }
 }
@@ -2789,9 +3251,10 @@ function showFamilyForm(id='') {
 function editFamily(id) { showFamilyForm(id); document.getElementById('familyFormArea').scrollIntoView({behavior:'smooth'}); }
 
 async function saveFamily() {
-  const id   = document.getElementById('editFamilyId').value;
-  const name = document.getElementById('fName').value.trim();
-  const desc = document.getElementById('fDesc').value.trim();
+  const id     = document.getElementById('editFamilyId').value;
+  const name   = document.getElementById('fName').value.trim();
+  const desc   = document.getElementById('fDesc').value.trim();
+  const isDemo = !!(document.getElementById('fIsDemo')?.checked);
   if (!name) { toast('Informe o nome da família','error'); return; }
 
   const isGlobalAdmin = currentUser?.role === 'admin';
@@ -2819,6 +3282,44 @@ async function saveFamily() {
   }
   if (error) { toast('Erro: ' + error.message,'error'); return; }
 
+  // Persist is_demo flag — admin only
+  if (isGlobalAdmin && id) {
+    let demoSaved = false;
+    // Try admin_set_family_demo (SECURITY DEFINER, doesn't need RLS)
+    try {
+      const { error: e1 } = await sb.rpc('admin_set_family_demo', { p_family_id: id, p_is_demo: isDemo });
+      if (!e1) demoSaved = true;
+    } catch(_) {}
+    // Fallback: older RPC
+    if (!demoSaved) {
+      try {
+        const { error: e2 } = await sb.rpc('set_family_demo_flag', { p_family_id: id, p_is_demo: isDemo });
+        if (!e2) demoSaved = true;
+      } catch(_) {}
+    }
+    // Fallback: direct update
+    if (!demoSaved) {
+      try {
+        await sb.from('families').update({ is_demo: isDemo }).eq('id', id);
+      } catch(e) {
+        console.warn('[saveFamily] is_demo update failed:', e.message);
+      }
+    }
+    // Update local cache regardless
+    const famCached = (_families || []).find(f => f.id === id);
+    if (famCached) famCached.is_demo = isDemo;
+  } else if (isGlobalAdmin && !id) {
+    // New family: apply is_demo after creation if needed
+    if (isDemo) {
+      setTimeout(async () => {
+        try {
+          const newFam2 = (_families || []).find(f => f.name === name);
+          if (newFam2?.id) await _toggleFamilyDemo(newFam2.id, true);
+        } catch(_) {}
+      }, 1500);
+    }
+  }
+
   toast(id ? '✓ Família atualizada!' : '✓ Família criada! Iniciando configuração…','success');
   document.getElementById('familyFormArea').style.display = 'none';
   await _loadCurrentUserContext().catch(()=>{});
@@ -2828,11 +3329,66 @@ async function saveFamily() {
 
   // For new families: offer to run the setup wizard
   if (!id) {
-    // RPC may return new family id — try to extract it from families list
     const newFam = (_families || []).find(f => f.name === name);
     _offerFamilyWizard(name, newFam?.id || null);
   }
 }
+
+// ── Toggle família demo (admin only) ─────────────────────────────────────────
+async function _toggleFamilyDemo(familyId, setDemo) {
+  if (currentUser?.role !== 'admin') {
+    toast('Apenas administradores podem alterar esta configuração.', 'error');
+    return;
+  }
+  try {
+    // Update local cache immediately (optimistic)
+    const fam = (_families || []).find(f => f.id === familyId);
+    if (fam) fam.is_demo = setDemo;
+
+    // 1. Try simple SECURITY DEFINER RPC (admin_set_family_demo)
+    let saved = false;
+    try {
+      const { error: rpcErr } = await sb.rpc('admin_set_family_demo', {
+        p_family_id: familyId,
+        p_is_demo:   setDemo,
+      });
+      if (!rpcErr) saved = true;
+      else console.debug('[toggleDemo] admin_set_family_demo:', rpcErr.message);
+    } catch(_) {}
+
+    // 2. Fallback: try older RPC name
+    if (!saved) {
+      try {
+        const { error: rpcErr2 } = await sb.rpc('set_family_demo_flag', {
+          p_family_id: familyId,
+          p_is_demo:   setDemo,
+        });
+        if (!rpcErr2) saved = true;
+        else console.debug('[toggleDemo] set_family_demo_flag:', rpcErr2.message);
+      } catch(_) {}
+    }
+
+    // 3. Last resort: direct UPDATE (works when admin RLS policy is present)
+    if (!saved) {
+      const { error: upErr } = await sb.from('families')
+        .update({ is_demo: setDemo })
+        .eq('id', familyId);
+      if (upErr) throw new Error('Não foi possível salvar: ' + upErr.message + '. Execute families_is_demo_rls_fix.sql no Supabase.');
+    }
+
+    toast(setDemo ? '🎭 Família marcada como demonstração.' : '✓ Flag demo removida.', 'success');
+    // Reload to confirm persisted state
+    await loadFamiliesList();
+  } catch(e) {
+    toast('Erro: ' + e.message, 'error');
+    // Revert optimistic update on error
+    const fam = (_families || []).find(f => f.id === familyId);
+    if (fam) fam.is_demo = !setDemo;
+  }
+}
+window._toggleFamilyDemo   = _toggleFamilyDemo;
+// Alias expected by tab switcher
+window.loadPendingApprovals = _renderPendingTab;
 
 async function deleteFamily(id, name) {
   const isGlobalAdmin = currentUser?.role === 'owner' || currentUser?.role === 'admin' || currentUser?.can_admin;
@@ -3192,78 +3748,70 @@ async function loadUsersList() {
 
   let html = '';
 
+  // ── Pending banner ──────────────────────────────────────────────────────
   if (pendingUsers.length) {
-    html += `<div style="background:linear-gradient(135deg,#fef3c7,#fef9e8);border:1.5px solid #f59e0b;border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:flex-start;gap:12px">
-      <div style="font-size:1.6rem;flex-shrink:0">⏳</div>
+    html += `<div style="background:rgba(245,158,11,.07);border:1.5px solid rgba(245,158,11,.25);border-radius:12px;padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
+      <div style="width:36px;height:36px;border-radius:10px;background:rgba(245,158,11,.15);display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0">⏳</div>
       <div style="flex:1">
-        <div style="font-weight:700;font-size:.92rem;color:#92400e;margin-bottom:2px">${pendingUsers.length} solicitação(ões) aguardando aprovação</div>
-        <div style="font-size:.78rem;color:#b45309">Novos usuários não têm acesso até você aprovar.</div>
+        <div style="font-weight:700;font-size:.86rem;color:var(--text);margin-bottom:1px">${pendingUsers.length} ${pendingUsers.length===1?'solicitação':'solicitações'} pendente${pendingUsers.length>1?'s':''}</div>
+        <div style="font-size:.74rem;color:var(--muted)">Aguardando aprovação na aba <strong>Pendentes</strong></div>
       </div>
+      <button class="btn btn-ghost btn-sm" onclick="switchUATab('pending')" style="white-space:nowrap">Ver →</button>
     </div>`;
-    html += '<div class="table-wrap" style="margin-bottom:20px;border-radius:var(--r);overflow:hidden;border:1.5px solid #f59e0b"><table><thead><tr style="background:#fef3c7"><th>Solicitante</th><th>E-mail</th><th>Aguardando</th><th style="text-align:center">Ações</th></tr></thead><tbody>';
-    html += pendingUsers.map(u => {
-      const daysAgo = Math.floor((Date.now() - new Date(u.created_at)) / 86400000);
-      const ageLabel = daysAgo === 0 ? 'Hoje' : daysAgo === 1 ? '1 dia' : (daysAgo + ' dias');
-      const ageStyle = daysAgo >= 3 ? 'color:#dc2626;font-weight:600' : 'color:var(--muted)';
-      const initials = (u.name || u.email || '?').slice(0, 2).toUpperCase();
-      return '<tr style="background:#fffbeb">' +
-        '<td><div style="display:flex;align-items:center;gap:10px">' +
-        '<div style="width:32px;height:32px;border-radius:50%;background:#fef3c7;border:2px solid #f59e0b;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.75rem;color:#92400e;flex-shrink:0">' + initials + '</div>' +
-        '<strong>' + esc(u.name||'—') + '</strong></div></td>' +
-        '<td style="font-size:.82rem">' + esc(u.email) + '</td>' +
-        '<td><span style="' + ageStyle + '">' + ageLabel + '</span></td>' +
-        '<td style="text-align:center;white-space:nowrap">' +
-        '<button class="btn btn-primary btn-sm" onclick="approveUser(' + "'" + u.id + "','" + esc(u.name||u.email) + "')" + ' style="background:#16a34a;margin-right:4px">✅ Aprovar</button>' +
-        '<button class="btn btn-ghost btn-sm" onclick="rejectUser(' + "'" + u.id + "','" + esc(u.name||u.email) + "')" + ' style="color:#dc2626">✕ Rejeitar</button>' +
-        '</td></tr>';
-    }).join('');
-    html += '</tbody></table></div>';
-    html += '<div style="font-weight:600;font-size:.82rem;margin-bottom:10px;color:var(--muted)">Usuários ativos</div>';
   }
 
+  // ── Active users — modern cards ──────────────────────────────────────────
   if (!activeUsers.length) {
-    html += '<div style="text-align:center;padding:20px;color:var(--muted)">Nenhum usuário ativo.</div>';
+    html += '<div style="text-align:center;padding:32px 20px;color:var(--muted)"><div style="font-size:2rem;margin-bottom:8px">👥</div><div style="font-size:.88rem">Nenhum usuário ativo.</div></div>';
   } else {
-    html += '<div class="table-wrap"><table><thead><tr><th>Usuário</th><th>Perfil</th><th>Família</th><th>Status</th><th style="width:80px"></th></tr></thead><tbody>';
+    html += '<div style="display:flex;flex-direction:column;gap:6px">';
     html += activeUsers.map(u => {
-      const avatarHtml = _userAvatarHtml(u, 34);
-      const roleBadge = u.role==='owner'
-        ? '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #f59e0b;font-size:.7rem">👑 Owner</span>'
-        : u.role==='admin'
-        ? '<span class="badge badge-amber" style="font-size:.7rem">🔧 Admin</span>'
-        : u.role==='viewer'
-        ? '<span class="badge badge-muted" style="font-size:.7rem">👁 Viewer</span>'
-        : '<span class="badge badge-blue" style="font-size:.7rem">👤 Usuário</span>';
-      return `<tr onclick="editUser('${u.id}')" style="cursor:pointer;transition:background .12s" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''">
-        <td>
-          <div style="display:flex;align-items:center;gap:10px">
-            ${avatarHtml}
-            <div>
-              <div style="font-weight:600;font-size:.875rem">${esc(u.name||'—')}</div>
-              <div style="font-size:.72rem;color:var(--muted)">${esc(u.email)}</div>
-            </div>
+      const initials = (u.name||u.email||'?').split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+      const roleConf = {
+        owner:  { icon:'👑', label:'Owner',       cls:'owner'   },
+        admin:  { icon:'🔧', label:'Admin',        cls:'admin'   },
+        viewer: { icon:'👁', label:'Visualizador', cls:'viewer'  },
+        user:   { icon:'👤', label:'Usuário',      cls:''        },
+      }[u.role] || { icon:'👤', label:'Usuário', cls:'' };
+      const statusDot = u.active
+        ? '<span class="ua-status-dot active" title="Ativo"></span>'
+        : '<span class="ua-status-dot inactive" title="Inativo"></span>';
+      const userFams = (allMembers||[]).filter(m => m.user_id === u.id);
+      const famBadges = userFams.length
+        ? userFams.slice(0,2).map(m => {
+            const ri = {owner:'👑',admin:'🔧',user:'👤',viewer:'👁'}[m.member_role]||'👤';
+            const fn = m.family_name || famById[m.family_id] || '—';
+            return `<span style="display:inline-flex;align-items:center;gap:3px;background:var(--accent-lt,rgba(42,96,73,.1));color:var(--accent);border:1px solid rgba(42,96,73,.18);border-radius:100px;padding:1px 8px;font-size:.62rem;font-weight:600">${ri} ${esc(fn)}</span>`;
+          }).join('') + (userFams.length > 2 ? `<span style="font-size:.65rem;color:var(--muted)">+${userFams.length-2}</span>` : '')
+        : '<span style="font-size:.72rem;color:var(--muted)">Sem família</span>';
+      const avatarHtml = u.avatar_url
+        ? `<img src="${esc(u.avatar_url)}" onerror="this.outerHTML='<span>${initials}</span>'">`
+        : `<span style="font-size:.75rem;font-weight:700;color:var(--accent)">${initials}</span>`;
+      const isSelf = u.id === currentUser?.id;
+      const selfBadge = isSelf ? '<span style="font-size:.6rem;background:var(--accent);color:#fff;border-radius:100px;padding:1px 7px;font-weight:700;margin-left:4px">Você</span>' : '';
+      return `<div class="ua-user-card" onclick="editUser('${u.id}')" style="cursor:pointer">
+        <div class="ua-user-avatar">${avatarHtml}</div>
+        <div class="ua-user-info">
+          <div class="ua-user-name">${esc(u.name||'—')}${selfBadge}</div>
+          <div class="ua-user-email">${esc(u.email)}</div>
+          <div class="ua-user-meta">
+            <span class="ua-role-badge ${roleConf.cls}">${roleConf.icon} ${roleConf.label}</span>
+            ${statusDot}
+            ${famBadges}
           </div>
-        </td>
-        <td>${roleBadge}</td>
-        <td style="font-size:.78rem;color:var(--text2)">
-          ${(() => {
-            const userFams = (allMembers||[]).filter(m => m.user_id === u.id);
-            if (!userFams.length) return '<span style="color:var(--muted)">—</span>';
-            return userFams.map(m => {
-              const roleIcon = {owner:'👑',admin:'🔧',user:'👤',viewer:'👁'}[m.member_role]||'👤';
-              const fName = m.family_name || famById[m.family_id] || m.family_id?.slice(0,8) || '—';
-              return `<span style="display:inline-flex;align-items:center;gap:3px;background:var(--accent-lt);color:var(--accent);border-radius:4px;padding:1px 6px;font-size:.7rem;margin:1px">${roleIcon} ${esc(fName)}</span>`;
-            }).join('');
-          })()}
-        </td>
-        <td><span style="font-size:.75rem;color:${u.active?'var(--green)':'var(--red)'}">● ${u.active?'Ativo':'Inativo'}</span></td>
-        <td style="white-space:nowrap" onclick="event.stopPropagation()">
-          ${u.id !== currentUser?.id ? `<button class="btn btn-ghost btn-sm" onclick="toggleUserActive('${u.id}',${u.active})" style="padding:3px 8px;font-size:.73rem" title="${u.active?'Desativar':'Ativar'}">${u.active?'🚫':'✅'}</button>` : ''}
-          ${u.id !== currentUser?.id ? `<button class="btn btn-ghost btn-sm" onclick="resetUserPwd('${u.id}','${esc(u.name||u.email)}')" style="padding:3px 8px;font-size:.73rem" title="Redefinir senha">🔑</button>` : ''}
-        </td>
-      </tr>`;
+        </div>
+        <div class="ua-user-actions" onclick="event.stopPropagation()">
+          ${!isSelf ? `<button class="ua-icon-btn" onclick="toggleUserActive('${u.id}',${u.active})" title="${u.active?'Desativar':'Ativar'}">
+            ${u.active ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="4.9" y1="4.9" x2="19.1" y2="19.1"/></svg>'
+                       : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>'}
+          </button>` : ''}
+          ${!isSelf ? `<button class="ua-icon-btn" onclick="resetUserPwd('${u.id}','${esc(u.name||u.email)}')" title="Redefinir senha">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </button>` : ''}
+        </div>
+      </div>`;
     }).join('');
-    html += '</tbody></table></div>';
+    html += '</div>';
   }
   el.innerHTML = html;
 }
@@ -3780,30 +4328,24 @@ async function _notifyAdminNewRegistration(userName, userEmail) {
   if (sentCount === 0) console.warn('[approval] Nenhum email de admin enviado.');
 }
 // ── Email de boas-vindas ao usuário aprovado ─────────────────────────────
-async function _sendApprovalEmail(email, name, familyName) {
+async function _sendApprovalEmail(email, name, familyName, userId) {
   if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.publicKey) return;
 
-  // 1. Enviar link de redefinição de senha (Supabase) para o usuário definir a própria senha
-  try {
-    const redirectTo = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
-    await sb.auth.resetPasswordForEmail(email, { redirectTo });
-  } catch(e) { console.warn('[approval] resetPasswordForEmail:', e.message); }
+  // 1. Gerar link para register.html com dados pré-preenchidos
+  const registerUrl = _getRegisterUrl(email, name, userId);
 
-  // 2. Email de boas-vindas via EmailJS
+  // 2. Email de convite via EmailJS
   const tplId = EMAILJS_CONFIG.scheduledTemplateId || EMAILJS_CONFIG.templateId;
   if (!tplId) return;
 
-  const nameEsc  = (name  || 'Usuário').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
-  const famEsc   = (familyName || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const nameEsc = (name  || 'Usuário').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const famEsc  = (familyName || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 
   const famBlock = familyName
     ? '<div style="background:#f0fdf4;border-left:4px solid #22c55e;border-radius:6px;padding:12px 16px;margin-bottom:20px">' +
-      '<div style="font-size:13px;font-weight:700;color:#166534;margin-bottom:2px">&#128106; Família vinculada</div>' +
-      '<div style="font-size:13px;color:#15803d">' + famEsc + '</div>' +
-      '</div>'
-    : '<div style="background:#f0f9ff;border-left:4px solid #38bdf8;border-radius:6px;padding:12px 16px;margin-bottom:20px">' +
-      '<div style="font-size:13px;color:#0c4a6e">Acesso liberado como <strong>administrador global</strong>.</div>' +
-      '</div>';
+      '<div style="font-size:13px;font-weight:700;color:#166534;margin-bottom:2px">&#128106; Família</div>' +
+      '<div style="font-size:13px;color:#15803d">' + famEsc + '</div></div>'
+    : '';
 
   const body =
     '<div style="font-family:Arial,Helvetica,sans-serif;background:#f5f7fb;padding:24px">' +
@@ -3811,31 +4353,43 @@ async function _sendApprovalEmail(email, name, familyName) {
 
     '<div style="background:linear-gradient(135deg,#1e5c42,#2a6049);padding:22px 28px">' +
     '<div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.6);margin-bottom:4px">JF Family FinTrack</div>' +
-    '<div style="font-size:22px;font-weight:700;color:#fff">&#127881; Acesso aprovado!</div>' +
+    '<div style="font-size:22px;font-weight:700;color:#fff">&#127881; Chegou a sua vez!</div>' +
     '</div>' +
 
     '<div style="padding:24px 28px">' +
-    '<p style="font-size:15px;font-weight:600;color:#111827;margin:0 0 12px">Olá, ' + nameEsc + '!</p>' +
+    '<p style="font-size:15px;font-weight:700;color:#111827;margin:0 0 8px">Olá, ' + nameEsc + '!</p>' +
     '<p style="font-size:14px;color:#374151;margin:0 0 20px;line-height:1.6">' +
-    'Sua solicitação de acesso ao <strong>JF Family FinTrack</strong> foi <strong>aprovada</strong>. ' +
-    'Você já pode acessar o sistema.' +
+    'Você foi aprovado(a) para o programa beta do <strong>JF Family FinTrack</strong>! ' +
+    'Clique no botão abaixo para finalizar seu cadastro e criar sua senha.' +
     '</p>' +
 
     famBlock +
 
+    '<div style="text-align:center;margin-bottom:24px">' +
+    '<a href="' + registerUrl + '" style="display:inline-block;padding:14px 32px;' +
+    'background:linear-gradient(135deg,#7dc242,#5aad24);color:#0a1e12;' +
+    'font-family:Arial,sans-serif;font-size:15px;font-weight:700;' +
+    'border-radius:10px;text-decoration:none;letter-spacing:-.01em">' +
+    '&#128640; Criar minha conta agora' +
+    '</a></div>' +
+
     '<div style="background:#fef9e8;border:1px solid #fcd34d;border-radius:8px;padding:14px 16px;margin-bottom:20px">' +
-    '<div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:6px">&#128273; Definir sua senha</div>' +
-    '<div style="font-size:13px;color:#78350f;line-height:1.6">' +
-    'Você receberá um segundo e-mail do Supabase com um <strong>link para definir sua senha</strong>. ' +
-    'Clique nesse link, defina uma senha segura e faça login normalmente.' +
-    '</div>' +
-    '</div>' +
+    '<div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:4px">&#8987; Link válido por tempo limitado</div>' +
+    '<div style="font-size:13px;color:#78350f;line-height:1.5">' +
+    'Caso o link não funcione, acesse <strong>register.html</strong> e informe o e-mail <strong>' + nameEsc + '</strong>.' +
+    '</div></div>' +
+
+    '<div style="background:#f0f9ff;border-left:4px solid #38bdf8;border-radius:6px;padding:12px 16px;margin-bottom:20px">' +
+    '<div style="font-size:13px;font-weight:700;color:#0c4a6e;margin-bottom:4px">&#127381; Programa Beta</div>' +
+    '<div style="font-size:13px;color:#0369a1;line-height:1.5">' +
+    'O acesso é <strong>gratuito</strong>. Em troca, sua missão é testar e reportar bugs com detalhes. Juntos vamos tornar o app melhor!' +
+    '</div></div>' +
 
     '<p style="font-size:12px;color:#9ca3af;margin:0">Se você não solicitou acesso a este sistema, ignore este e-mail.</p>' +
     '</div>' +
 
     '<div style="padding:14px 28px;background:#f8fafc;border-top:1px solid #e2e8f0">' +
-    '<div style="font-size:11px;color:#9ca3af">JF Family FinTrack &middot; Bem-vindo(a)!</div>' +
+    '<div style="font-size:11px;color:#9ca3af">JF Family FinTrack &middot; Programa Beta</div>' +
     '</div>' +
     '</div></div>';
 
@@ -3843,14 +4397,13 @@ async function _sendApprovalEmail(email, name, familyName) {
     emailjs.init(EMAILJS_CONFIG.publicKey);
     await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
       to_email:       email,
-      report_subject: '[Family FinTrack] Acesso aprovado — Bem-vindo(a)!',
-      Subject:        '[Family FinTrack] Acesso aprovado — Bem-vindo(a)!',
+      report_subject: '[Family FinTrack] Chegou a sua vez! Complete seu cadastro 🎉',
+      Subject:        '[Family FinTrack] Chegou a sua vez! Complete seu cadastro 🎉',
       month_year:     new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
       report_content: body,
     });
   } catch(e) { console.warn('[approval] _sendApprovalEmail:', e.message); }
 }
-
 
 async function _sendNewUserWelcomeEmail(email, name, familyName, tempPassword) {
   if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.publicKey) return;
@@ -3989,32 +4542,41 @@ async function doResetUserPwd() {
     }
 
     if (!authUpdated) {
-      // 2b. Fallback: RPC SECURITY DEFINER (requer migration_set_password.sql)
-      const { data: rpcData, error: rpcErr } = await sb.rpc('set_user_password', {
-        p_email:    targetEmail,
-        p_password: pwd1
-      });
-      if (rpcErr) {
-        if (rpcErr.code === '42883' || rpcErr.message?.includes('function')) {
-          throw new Error(
-            'Configure a Service Role Key em Configurações, ou execute migration_set_password.sql no Supabase.'
-          );
+      // 2b. Tentar RPC set_user_password (SECURITY DEFINER) — se existir no banco
+      try {
+        const { data: rpcData, error: rpcErr } = await sb.rpc('set_user_password', {
+          p_email:    targetEmail,
+          p_password: pwd1
+        });
+        if (!rpcErr && !rpcData?.error) {
+          authUpdated = true;
         }
-        throw new Error('RPC: ' + rpcErr.message);
-      }
-      if (rpcData?.error) throw new Error(rpcData.error);
-      authUpdated = true;
+        // Se RPC não existe (42883) ou falha, cai no fallback abaixo
+      } catch(_) {}
     }
 
     if (!authUpdated) {
-      // Fallback: enviar link de redefinição por email
-      const redirectTo = typeof getAppBaseUrl === 'function' ? getAppBaseUrl() : (window.location.origin + window.location.pathname);
+      // Fallback final: sem Service Role Key nem RPC disponível
+      // Gravar hash em app_users (funciona para login via app) +
+      // enviar link de reset para atualizar no Supabase Auth
+      try {
+        const hash = await sha256(pwd1);
+        await sb.from('app_users').update({
+          password_hash: hash,
+          must_change_pwd: true
+        }).eq('id', userId);
+      } catch(_) {}
+
+      const redirectTo = _getResetPasswordUrl();
+
       const { error: resetErr } = await sb.auth.resetPasswordForEmail(targetEmail, { redirectTo });
-      if (resetErr) throw new Error('Sem Service Role Key configurada. Vá em Configurações → Service Role Key.');
-      // Sincronizar app_users mesmo assim
-      const hash = await sha256(pwd1);
-      await sb.from('app_users').update({ password_hash: hash, must_change_pwd: true }).eq('id', userId);
-      toast(`📧 Link de redefinição enviado para ${targetEmail}. Configure a Service Role Key para definir senhas diretamente.`, 'warning');
+
+      if (!resetErr) {
+        toast(`✅ Senha definida. Um link de confirmação foi enviado para ${targetEmail}.`, 'success');
+      } else {
+        // Hash gravado — login via app funciona; Auth externo não foi atualizado
+        toast(`✅ Senha atualizada no sistema. O usuário poderá fazer login com a nova senha.`, 'success');
+      }
       closeModal('resetPwdModal');
       await loadUsersList();
       return;
@@ -4121,6 +4683,194 @@ function _gen2FACode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
+// ── Salva configurações de 2FA no banco ──
+// Chamado pelo saveMyProfile() após teste bem-sucedido
+async function _save2FASettings(appUserId) {
+  const enabled = !!(document.getElementById('myProfile2faEnabled')?.checked);
+  const channel = document.getElementById('twoFaChanTelegram')?.checked ? 'telegram' : 'email';
+  const { error } = await sb.from('app_users')
+    .update({ two_fa_enabled: enabled, two_fa_channel: channel })
+    .eq('id', appUserId);
+  if (error) throw new Error('Erro ao salvar 2FA: ' + error.message);
+}
+
+// ── Disparar teste de 2FA durante setup (profile) ──
+// Envia código e exibe modal de confirmação; só habilita se usuário confirmar
+async function _test2FASetup() {
+  const btn      = document.getElementById('profile2faTestBtn');
+  const statusEl = document.getElementById('profile2faStatus');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Enviando...'; }
+  if (statusEl) statusEl.style.display = 'none';
+  // Remove any stale confirm box
+  document.getElementById('twoFaSetupConfirmBox')?.remove();
+
+  try {
+    const channel  = document.getElementById('twoFaChanTelegram')?.checked ? 'telegram' : 'email';
+    const email    = currentUser?.email || '';
+    const name     = currentUser?.name  || '';
+    const tgChatId = currentUser?.telegram_chat_id || null;
+
+    if (!email) throw new Error('Usuário não autenticado. Faça login novamente.');
+
+    const { data: appRow } = await sb
+      .from('app_users').select('id').eq('email', email).maybeSingle();
+    if (!appRow) throw new Error('Usuário não encontrado na base de dados.');
+
+    const code = _gen2FACode();
+
+    // Store code — pass channel explicitly instead of relying on _2fa.channel (which is null here)
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    try {
+      // Invalidate previous codes
+      await sb.from('two_fa_codes').update({ used: true })
+        .eq('user_id', appRow.id).eq('used', false);
+    } catch(_) {}
+    const { error: insertErr } = await sb.from('two_fa_codes').insert({
+      user_id:    appRow.id,
+      code:       code,
+      channel:    channel,
+      used:       false,
+      expires_at: expiresAt,
+    });
+    if (insertErr) throw new Error('Erro ao registrar código: ' + insertErr.message);
+
+    // Send code — verify it was actually sent before showing confirmation UI
+    let sent = false;
+    let sendErr = '';
+
+    if (channel === 'telegram' && tgChatId) {
+      try { await _send2FAByTelegram(tgChatId, code); sent = true; }
+      catch(e) { sendErr = e.message || 'Falha no Telegram'; }
+    }
+
+    if (!sent) {
+      // Email — check config first
+      if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.publicKey) {
+        throw new Error(
+          'EmailJS não configurado. Configure o EmailJS em Configurações → E-mail ' +
+          'para usar o canal de e-mail.'
+        );
+      }
+      try {
+        await _send2FAByEmail(email, code, name);
+        sent = true;
+      } catch(e) {
+        sendErr = e.message || 'Falha no envio de e-mail';
+      }
+    }
+
+    if (!sent) throw new Error('Não foi possível enviar o código: ' + sendErr);
+
+    // Show confirmation UI
+    _show2FASetupConfirm(appRow.id, channel);
+
+    if (statusEl) {
+      const dest = channel === 'telegram' ? 'Telegram' : email;
+      statusEl.textContent = `✓ Código enviado para ${dest}. Digite abaixo para confirmar.`;
+      statusEl.style.color = '#16a34a';
+      statusEl.style.display = '';
+    }
+
+  } catch(e) {
+    if (statusEl) {
+      statusEl.textContent = '✗ ' + (e.message || e);
+      statusEl.style.color = '#dc2626';
+      statusEl.style.display = '';
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📨 Testar 2FA'; }
+  }
+}
+
+// ── UI de confirmação do teste 2FA no perfil ──
+function _show2FASetupConfirm(appUserId, channel) {
+  const ch = channel === 'telegram' ? 'Telegram' : 'e-mail';
+  const html = `
+    <div id="twoFaSetupConfirmBox" style="background:rgba(42,96,73,.08);border:1.5px solid rgba(42,96,73,.25);border-radius:12px;padding:14px 16px;margin-top:12px">
+      <div style="font-size:.82rem;font-weight:700;color:var(--text);margin-bottom:8px">
+        📲 Código enviado para o seu ${ch}
+      </div>
+      <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">
+        Digite o código de 6 dígitos para confirmar que o canal está funcionando:
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="twoFaSetupCode" maxlength="6" inputmode="numeric"
+          placeholder="000000"
+          oninput="this.value=this.value.replace(/[^0-9]/g,'')"
+          style="flex:1;padding:10px 14px;border:1.5px solid var(--border);border-radius:9px;font-size:1.1rem;text-align:center;letter-spacing:.22em;font-family:monospace;outline:none;background:var(--surface);color:var(--text)">
+        <button onclick="_confirm2FASetup('${appUserId}')"
+          style="padding:10px 16px;border-radius:9px;border:none;background:var(--accent);color:#fff;font-size:.82rem;font-weight:700;cursor:pointer;white-space:nowrap">
+          ✓ Confirmar
+        </button>
+      </div>
+      <div id="twoFaSetupConfirmError" style="font-size:.75rem;color:#dc2626;margin-top:6px;display:none"></div>
+    </div>`;
+
+  // Remove previous confirm box if any
+  document.getElementById('twoFaSetupConfirmBox')?.remove();
+
+  const container = document.getElementById('profile2faSection') || document.getElementById('myProfileModal');
+  if (container) container.insertAdjacentHTML('beforeend', html);
+}
+
+// ── Confirmar código de teste — só então salva 2FA no DB ──
+async function _confirm2FASetup(appUserId) {
+  const code   = (document.getElementById('twoFaSetupCode')?.value || '').trim();
+  const errEl  = document.getElementById('twoFaSetupConfirmError');
+  const statusEl = document.getElementById('profile2faStatus');
+  if (errEl) errEl.style.display = 'none';
+
+  if (!code || code.length !== 6) {
+    if (errEl) { errEl.textContent = 'Digite o código de 6 dígitos.'; errEl.style.display = ''; }
+    return;
+  }
+
+  try {
+    const { data: codeRow } = await sb.from('two_fa_codes')
+      .select('id,code,used,expires_at').eq('user_id', appUserId)
+      .eq('used', false).order('created_at', { ascending: false }).limit(1).maybeSingle();
+
+    if (!codeRow || new Date(codeRow.expires_at) < new Date()) {
+      if (errEl) { errEl.textContent = 'Código expirado. Clique em "Testar 2FA" novamente.'; errEl.style.display = ''; }
+      return;
+    }
+    if (codeRow.code !== code) {
+      if (errEl) { errEl.textContent = 'Código incorreto. Tente novamente.'; errEl.style.display = ''; }
+      return;
+    }
+
+    // Mark used
+    await sb.from('two_fa_codes').update({ used: true }).eq('id', codeRow.id);
+
+    // Save 2FA to DB — test was successful
+    const enabled = !!(document.getElementById('myProfile2faEnabled')?.checked);
+    const channel = document.getElementById('twoFaChanTelegram')?.checked ? 'telegram' : 'email';
+    const { error } = await sb.from('app_users')
+      .update({ two_fa_enabled: enabled, two_fa_channel: channel })
+      .eq('id', appUserId);
+    if (error) throw error;
+
+    currentUser.two_fa_enabled = enabled;
+    currentUser.two_fa_channel = channel;
+    // Signal to saveMyProfile that test was completed — safe to proceed
+    window._2faSetupVerified = true;
+
+    // Remove confirm box and show success
+    document.getElementById('twoFaSetupConfirmBox')?.remove();
+    if (statusEl) {
+      statusEl.textContent = '✓ 2FA verificado e ativado com sucesso!';
+      statusEl.style.color = '#16a34a';
+      statusEl.style.display = '';
+      setTimeout(() => { if (statusEl) statusEl.style.display = 'none'; }, 5000);
+    }
+    toast('✅ Autenticação em dois fatores ativada!', 'success');
+  } catch(e) {
+    if (errEl) { errEl.textContent = 'Erro: ' + (e.message || e); errEl.style.display = ''; }
+  }
+}
+window._test2FASetup    = _test2FASetup;
+window._confirm2FASetup = _confirm2FASetup;
+
 // ── Chave de trusted device para este usuário ──
 function _2faTrustKey(userId) {
   return 'ft_2fa_trust_' + userId;
@@ -4139,19 +4889,47 @@ function _is2FATrusted(userId) {
 // ── Salva trusted device por 30 dias ──
 function _set2FATrusted(userId) {
   try {
-    const until = Date.now() + 30 * 24 * 60 * 60 * 1000;
-    localStorage.setItem(_2faTrustKey(userId), JSON.stringify({ until }));
+    const now   = Date.now();
+    const until = now + 30 * 24 * 60 * 60 * 1000;
+    localStorage.setItem(_2faTrustKey(userId), JSON.stringify({
+      until,
+      since: now,
+      // ISO string for UI display
+      expiresAt: new Date(until).toISOString(),
+    }));
   } catch(_) {}
+}
+
+// ── Retorna data de expiração do dispositivo confiável (para UI) ──
+function _get2FATrustExpiry(userId) {
+  try {
+    const raw = localStorage.getItem(_2faTrustKey(userId));
+    if (!raw) return null;
+    const { until, expiresAt } = JSON.parse(raw);
+    if (Date.now() >= until) return null; // expired
+    return expiresAt || new Date(until).toISOString();
+  } catch(_) { return null; }
 }
 
 // ── Envia código por email via EmailJS ──
 async function _send2FAByEmail(email, code, name) {
-  if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.publicKey) {
-    console.warn('[2FA] EmailJS não configurado');
-    return;
+  // Use same config resolution as _sendInviteEmail (fetches from app_settings with hardcoded fallbacks)
+  let serviceId, publicKey, tplId;
+  try {
+    const { autoCheckConfig } = await _getAutoCheckConfig();
+    serviceId = autoCheckConfig?.emailServiceId  || EMAILJS_CONFIG.serviceId  || 'service_8e4rkde';
+    publicKey = autoCheckConfig?.emailPublicKey  || EMAILJS_CONFIG.publicKey  || 'wwnXjEFDaVY7K-qIjwX0H';
+    tplId     = autoCheckConfig?.emailTemplateId || EMAILJS_CONFIG.scheduledTemplateId || EMAILJS_CONFIG.templateId || 'template_fla7gdi';
+  } catch(_) {
+    serviceId = EMAILJS_CONFIG.serviceId;
+    publicKey = EMAILJS_CONFIG.publicKey;
+    tplId     = EMAILJS_CONFIG.scheduledTemplateId || EMAILJS_CONFIG.templateId;
   }
-  const tplId = EMAILJS_CONFIG.scheduledTemplateId || EMAILJS_CONFIG.templateId;
-  if (!tplId) return;
+
+  if (!serviceId || !publicKey || !tplId) {
+    console.warn('[2FA] EmailJS não configurado — serviceId:', serviceId, 'publicKey:', !!publicKey);
+    throw new Error('EmailJS não configurado. Configure em Configurações → E-mail.');
+  }
 
   const body = `
 <div style="font-family:Arial,Helvetica,sans-serif;background:#f5f7fb;padding:24px">
@@ -4171,14 +4949,15 @@ async function _send2FAByEmail(email, code, name) {
 </div></div>`;
 
   try {
-    emailjs.init(EMAILJS_CONFIG.publicKey);
-    await emailjs.send(EMAILJS_CONFIG.serviceId, tplId, {
+    emailjs.init(publicKey);
+    // Pass publicKey as 4th arg (same pattern as _sendInviteEmail which works)
+    await emailjs.send(serviceId, tplId, {
       to_email:       email,
       report_subject: '[Family FinTrack] Seu código de verificação: ' + code,
       Subject:        '[Family FinTrack] Código de verificação',
       month_year:     new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
       report_content: body,
-    });
+    }, publicKey);
   } catch(e) {
     console.warn('[2FA] send email:', e.message);
     throw e;
@@ -4187,16 +4966,29 @@ async function _send2FAByEmail(email, code, name) {
 
 // ── Envia código por Telegram ──
 async function _send2FAByTelegram(chatId, code) {
+  const msg = `🔐 <b>Family FinTrack — Verificação</b>
+
+Seu código de acesso: <code>${code}</code>
+
+⏱ Válido por 10 minutos.
+
+Se você não tentou fazer login, ignore esta mensagem.`;
   try {
-    const msg = `🔐 *Family FinTrack — Verificação*
-
-Seu código: *${code}*
-
-Válido por 10 minutos.`;
+    // Prefer _sendTelegramWithFallback (auto_register.js) — uses local bot token + Edge Function fallback
+    if (typeof _sendTelegramWithFallback === 'function') {
+      await _sendTelegramWithFallback(chatId, msg, { notification_type: '2fa_code' });
+      return;
+    }
+    // Fallback: try direct API with bot token
+    if (typeof _sendTelegramDirect === 'function') {
+      await _sendTelegramDirect(chatId, msg);
+      return;
+    }
+    // Last resort: Edge Function
     const { data, error } = await sb.functions.invoke('send-telegram', {
-      body: { chat_id: chatId, message: msg }
+      body: { chat_id: String(chatId), message: msg }
     });
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(error.message || JSON.stringify(error));
   } catch(e) {
     console.warn('[2FA] send telegram:', e.message);
     throw e;
@@ -4252,10 +5044,11 @@ async function _initiate2FA(authData, appUserRow) {
     console.warn('[2FA] Falha ao enviar código, mostrando tela mesmo assim:', errMsg);
   }
 
-  // Atualizar subtítulo com canal usado
+  // Atualizar subtítulo com canal REAL usado (pode ter fallback para email)
+  const _actualChannel = (sent && _2fa.channel === 'telegram' && _2fa.tgChatId) ? 'telegram' : 'email';
   const sub = document.getElementById('twoFaSub');
   if (sub) {
-    if (_2fa.channel === 'telegram' && _2fa.tgChatId) {
+    if (_actualChannel === 'telegram') {
       sub.innerHTML = 'Enviamos um código de 6 dígitos para o seu <strong>Telegram</strong>.<br>Insira-o abaixo para continuar.';
     } else {
       sub.innerHTML = `Enviamos um código de 6 dígitos para <strong>${_2fa.email}</strong>.<br>Insira-o abaixo para continuar.`;
@@ -4267,22 +5060,83 @@ async function _initiate2FA(authData, appUserRow) {
 }
 
 function _show2FAScreen() {
-  // Esconder todos os formulários de login
+  // Esconder formulários de login mas manter logo, título e subtítulo visíveis
   ['loginFormArea','registerFormArea','pendingApprovalArea',
    'forgotPwdArea','changePwdArea','recoveryPwdArea']
     .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
 
+  // Manter logo visível durante 2FA — esconder apenas título e subtítulo para dar espaço
+  ['lgn-form-title','lgn-form-sub'].forEach(cls => {
+    document.querySelectorAll('.' + cls).forEach(el => { el.style.display = 'none'; });
+  });
+  // Garantir que o logo (lgn-logo-wrap) permaneça visível
+  document.querySelectorAll('.lgn-logo-wrap').forEach(el => { el.style.display = ''; });
+
+  // Adicionar classe ao form-inner para reduzir padding
+  const formInner = document.querySelector('.lgn-form-inner');
+  if (formInner) {
+    formInner.classList.add('lgn-2fa-mode');
+    // Scroll to top to ensure 2FA content is visible
+    formInner.scrollTop = 0;
+  }
+
   const area = document.getElementById('twoFaArea');
-  if (area) area.style.display = '';
+  if (area) area.style.display = 'block';
 
   const codeInput = document.getElementById('twoFaCode');
-  if (codeInput) { codeInput.value = ''; codeInput.focus(); }
+  if (codeInput) {
+    codeInput.value = '';
+    setTimeout(() => codeInput.focus(), 150);
+  }
 
   const errEl = document.getElementById('twoFaError');
   if (errEl) errEl.style.display = 'none';
+
+  // Show "Enviar por e-mail" fallback only when channel is telegram
+  const emailFallbackBtn = document.getElementById('twoFaEmailFallbackBtn');
+  if (emailFallbackBtn) {
+    emailFallbackBtn.style.display = (_2fa.channel === 'telegram') ? '' : 'none';
+  }
+
+  // Mostrar expiração do trust se já existe (informativo)
+  const trustExpEl = document.getElementById('twoFaTrustExpiry');
+  const expiry = _2fa.userId ? _get2FATrustExpiry(_2fa.userId) : null;
+  if (trustExpEl && expiry) {
+    try {
+      const d = new Date(expiry);
+      const fmt = d.toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric' });
+      trustExpEl.textContent = '(confiança válida até ' + fmt + ')';
+      trustExpEl.style.display = 'inline';
+    } catch(_) {}
+  }
 }
 
 // ── Verificar código inserido pelo usuário ──
+
+// ── _lgnToast: safe toast for login.html context (toast may not be available) ──
+function _lgnToast(msg, type) {
+  if (typeof toast === 'function') { toast(msg, type); return; }
+  // Fallback for login.html where utils.js is not loaded
+  const errEl = document.getElementById('twoFaError') || document.getElementById('lgnError');
+  if (errEl && type === 'error') {
+    errEl.textContent = msg;
+    errEl.style.display = '';
+    return;
+  }
+  // For success/info: create a transient floating element
+  const el = document.createElement('div');
+  el.style.cssText = [
+    'position:fixed','bottom:20px','left:50%','transform:translateX(-50%)',
+    'background:' + (type==='success'?'#15803d':type==='error'?'#dc2626':'#1d4ed8'),
+    'color:#fff','padding:10px 20px','border-radius:10px',
+    'font-size:.85rem','font-weight:600','z-index:99999',
+    'box-shadow:0 4px 16px rgba(0,0,0,.25)','max-width:320px','text-align:center',
+  ].join(';');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
 async function doVerify2FA() {
   const codeInput = document.getElementById('twoFaCode');
   const errEl     = document.getElementById('twoFaError');
@@ -4332,16 +5186,48 @@ async function doVerify2FA() {
     await sb.from('two_fa_codes').update({ used: true }).eq('id', codeRow.id);
 
     // Salvar trusted device se solicitado
-    if (trust) _set2FATrusted(_2fa.userId);
+    if (trust) {
+      _set2FATrusted(_2fa.userId);
+      _lgnToast('✓ Dispositivo confiável por 30 dias — não pediremos o código novamente.', 'success');
+    }
 
     // Continuar fluxo de login
-    await _loadCurrentUserContext(_2fa.sessionData);
-    await onLoginSuccess();
+    // _loadCurrentUserContext pode falhar se o contexto de família não estiver
+    // ainda carregado — mas a sessão Supabase já é válida neste ponto.
+    // Em caso de falha, fazemos o redirect directamente para não deixar a
+    // página branca.
+    try {
+      await _loadCurrentUserContext(_2fa.sessionData);
+    } catch(ctxErr) {
+      console.warn('[2FA] _loadCurrentUserContext falhou — redirecionando mesmo assim:', ctxErr?.message);
+      // Sessão válida: ir directo para o app
+      if (typeof window.bootApp === 'function') {
+        window.bootApp().catch(() => { window.location.replace('app.html'); });
+      } else {
+        window.location.replace('app.html');
+      }
+      return;
+    }
+
+    try {
+      await onLoginSuccess();
+    } catch(loginErr) {
+      console.warn('[2FA] onLoginSuccess falhou — redirecionando mesmo assim:', loginErr?.message);
+      // onLoginSuccess pode falhar se algum módulo não existir em login.html
+      // mas a sessão é válida — ir para app.html
+      if (typeof window.bootApp === 'function') {
+        window.bootApp().catch(() => { window.location.replace('app.html'); });
+      } else {
+        window.location.replace('app.html');
+      }
+    }
 
   } catch(e) {
     if (errEl) { errEl.textContent = 'Erro: ' + (e.message || e); errEl.style.display = ''; }
-  } finally {
     if (btn) { btn.disabled = false; btn.textContent = '✓ Verificar'; }
+  } finally {
+    // Nota: não reabilitar o botão aqui pois se chegámos ao finally após sucesso
+    // a página já está a redirecionar — só reabilitar em caso de erro (já tratado acima)
   }
 }
 
@@ -4357,17 +5243,37 @@ async function resend2FACode() {
     const code = _gen2FACode();
     await _store2FACode(_2fa.userId, code);
 
+    const { data: _resUser } = await sb.from('app_users').select('name').eq('id', _2fa.userId).maybeSingle();
+    const _resName = _resUser?.name || '';
+    let _resSent = false;
+
     if (_2fa.channel === 'telegram' && _2fa.tgChatId) {
-      await _send2FAByTelegram(_2fa.tgChatId, code).catch(async () => {
-        // Fallback email
-        const { data: u } = await sb.from('app_users').select('name').eq('id', _2fa.userId).maybeSingle();
-        await _send2FAByEmail(_2fa.email, code, u?.name || '');
-      });
-    } else {
-      const { data: u } = await sb.from('app_users').select('name').eq('id', _2fa.userId).maybeSingle();
-      await _send2FAByEmail(_2fa.email, code, u?.name || '');
+      try {
+        await _send2FAByTelegram(_2fa.tgChatId, code);
+        _resSent = true;
+      } catch(tgErr) {
+        console.warn('[2FA resend] Telegram falhou, tentando email:', tgErr.message);
+        // Visible fallback notice
+        const sub = document.getElementById('twoFaSub');
+        if (sub) sub.innerHTML = 'Telegram indisponível. Enviando para <strong>' + _2fa.email + '</strong>…';
+      }
     }
 
+    if (!_resSent) {
+      await _send2FAByEmail(_2fa.email, code, _resName);
+      // Update state so subtitle shows email
+      _2fa.channel = 'email';
+    }
+
+    // Determine actual channel used (Telegram may have fallen back to email)
+    const _resSub = document.getElementById('twoFaSub');
+    if (_resSub) {
+      if (_2fa.channel === 'telegram' && _2fa.tgChatId) {
+        _resSub.innerHTML = 'Código reenviado para o seu <strong>Telegram</strong>.<br>Insira-o abaixo para continuar.';
+      } else {
+        _resSub.innerHTML = `Código reenviado para <strong>${_2fa.email}</strong>.<br>Insira-o abaixo para continuar.`;
+      }
+    }
     if (errEl) { errEl.textContent = '✓ Novo código enviado!'; errEl.style.color = '#16a34a'; errEl.style.display = ''; }
     setTimeout(() => { if (errEl) { errEl.style.display = 'none'; errEl.style.color = '#dc2626'; } }, 4000);
 
@@ -4379,6 +5285,51 @@ async function resend2FACode() {
 }
 
 
+// ── Reenviar código forçando canal e-mail (fallback manual do usuário) ──
+async function resend2FACodeByEmail() {
+  const btn   = document.getElementById('twoFaEmailFallbackBtn');
+  const errEl = document.getElementById('twoFaError');
+  const sub   = document.getElementById('twoFaSub');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Enviando...'; }
+  if (errEl) errEl.style.display = 'none';
+
+  try {
+    if (!_2fa.userId || !_2fa.email) throw new Error('Sessão expirada. Faça login novamente.');
+    const code = _gen2FACode();
+    await _store2FACode(_2fa.userId, code);
+
+    // Check EmailJS config
+    let serviceId, publicKey;
+    try {
+      const { autoCheckConfig } = await _getAutoCheckConfig();
+      serviceId = autoCheckConfig?.emailServiceId || EMAILJS_CONFIG.serviceId;
+      publicKey  = autoCheckConfig?.emailPublicKey  || EMAILJS_CONFIG.publicKey;
+    } catch(_) {
+      serviceId = EMAILJS_CONFIG.serviceId;
+      publicKey  = EMAILJS_CONFIG.publicKey;
+    }
+
+    if (!serviceId || !publicKey) {
+      throw new Error('EmailJS não configurado. Peça ao administrador para configurar em Configurações → E-mail.');
+    }
+
+    const { data: u } = await sb.from('app_users').select('name').eq('id', _2fa.userId).maybeSingle();
+    await _send2FAByEmail(_2fa.email, code, u?.name || '');
+
+    // Update channel state so verify works
+    _2fa.channel = 'email';
+
+    if (sub) sub.innerHTML = `Código enviado para <strong>${_2fa.email}</strong>.<br>Insira-o abaixo para continuar.`;
+    if (errEl) { errEl.textContent = '✓ Código enviado por e-mail!'; errEl.style.color = '#16a34a'; errEl.style.display = ''; }
+    setTimeout(() => { if (errEl) { errEl.style.display = 'none'; errEl.style.color = '#dc2626'; } }, 4000);
+  } catch(e) {
+    if (errEl) { errEl.textContent = '✗ ' + (e.message || e); errEl.style.display = ''; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📧 Enviar por e-mail'; }
+  }
+}
+window.resend2FACodeByEmail = resend2FACodeByEmail;
+
 /* ══════════════════════════════════════════════════════════════════
    CONVITE DE FAMÍLIA — Processamento do token na URL
    Fluxo: ?invite=TOKEN → valida → mostra banner → ao registrar/logar vincula
@@ -4386,6 +5337,54 @@ async function resend2FACode() {
 
 // Estado do convite ativo (se URL contiver ?invite=TOKEN)
 let _pendingInvite = null;
+
+// ── Verificar chat_id do Telegram via URL (?tg_chat_id=CHATID&tg_user_id=UID) ──
+async function _checkTelegramChatIdUrl() {
+  const params   = new URLSearchParams(window.location.search);
+  const chatId   = params.get('tg_chat_id') || params.get('tgid');
+  const tgToken  = params.get('tg_token');   // token de segurança gerado pelo app
+
+  if (!chatId) return;
+
+  // Limpar parâmetros da URL
+  try {
+    const clean = window.location.pathname + (window.location.hash || '');
+    history.replaceState(null, '', clean);
+  } catch(_) {}
+
+  // Se há token de verificação, validar no banco
+  if (tgToken) {
+    try {
+      const { data: tokenRow } = await sb.from('app_settings')
+        .select('value').eq('key', 'tg_link_token_' + tgToken).maybeSingle();
+      if (tokenRow) {
+        const payload = typeof tokenRow.value === 'string' ? JSON.parse(tokenRow.value) : tokenRow.value;
+        // Atualizar payload com chat_id para o polling detectar
+        await sb.from('app_settings').upsert({
+          key: 'tg_link_token_' + tgToken,
+          value: JSON.stringify({ ...payload, chat_id: chatId }),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'key' });
+        toast('📱 Telegram vinculado! Aguarde...', 'success');
+        return;
+      }
+    } catch(_) {}
+  }
+
+  // Sem token: salvar diretamente se usuário já está logado
+  if (currentUser?.app_user_id && chatId) {
+    try {
+      await sb.from('app_users').update({ telegram_chat_id: chatId }).eq('id', currentUser.app_user_id);
+      currentUser.telegram_chat_id = chatId;
+      // Atualizar campo de perfil se visível
+      const inp = document.getElementById('myProfileTelegramChatId');
+      if (inp) inp.value = chatId;
+      toast('✅ Telegram vinculado com sucesso! Chat ID: ' + chatId, 'success');
+    } catch(e) {
+      console.warn('[tg_chat_id url]', e);
+    }
+  }
+}
 
 // ── Verificar e processar token de convite na URL ──
 async function _checkInviteToken() {
@@ -4535,6 +5534,21 @@ async function _acceptPendingInvite() {
 // Expor globalmente
 window._checkInviteToken  = _checkInviteToken;
 window._acceptPendingInvite = _acceptPendingInvite;
+window._checkTelegramChatIdUrl = _checkTelegramChatIdUrl;
+
+// Verificar parâmetros de URL ao carregar
+(function _checkUrlParams() {
+  // Invite token
+  if (new URLSearchParams(window.location.search).get('invite')) {
+    _checkInviteToken().catch(() => {});
+  }
+  // Telegram chat_id via URL
+  if (new URLSearchParams(window.location.search).get('tg_chat_id') ||
+      new URLSearchParams(window.location.search).get('tgid')) {
+    _checkTelegramChatIdUrl().catch(() => {});
+  }
+})();
+
 tryAutoConnect();
 
 /* ══════════════════════════════════════════════════════════════════
@@ -4683,6 +5697,10 @@ function _renderUserMenuFamilies() {
   if (manageFamBtn) {
     manageFamBtn.style.display = (isFamOwner || isGlobalAdmin) ? '' : 'none';
   }
+  const exportBtn = document.getElementById('umExportExcelBtn');
+  if (exportBtn) {
+    exportBtn.style.display = (isFamOwner || isGlobalAdmin) ? '' : 'none';
+  }
 
   // Ocultar switcher se só tiver 0 ou 1 família
   if (families.length <= 1) { section.style.display = 'none'; return; }
@@ -4738,6 +5756,7 @@ async function switchFamily(familyId) {
   try { if (typeof _catChartEntries !== 'undefined') _catChartEntries.length = 0; } catch(e) {}  // dashboard chart
   try { if (typeof rptState !== 'undefined') rptState.txData = []; } catch(e) {}  // reports
   try { if (typeof _destroyForecastChart === 'function') _destroyForecastChart(); } catch(e) {}
+  try { if (typeof _iofInvalidateCache === 'function') _iofInvalidateCache(); } catch(e) {}  // IOF settings
 
   // ── 3. Atualizar currentUser para nova família ────────────────────────────
   currentUser.family_id = familyId;
@@ -4795,6 +5814,30 @@ async function switchFamily(familyId) {
 function _roleLabel(role) {
   return { owner:'Owner', admin:'Admin', user:'Usuário', viewer:'Visualizador' }[role] || role;
 }
+
+// ── Receivables badge update ──────────────────────────────────────────────────
+async function _updateReceivablesBadge() {
+  try {
+    const fid = typeof famId === 'function' ? famId() : currentUser?.family_id;
+    if (!fid || !sb) return;
+    const { count } = await sb
+      .from('transactions')
+      .select('id', { count: 'exact', head: true })
+      .eq('family_id', fid)
+      .eq('status', 'pending')
+      .gte('amount', 0)
+      .eq('is_transfer', false);
+    const badge = document.getElementById('receivablesBadge');
+    if (!badge) return;
+    if (count > 0) {
+      badge.textContent = count;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch(e) { /* silent */ }
+}
+window._updateReceivablesBadge = _updateReceivablesBadge;
 
 // ── Pending approvals badge ───────────────────────────────────────────────────
 async function _checkPendingApprovals() {
@@ -5003,8 +6046,8 @@ function mfmSwitchFamily(famId) {
 
 // ── Section tab switcher for the redesigned family modal ──────────────────
 function mfmSwitchTab(tab) {
-  const paneMap = { modulos:'mfmPaneModulos', membros:'mfmPaneMembros', integrantes:'mfmPaneIntegrantes', dados:'mfmPaneDados', nova:'mfmPaneNova' };
-  const navMap  = { modulos:'mfmNavModulos',  membros:'mfmNavMembros',  integrantes:'mfmNavIntegrantes',  dados:'mfmNavDados',  nova:'mfmNavNova' };
+  const paneMap = { modulos:'mfmPaneModulos', membros:'mfmPaneMembros', integrantes:'mfmPaneIntegrantes', dados:'mfmPaneDados', nova:'mfmPaneNova', ia:'mfmPaneIa' };
+  const navMap  = { modulos:'mfmNavModulos',  membros:'mfmNavMembros',  integrantes:'mfmNavIntegrantes',  dados:'mfmNavDados',  nova:'mfmNavNova',  ia:'mfmNavIa' };
   Object.keys(paneMap).forEach(t => {
     document.getElementById(paneMap[t])?.classList.toggle('active', t === tab);
     document.getElementById(navMap[t])?.classList.toggle('active', t === tab);
@@ -5012,8 +6055,118 @@ function mfmSwitchTab(tab) {
   if (tab === 'membros')     _mfmRenderMembros();
   if (tab === 'integrantes') _mfmLoadIntegrantes();
   if (tab === 'dados')       _mfmRenderDataSection(_mfmActiveFamilyId);
+  if (tab === 'ia')          _mfmLoadIaConfig();
 }
 window.mfmSwitchTab = mfmSwitchTab;
+
+/* ── IA tab: load and save Gemini config for the family ─────────────────── */
+async function _mfmLoadIaConfig() {
+  try {
+    const fid = _mfmActiveFamilyId || famId?.();
+    if (!fid || !sb) return;
+
+    // Load current family gemini settings
+    const [{ data: keyRow }, { data: modeRow }] = await Promise.all([
+      sb.from('family_settings').select('value').eq('family_id', fid).eq('key', 'gemini_api_key').maybeSingle(),
+      sb.from('family_settings').select('value').eq('family_id', fid).eq('key', 'gemini_use_global').maybeSingle(),
+    ]);
+
+    const familyKey = typeof keyRow?.value === 'string' ? keyRow.value.trim() : '';
+    const useGlobal = modeRow?.value !== 'false';
+
+    const modeGlobal = document.getElementById('mfmGeminiModeGlobal');
+    const modeOwn    = document.getElementById('mfmGeminiModeOwn');
+    if (modeGlobal) modeGlobal.checked = useGlobal || !familyKey;
+    if (modeOwn)    modeOwn.checked    = !useGlobal && !!familyKey;
+
+    const keyInput = document.getElementById('mfmGeminiKeyInput');
+    const keyStatus = document.getElementById('mfmGeminiKeyStatus');
+    if (keyInput && familyKey) {
+      keyInput.value = familyKey;
+      if (keyStatus) {
+        keyStatus.textContent = '✅ Chave configurada: ' + familyKey.slice(0,12) + '…';
+        keyStatus.style.color = 'var(--green)';
+      }
+    }
+
+    _mfmOnGeminiModeChange();
+  } catch(e) {
+    console.warn('[mfmIaConfig]', e?.message);
+  }
+}
+
+window._mfmOnGeminiModeChange = function() {
+  const modeOwn      = document.getElementById('mfmGeminiModeOwn');
+  const ownSec       = document.getElementById('mfmGeminiOwnSection');
+  const globalStatus = document.getElementById('mfmGeminiGlobalStatus');
+  const globalOpt    = document.getElementById('mfmGeminiGlobalOpt');
+  const ownOpt       = document.getElementById('mfmGeminiOwnOpt');
+  const isOwn        = modeOwn?.checked;
+
+  if (ownSec)       ownSec.style.display       = isOwn ? '' : 'none';
+  if (globalStatus) globalStatus.style.display  = isOwn ? 'none' : '';
+  if (globalOpt) {
+    globalOpt.style.borderColor = isOwn ? 'var(--border)' : 'var(--accent)';
+    globalOpt.style.background  = isOwn ? 'var(--surface)' : 'var(--accent-lt)';
+  }
+  if (ownOpt) {
+    ownOpt.style.borderColor = isOwn ? 'var(--accent)' : 'var(--border)';
+    ownOpt.style.background  = isOwn ? 'var(--accent-lt)' : 'var(--surface)';
+  }
+};
+
+window._mfmToggleGeminiKeyVis = function() {
+  const inp = document.getElementById('mfmGeminiKeyInput');
+  const btn = document.getElementById('mfmGeminiKeyToggle');
+  if (!inp) return;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  if (btn) btn.textContent = inp.type === 'password' ? '👁' : '🙈';
+};
+
+window._mfmSaveGeminiConfig = async function() {
+  const fid = _mfmActiveFamilyId || famId?.();
+  if (!fid || !sb) { toast('Família não encontrada', 'error'); return; }
+
+  const modeOwn = document.getElementById('mfmGeminiModeOwn');
+  const isOwn   = modeOwn?.checked;
+  const key     = (document.getElementById('mfmGeminiKeyInput')?.value || '').trim();
+  const keyStatus = document.getElementById('mfmGeminiKeyStatus');
+
+  if (isOwn && key && !key.startsWith('AIza')) {
+    toast('Chave inválida — deve começar com AIza…', 'error'); return;
+  }
+
+  try {
+    // Save gemini_use_global preference
+    const useGlobal = !isOwn;
+    const upsertMode = { family_id: fid, key: 'gemini_use_global', value: useGlobal ? 'true' : 'false' };
+    await sb.from('family_settings').upsert(upsertMode, { onConflict: 'family_id,key' });
+
+    // Save or clear family gemini key
+    if (isOwn && key) {
+      await sb.from('family_settings').upsert(
+        { family_id: fid, key: 'gemini_api_key', value: key },
+        { onConflict: 'family_id,key' }
+      );
+      if (keyStatus) {
+        keyStatus.textContent = '✅ Chave salva: ' + key.slice(0,12) + '…';
+        keyStatus.style.color = 'var(--green)';
+      }
+    } else if (!isOwn) {
+      // Switching to global — clear own key
+      await sb.from('family_settings').delete().eq('family_id', fid).eq('key', 'gemini_api_key');
+    }
+
+    // Update local cache so getGeminiApiKey() picks up immediately
+    if (!window._appSettingsCache) window._appSettingsCache = {};
+    window._appSettingsCache['gemini_use_global'] = useGlobal ? 'true' : 'false';
+    if (isOwn && key) window._appSettingsCache['gemini_api_key'] = key;
+
+    toast(isOwn && key ? '✅ Chave Gemini da família salva!' : '✅ IA compartilhada ativada!', 'success');
+  } catch(e) {
+    toast('Erro ao salvar: ' + (e.message || e), 'error');
+  }
+};
 
 async function _mfmRenderMembros(famId) {
   famId = famId || _mfmActiveFamilyId;
@@ -5061,7 +6214,19 @@ async function _mfmRenderMembros(famId) {
       const available = eligible.filter(u => !memberIds.has(u.id));
       addSel.innerHTML = '<option value="">— Selecionar —</option>' + available.map(u => `<option value="${u.id}">${esc(u.name || u.email)}</option>`).join('');
       const existRow = document.getElementById('mfmAddExistingRow');
+      const noUsersMsg = document.getElementById('mfmNoUsersMsg');
       if (existRow) existRow.style.display = available.length ? '' : 'none';
+      if (noUsersMsg) {
+        if (!available.length) {
+          const hasEligible = eligible.length > 0;
+          noUsersMsg.textContent = hasEligible
+            ? 'Todos os usuários elegíveis já são membros desta família.'
+            : 'Nenhum usuário disponível. Apenas usuários que fazem parte de famílias em comum com você podem ser adicionados desta forma. Use "Convidar por e-mail" para novos usuários.';
+          noUsersMsg.style.display = '';
+        } else {
+          noUsersMsg.style.display = 'none';
+        }
+      }
     } catch(_) {}
   }
   const invEl = document.getElementById('mfmInviteEmail');
@@ -5284,14 +6449,39 @@ function _canManageFamily(famId) {
 }
 
 async function _mfmToggleFeature(key, famId, label, applyFn) {
-  // Nota de segurança: o acesso já foi validado em openMyFamilyMgmt().
-  // Não repetimos o check aqui para evitar falsos negativos por dessincronia
-  // entre currentUser (carregado no login) e o estado real da família.
-
   if (!window._familyFeaturesCache) window._familyFeaturesCache = {};
-  const nowOn = !window._familyFeaturesCache[key];
+  const isCurrentlyOn = !!window._familyFeaturesCache[key];
+  const nowOn = !isCurrentlyOn;
 
-  // ── Atualização síncrona de todos os caches antes de qualquer await ──────
+  // ── Confirmação obrigatória ao DESATIVAR um módulo ───────────────────────
+  if (!nowOn) {
+    const confirmed = await new Promise(res => {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box';
+      overlay.innerHTML = `<div style="background:var(--surface);border-radius:16px;padding:24px;max-width:380px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="font-size:1.4rem;text-align:center;margin-bottom:10px">⚙️</div>
+        <div style="font-weight:700;font-size:.95rem;color:var(--text);text-align:center;margin-bottom:8px">Desativar módulo <strong>${label}</strong>?</div>
+        <div style="font-size:.82rem;color:var(--muted);text-align:center;line-height:1.55;margin-bottom:20px">
+          O módulo ficará oculto para todos os membros da família.<br>
+          Os dados existentes <strong>não serão apagados</strong>.
+        </div>
+        <div style="display:flex;gap:10px">
+          <button id="_modCancelBtn" style="flex:1;padding:10px;border-radius:9px;border:1.5px solid var(--border);background:var(--surface2);color:var(--text);font-size:.85rem;font-weight:700;cursor:pointer;font-family:inherit">
+            ✕ Cancelar
+          </button>
+          <button id="_modConfirmBtn" style="flex:1;padding:10px;border-radius:9px;border:none;background:#dc2626;color:#fff;font-size:.85rem;font-weight:700;cursor:pointer;font-family:inherit">
+            Desativar
+          </button>
+        </div>
+      </div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('#_modCancelBtn').onclick  = () => { overlay.remove(); res(false); };
+      overlay.querySelector('#_modConfirmBtn').onclick = () => { overlay.remove(); res(true);  };
+    });
+    if (!confirmed) return; // user cancelled — do NOT touch any cache or DB
+  }
+
+  // ── Atualização de caches e UI apenas após confirmação ───────────────────
   window._familyFeaturesCache[key] = nowOn;
   if (window._appSettingsCache) window._appSettingsCache[key] = nowOn;
   try { localStorage.setItem(key, String(nowOn)); } catch(_) {}
@@ -5300,7 +6490,7 @@ async function _mfmToggleFeature(key, famId, label, applyFn) {
   if (applyFn && typeof window[applyFn] === 'function') {
     window[applyFn]().catch(() => {});
   }
-  toast(nowOn ? `✓ ${label} ativado` : `${label} desativado`, 'success');
+  toast(nowOn ? `✓ ${label} ativado` : `${label} desativado`, nowOn ? 'success' : 'info');
   _mfmRenderFeatures(famId);
 
   // ── Persistência best-effort — 3 caminhos em cascata ────────────────────
@@ -5312,7 +6502,7 @@ async function _mfmToggleFeature(key, famId, label, applyFn) {
       try { await updateFamilyPreferences({ modules: { [modKey]: nowOn } }); return; } catch(_) {}
     }
 
-    // 2. families.settings JSONB (owner sempre pode escrever na própria família)
+    // 2. families.settings JSONB
     if (famId && window.sb) {
       try {
         const { data: fRow } = await sb.from('families')
@@ -5324,7 +6514,7 @@ async function _mfmToggleFeature(key, famId, label, applyFn) {
       } catch(_) {}
     }
 
-    // 3. app_settings legado (pode falhar por RLS para owner — localStorage já garantiu)
+    // 3. app_settings legado
     if (typeof saveAppSetting === 'function') {
       saveAppSetting(key, nowOn).catch(() => {});
     }
@@ -5485,6 +6675,10 @@ async function mfmInvite() {
       _mfmMsg(`✓ ${email} já estava cadastrado e foi adicionado à família.`, 'success');
     } else {
       // New user — create pending record
+      // password_hash NOT NULL — gerar hash temporário para satisfazer constraint
+      // O usuário precisará definir senha após aceitar o convite
+      const tmpPwd  = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36) + Date.now().toString(36);
+      const tmpHash = await sha256(tmpPwd);
       const { data: newUser, error: insErr } = await sb.from('app_users').insert({
         email,
         name:            email.split('@')[0],
@@ -5493,6 +6687,7 @@ async function mfmInvite() {
         active:          false,
         family_id:       famId,
         must_change_pwd: true,
+        password_hash:   tmpHash,
       }).select().single();
       if (insErr) throw new Error(insErr.message);
 
@@ -5566,6 +6761,7 @@ async function loadWaitlist() {
 
     if (filter === 'pending') query = query.eq('status', 'pending');
     else if (filter === 'invited') query = query.eq('status', 'invited');
+    else if (filter === 'registered') query = query.eq('status', 'registered');
 
     const { data, error } = await query;
     if (error) throw error;
@@ -5590,13 +6786,16 @@ async function loadWaitlist() {
       const date     = r.created_at ? new Date(r.created_at).toLocaleDateString('pt-BR') : '—';
       const roleLabel = {family:'Família',couple:'Casal',personal:'Individual',business:'Empreendedor',curious:'Curioso IA'}[r.role] || r.role || '—';
       const initials  = (r.name||'?').trim().split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
-      const isPending = r.status === 'pending';
-      const isInvited = r.status === 'invited';
+      const isPending    = r.status === 'pending';
+      const isInvited    = r.status === 'invited';
+      const isRegistered = r.status === 'registered';
       const statusPill = isPending
         ? '<span style="font-size:.62rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:rgba(245,158,11,.12);color:#b45309;border:1px solid rgba(245,158,11,.25);border-radius:100px;padding:2px 8px">⏳ Aguardando</span>'
-        : '<span style="font-size:.62rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:rgba(42,96,73,.1);color:var(--accent);border:1px solid rgba(42,96,73,.2);border-radius:100px;padding:2px 8px">✉️ Convidado</span>';
+        : isRegistered
+          ? '<span style="font-size:.62rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:rgba(22,163,74,.12);color:#15803d;border:1px solid rgba(22,163,74,.25);border-radius:100px;padding:2px 8px">✅ Registrado</span>'
+          : '<span style="font-size:.62rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:rgba(42,96,73,.1);color:var(--accent);border:1px solid rgba(42,96,73,.2);border-radius:100px;padding:2px 8px">✉️ Convidado</span>';
 
-      const invBtn = isPending ? `
+      const invBtn = isRegistered ? '' : isPending ? `
         <button
           data-id="${esc(r.id)}" data-name="${esc(r.name||'')}" data-email="${esc(r.email||'')}"
           onclick="inviteFromWaitlist(this.dataset.id, this.dataset.name, this.dataset.email)"
@@ -5684,6 +6883,7 @@ function _openWaitlistInviteModal(wlId, name, email) {
     m = document.createElement('div');
     m.id = 'wlInviteModal';
     m.className = 'modal-overlay';
+    m.id = 'wlInviteModal';
     m.innerHTML = `
       <div class="modal" style="max-width:480px">
         <div class="modal-header">
@@ -5734,47 +6934,83 @@ async function _sendOfficialInvite() {
   const btn   = document.getElementById('wlInvSendBtn');
 
   if (!email || !msg) { toast('Preencha a mensagem', 'error'); return; }
+  if (!EMAILJS_CONFIG.serviceId || !EMAILJS_CONFIG.templateId || !EMAILJS_CONFIG.publicKey) {
+    toast('EmailJS não configurado. Configure em Configurações → E-mail.', 'error');
+    return;
+  }
 
-  btn.disabled   = true;
+  btn.disabled    = true;
   btn.textContent = '⏳ Enviando…';
 
   try {
-    // 1. Enviar email via EmailJS
-    if (EMAILJS_CONFIG.serviceId && EMAILJS_CONFIG.templateId && EMAILJS_CONFIG.publicKey) {
-      const fn   = name.split(' ')[0] || 'Olá';
-      const body = _buildOfficialInviteEmail(fn, email, msg);
-      await emailjs.send(EMAILJS_CONFIG.serviceId, EMAILJS_CONFIG.templateId, {
-        to_email:       email,
-        report_subject: '[Family FinTrack] 🎉 Seu convite chegou! Acesso liberado.',
-        Subject:        '[Family FinTrack] Seu acesso ao Family FinTrack foi liberado!',
-        month_year:     new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
-        report_content: body,
-      });
-    } else {
-      throw new Error('EmailJS não configurado. Configure em Configurações → Email.');
-    }
+    const familyId = famId();
+    if (!familyId) throw new Error('Usuário sem família definida. Configure a família do admin.');
 
-    // 2. Marcar como 'invited' na lista de espera
+    // ── 1. Criar token de convite na tabela family_invites ─────────────────
+    // (mesmo mecanismo do convite normal — gera link rastreável com expiração)
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(24)))
+      .map(b => b.toString(16).padStart(2, '0')).join('');
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    // Invalidar convites anteriores para o mesmo email
+    await sb.from('family_invites')
+      .update({ used: true })
+      .eq('email', email)
+      .eq('family_id', familyId)
+      .eq('used', false);
+
+    const { error: invErr } = await sb.from('family_invites').insert({
+      token,
+      email,
+      family_id:  familyId,
+      role:       'user',
+      invited_by: currentUser?.app_user_id || null,
+      expires_at: expiresAt,
+      used:       false,
+    });
+    if (invErr) throw new Error('Erro ao gerar token de convite: ' + invErr.message);
+
+    // ── 2. Montar URL com token ────────────────────────────────────────────
+    const appUrl    = typeof getAppBaseUrl === 'function'
+      ? getAppBaseUrl()
+      : (window.location.origin + window.location.pathname);
+    const inviteUrl = `${appUrl}?invite=${token}`;
+
+    // ── 3. Enviar email via EmailJS (com emailjs.init obrigatório) ─────────
+    const fn   = name.split(' ')[0] || 'Olá';
+    const body = _buildOfficialInviteEmail(fn, email, msg, inviteUrl);
+
+    emailjs.init(EMAILJS_CONFIG.publicKey); // OBRIGATÓRIO antes de send()
+    await emailjs.send(EMAILJS_CONFIG.serviceId, EMAILJS_CONFIG.templateId, {
+      to_email:       email,
+      report_subject: '[Family FinTrack] 🎉 Seu convite chegou! Acesso liberado.',
+      Subject:        '[Family FinTrack] Seu acesso ao Family FinTrack foi liberado!',
+      month_year:     new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
+      report_content: body,
+    });
+
+    // ── 4. Marcar como 'invited' na lista de espera ────────────────────────
     await sb.from('waitlist').update({
       status:     'invited',
       updated_at: new Date().toISOString(),
     }).eq('id', wlId);
 
-    toast(`✅ Convite enviado para ${name || email}!`, 'success');
+    toast(`✅ Convite enviado para ${name || email}! Link válido por 7 dias.`, 'success');
     closeModal('wlInviteModal');
     loadWaitlist();
 
   } catch(e) {
-    toast('Erro ao enviar convite: ' + e.message, 'error');
-    btn.disabled   = false;
+    const msg_ = e.message || String(e);
+    toast('Erro ao enviar convite: ' + (msg_ === 'undefined' ? 'falha no envio de email — verifique as credenciais EmailJS' : msg_), 'error');
+    btn.disabled    = false;
     btn.textContent = '✉️ Enviar Convite';
   }
 }
 window._sendOfficialInvite = _sendOfficialInvite;
 
-function _buildOfficialInviteEmail(firstName, email, personalMsg) {
+function _buildOfficialInviteEmail(firstName, email, personalMsg, inviteUrl) {
   const safeMsg  = personalMsg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
-  const appUrl   = location.origin + '/app.html';
+  const appUrl   = inviteUrl || (location.origin + '/app.html');
   const landUrl  = location.origin;
 
   return `
@@ -6201,3 +7437,56 @@ function _showFinancialHealthNotif(data) {
   document.body.appendChild(popup);
   setTimeout(() => popup?.remove(), data.level === 'danger' ? 30000 : 15000);
 }
+
+// ── Expor funções públicas no window ─────────────────────────────────────────
+// Necessário para onclick inline no HTML e chamadas de outros módulos JS.
+// auth.js usa funções locais entre si via closure — window é necessário apenas
+// para chamadas externas ao escopo do script.
+window.doLogin               = doLogin;
+window.doLogout              = doLogout;
+window.doRegister            = doRegister;
+window.doForgotPwd           = doForgotPwd;
+window.doChangePwd           = doChangePwd;
+window.doChangeMyPwd         = doChangeMyPwd;
+window.doRecoveryPwd         = doRecoveryPwd;
+window.doVerify2FA           = doVerify2FA;
+window.doApproveUser         = doApproveUser;
+window.doResetUserPwd        = doResetUserPwd;
+window.resend2FACode         = resend2FACode;
+window.showLoginScreen       = showLoginScreen;
+window.hideLoginScreen       = hideLoginScreen;
+window.showLoginFormArea     = showLoginFormArea;
+window.showRegisterForm      = showRegisterForm;
+window.showForgotPwdForm     = showForgotPwdForm;
+window.showChangeMyPwd       = showChangeMyPwd;
+window.toggleLoginPwd        = toggleLoginPwd;
+window.openMyProfile         = openMyProfile;
+window.saveMyProfile         = saveMyProfile;
+window.openUserAdmin         = openUserAdmin;
+window.saveUser              = saveUser;
+window.showNewUserForm       = showNewUserForm;
+window.switchUATab           = switchUATab;
+window.removeUserAvatar      = removeUserAvatar;
+window.removeMyProfileAvatar = removeMyProfileAvatar;
+window.closeUserMenu         = closeUserMenu;
+window.toggleUserMenu        = toggleUserMenu;
+window.toggleDarkMode        = toggleDarkMode;
+window.clearAppCache         = clearAppCache;
+window.saveFamily            = saveFamily;
+window.showFamilyForm        = showFamilyForm;
+window.mfmAddExisting        = mfmAddExisting;
+window.mfmCreateNewFamily    = mfmCreateNewFamily;
+window.mfmInvite             = mfmInvite;
+window.mfmSwitchAddTab       = mfmSwitchAddTab;
+window.mfmToggleAddPanel     = mfmToggleAddPanel;
+window.famId                 = famId;
+window.famQ                  = famQ;
+window.initSbAdmin           = initSbAdmin;
+window.tryRestoreSession     = tryRestoreSession;
+window.updateUserUI          = updateUserUI;
+window.getPeriodColor        = getPeriodColor;
+window._familyDisplayName    = _familyDisplayName;
+window._applyAccessRequestVisibility = _applyAccessRequestVisibility;
+window._registerMagicLinkGate = _registerMagicLinkGate;
+window._save2FASettings      = _save2FASettings;
+window._showRecoveryPwdForm  = _showRecoveryPwdForm;

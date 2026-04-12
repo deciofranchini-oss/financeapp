@@ -13,7 +13,8 @@
 
 const IMPORT_AI_MAX_ROWS   = 60;   // linhas enviadas para análise
 const IMPORT_AI_MIN_CONF   = 0.70; // confiança mínima para auto-avançar
-const IMPORT_AI_MODEL      = 'gemini-2.5-flash-lite';
+// IMPORT_AI_MODEL is now dynamic — uses getGeminiModel() at call time
+const IMPORT_AI_MODEL_FALLBACK = 'gemini-2.5-flash';
 
 // Estado da análise IA atual
 window._importAiResult = null;
@@ -23,7 +24,7 @@ window._importAiResult = null;
 // ══════════════════════════════════════════════════════════════════════════
 
 async function analyzeImportWithAI(file, rows) {
-  const apiKey = await getAppSetting(RECEIPT_AI_KEY_SETTING, '');
+  const apiKey = await getGeminiApiKey();
   if (!apiKey || !apiKey.startsWith('AIza')) {
     // Sem IA configurada — fluxo normal
     _renderImportAiBadge(null);
@@ -124,31 +125,15 @@ REGRAS DE ANÁLISE:
 - Se não conseguir identificar: preset="generic", confidence=0.3, notes explicando
 - Arquivo: ${fileName}`;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${IMPORT_AI_MODEL}:generateContent?key=${apiKey}`;
+  const _impModel = (typeof getGeminiModel === 'function') ? await getGeminiModel() : IMPORT_AI_MODEL_FALLBACK;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${_impModel}:generateContent?key=${apiKey}`;
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 1200, temperature: 0.05 },
-    }),
+  const data = await geminiRetryFetch(url, {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: 1200, temperature: 0.05 },
   });
 
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    const msg = err?.error?.message || `HTTP ${resp.status}`;
-    if (resp.status === 429) throw new Error('Limite de requisições atingido.');
-    throw new Error(msg);
-  }
-
-  const data  = await resp.json();
-  const text  = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const clean = text.replace(/```json|```/g, '').trim();
-
-  let parsed;
-  try { parsed = JSON.parse(clean); }
-  catch { throw new Error('Resposta inválida da IA: ' + text.slice(0, 120)); }
+  const parsed = _parseGeminiJSON(data);
 
   // Normalizar colMap: remover nulls, converter strings para int
   if (parsed.colMap) {

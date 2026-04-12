@@ -77,10 +77,12 @@ function isLightColor(hex) {
 }
 
 function showIconGroup(event, group) {
-  document.querySelectorAll('.icon-tab').forEach(t=>t.classList.remove('active'));
+  // Support both .icon-tab (old modal) and .acm-icon-tab (new account modal)
+  document.querySelectorAll('.icon-tab, .acm-icon-tab').forEach(t=>t.classList.remove('active'));
   event.target.classList.add('active');
   document.querySelectorAll('.icon-grid').forEach(g=>g.style.display='none');
-  document.getElementById('iconGroup-'+group).style.display='grid';
+  const grid = document.getElementById('iconGroup-'+group);
+  if (grid) grid.style.display = 'grid';
 }
 
 function selectAccountIcon(el) {
@@ -111,8 +113,8 @@ function syncIconPickerToValue(iconKey, color) {
       else if(banksFR.includes(iconKey)) group = 'banks-fr';
       else group = 'banks-br';
     }
-    document.querySelectorAll('.icon-tab').forEach(t=>t.classList.remove('active'));
-    const activeTab = document.querySelector(`.icon-tab[onclick*="${group}"]`);
+    document.querySelectorAll('.icon-tab, .acm-icon-tab').forEach(t=>t.classList.remove('active'));
+    const activeTab = document.querySelector(`.icon-tab[onclick*="${group}"], .acm-icon-tab[onclick*="${group}"]`);
     if(activeTab) activeTab.classList.add('active');
     document.querySelectorAll('.icon-grid').forEach(g=>g.style.display='none');
     const activeGroup = document.getElementById('iconGroup-'+group);
@@ -132,6 +134,240 @@ let catPickerOpen = false;
 function _catSearchId(ctx) {
   return ctx === 'sc' ? 'scCatPickerSearch' : 'catPickerSearch';
 }
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  CAT CHOOSER MODAL — picker hierárquico com busca, substitui dropdown
+//  Abre como overlay de alta prioridade (z-index 10040), funciona dentro de
+//  qualquer modal sem interferência nos campos do formulário.
+// ════════════════════════════════════════════════════════════════════════════
+
+let _ccResolve  = null;   // callback para quando uma categoria for selecionada
+let _ccCtx      = null;   // contexto ('tx' | 'sc' | ...)
+let _ccType     = null;   // filtro de tipo ('despesa'|'receita'|null)
+let _ccExpanded = {};     // {parentId: bool} — grupos expandidos
+
+// Abre o modal de escolha de categoria.
+// onPick(catId, catName, catColor) é chamado quando o usuário seleciona.
+function openCatChooser(ctx, onPick) {
+  _ccCtx     = ctx || 'tx';
+  _ccResolve = onPick || null;
+
+  // Detect type filter from ctx
+  const c      = _catCtx(_ccCtx);
+  const txType = document.getElementById(c.typeId)?.value || '';
+  _ccType = txType === 'expense' ? 'despesa'
+          : txType === 'income'  ? 'receita'
+          : null;
+
+  // Current selected id (to pre-expand its group)
+  const currentId = document.getElementById(c.inputId)?.value || '';
+
+  // Get/create overlay
+  let overlay = document.getElementById('catChooserOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'catChooserOverlay';
+    overlay.style.cssText = [
+      'position:fixed','inset:0','z-index:10040',
+      'display:flex','align-items:center','justify-content:center',
+      'background:rgba(0,0,0,.45)',
+      'padding:16px','box-sizing:border-box',
+    ].join(';');
+    overlay.addEventListener('click', e => { if (e.target === overlay) closeCatChooser(); });
+    document.body.appendChild(overlay);
+  }
+
+  // Pre-expand group of currently selected category
+  if (currentId) {
+    const cat = (state.categories||[]).find(x => x.id === currentId);
+    if (cat?.parent_id) _ccExpanded[cat.parent_id] = true;
+  }
+
+  _ccRenderChooser(overlay, currentId, '');
+  overlay.style.display = 'flex';
+  setTimeout(() => {
+    const inp = overlay.querySelector('#ccSearchInput');
+    if (inp) inp.focus();
+  }, 60);
+}
+window.openCatChooser = openCatChooser;
+
+
+// ── _ccCreateNew: create a new category inline from the chooser ─────────────
+async function _ccCreateNew(name) {
+  if (!name || !name.trim()) return;
+  name = name.trim();
+
+  // Determine type from context
+  const c      = _catCtx(_ccCtx || 'tx');
+  const txType = document.getElementById(c.typeId)?.value || '';
+  const dbType = txType === 'income' ? 'receita' : 'despesa';
+  const fid    = typeof famId === 'function' ? famId() : null;
+  if (!fid) { closeCatChooser(); return; }
+
+  // Pick a default color based on type
+  const color = dbType === 'receita' ? '#16a34a' : '#6366f1';
+  const icon  = dbType === 'receita' ? '💰' : '📦';
+
+  try {
+    const { data: newCat, error } = await sb.from('categories').insert({
+      family_id: fid, name, type: dbType, color, icon, parent_id: null,
+      created_at: new Date().toISOString(),
+    }).select().single();
+    if (error) throw error;
+
+    // Update state
+    if (!state.categories) state.categories = [];
+    state.categories.push(newCat);
+
+    // Select the new category immediately
+    _ccPick(newCat.id, newCat.name, newCat.color);
+    toast(`✅ Categoria "${name}" criada`, 'success');
+  } catch(e) {
+    toast('Erro ao criar categoria: ' + (e.message||e), 'error');
+  }
+}
+window._ccCreateNew = _ccCreateNew;
+
+function closeCatChooser() {
+  const overlay = document.getElementById('catChooserOverlay');
+  if (overlay) overlay.style.display = 'none';
+  _ccResolve = null; _ccCtx = null; _ccType = null;
+}
+window.closeCatChooser = closeCatChooser;
+
+function _ccRenderChooser(overlay, selectedId, query) {
+  const allCats = state.categories || [];
+  const cats    = _ccType ? allCats.filter(c => c.type === _ccType) : allCats;
+  const q       = (query || '').toLowerCase().trim();
+
+  const parents = cats
+    .filter(c => !c.parent_id)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // Build rows HTML
+  let rows = '';
+
+  // "Sem categoria" option
+  const noneSel = !selectedId ? ' cc-opt-selected' : '';
+  rows += `<div class="cc-none${noneSel}" onclick="event.stopPropagation();_ccPick(null)">— Sem categoria —</div>`;
+
+  // "Create new category" shortcut — shown when query has text
+  if (q) {
+    rows += `<div class="cc-create-new" onclick="event.stopPropagation();_ccCreateNew('${q.replace(/'/g,'&apos;').replace(/"/g,'&quot;')}')">
+      <span style="font-size:.8rem">➕</span>
+      <span>Criar categoria <strong>"${esc(q)}"</strong></span>
+    </div>`;
+  }
+
+  parents.forEach(p => {
+    const children = cats
+      .filter(c => c.parent_id === p.id)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const color  = p.color || '#8c8278';
+    const icon   = p.icon  || '📦';
+
+    // Search filter
+    const pMatch = !q || p.name.toLowerCase().includes(q);
+    const cMatch = children.filter(c => c.name.toLowerCase().includes(q) || p.name.toLowerCase().includes(q));
+    if (q && !pMatch && cMatch.length === 0) return;
+
+    const showChildren = q ? cMatch : (_ccExpanded[p.id] ? children : []);
+    const hasKids      = children.length > 0;
+    const expanded     = !!_ccExpanded[p.id] || (q && cMatch.length > 0);
+
+    // Parent row — click to expand/collapse (no select on click; use "usar" link to select)
+    rows += `<div class="cc-group" data-pid="${p.id}">`;
+    rows += `<div class="cc-group-hdr" onclick="event.stopPropagation();_ccToggle('${p.id}')">`;
+    rows += `  <span class="cc-dot" style="background:${color}"></span>`;
+    rows += `  <span class="cc-icon">${icon}</span>`;
+    rows += `  <span class="cc-label">${esc(p.name)}</span>`;
+    if (hasKids) {
+      rows += `  <span class="cc-count">${children.length}</span>`;
+      rows += `  <span class="cc-arrow${expanded?' cc-arrow-open':''}">${expanded?'▼':'▶'}</span>`;
+    }
+    rows += `  <span class="cc-usar" onclick="event.stopPropagation();_ccPick('${p.id}')">usar</span>`;
+    rows += `</div>`;
+
+    // Children rows
+    if (hasKids) {
+      rows += `<div class="cc-children" style="${expanded?'':'display:none'}">`;
+      const visKids = q ? cMatch : children;
+      visKids.forEach(c => {
+        const cc  = c.color || color;
+        const sel = c.id === selectedId ? ' cc-opt-selected' : '';
+        rows += `<div class="cc-opt${sel}" onclick="event.stopPropagation();_ccPick('${c.id}')">`;
+        rows += `  <span class="cc-dot" style="background:${cc}"></span>`;
+        rows += `  <span class="cc-icon" style="font-size:.8rem">${c.icon||'▸'}</span>`;
+        rows += `  <span>${esc(c.name)}</span>`;
+        rows += `</div>`;
+      });
+      rows += `</div>`;
+    }
+
+    rows += `</div>`; // .cc-group
+  });
+
+  overlay.innerHTML = `
+    <div class="cc-modal" onclick="event.stopPropagation()">
+      <div class="cc-header">
+        <span class="cc-title">Selecionar Categoria</span>
+        <button class="cc-close" onclick="closeCatChooser()">✕</button>
+      </div>
+      <div class="cc-search-wrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="cc-search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="ccSearchInput" type="text" class="cc-search-input"
+          placeholder="Buscar ou criar categoria…" autocomplete="off" spellcheck="false"
+          onkeydown="if(event.key==='Enter'){event.stopPropagation();const q=this.value.trim();if(q)_ccCreateNew(q);}"
+          value="${query || ''}"
+          oninput="event.stopPropagation();_ccSearch(this.value)"
+          onclick="event.stopPropagation()">
+        ${query ? `<button class="cc-search-clear" onclick="event.stopPropagation();_ccSearch('')" title="Limpar">✕</button>` : ''}
+      </div>
+      <div class="cc-list">${rows}</div>
+    </div>`;
+}
+
+function _ccToggle(parentId) {
+  _ccExpanded[parentId] = !_ccExpanded[parentId];
+  const overlay = document.getElementById('catChooserOverlay');
+  if (!overlay) return;
+  const searchVal = overlay.querySelector('#ccSearchInput')?.value || '';
+  const selId = _catCtx(_ccCtx) ? (document.getElementById(_catCtx(_ccCtx).inputId)?.value||'') : '';
+  _ccRenderChooser(overlay, selId, searchVal);
+  overlay.querySelector('#ccSearchInput')?.focus();
+}
+window._ccToggle = _ccToggle;
+
+function _ccSearch(val) {
+  const overlay = document.getElementById('catChooserOverlay');
+  if (!overlay) return;
+  const selId = _catCtx(_ccCtx) ? (document.getElementById(_catCtx(_ccCtx).inputId)?.value||'') : '';
+  _ccRenderChooser(overlay, selId, val);
+  const inp = overlay.querySelector('#ccSearchInput');
+  if (inp) { inp.focus(); inp.value = val; inp.setSelectionRange(val.length, val.length); }
+}
+window._ccSearch = _ccSearch;
+
+function _ccPick(catId) {
+  const allCats = state.categories || [];
+  const cat     = catId ? allCats.find(x => x.id === catId) : null;
+
+  // Route through existing setCatPickerValue which handles split routing
+  if (typeof setCatPickerValue === 'function') {
+    setCatPickerValue(catId, _ccCtx);
+  }
+
+  // Also call onPick callback if provided (for split rows)
+  if (_ccResolve) {
+    _ccResolve(catId, cat?.name || '', cat?.color || '#94a3b8');
+    _ccResolve = null;
+  }
+
+  closeCatChooser();
+}
+window._ccPick = _ccPick;
 
 function buildCatPicker(typeFilter, ctx) {
   ctx = ctx || 'tx';
@@ -370,6 +606,26 @@ function toggleCatPicker(ctx) {
   _catPickerCtx = ctx;
   dd.classList.add('open');
   btn.classList.add('open');
+  // Posicionamento fixo quando dentro de modal com overflow-y:auto
+  (function _pos() {
+    var rect = btn.getBoundingClientRect();
+    var vpH  = window.innerHeight;
+    var spB  = vpH - rect.bottom;
+    var spA  = rect.top;
+    var ddH  = Math.min(320, Math.max(spB, spA) - 8);
+    dd.style.position  = 'fixed';
+    dd.style.width     = rect.width + 'px';
+    dd.style.left      = rect.left + 'px';
+    dd.style.maxHeight = ddH + 'px';
+    dd.style.zIndex    = '9999';
+    if (spB >= 180 || spB >= spA) {
+      dd.style.top    = (rect.bottom + 4) + 'px';
+      dd.style.bottom = '';
+    } else {
+      dd.style.bottom = (vpH - rect.top + 4) + 'px';
+      dd.style.top    = '';
+    }
+  })();
   // Auto-expand group of currently selected category
   var currentId = document.getElementById(c.inputId) ? document.getElementById(c.inputId).value : '';
   if (currentId) {
@@ -380,7 +636,6 @@ function toggleCatPicker(ctx) {
       if (grp && !grp.classList.contains('open')) { grp.classList.add('open'); if (arr) arr.classList.add('open'); }
     }
   }
-  // Focus the search input after a short delay (allows dropdown animation to start)
   setTimeout(function() {
     var inp = document.getElementById(_catSearchId(ctx));
     if (inp) inp.focus();
@@ -403,21 +658,44 @@ function _closeCatPickerByCtx(ctx) {
   var c = _catCtx(ctx);
   var dd  = document.getElementById(c.ddId);
   var btn = document.getElementById(c.btnId);
-  if (dd)  dd.classList.remove('open');
-  if (btn) btn.classList.remove('open');
-  // Clear search so next open starts fresh
-  var inp = document.getElementById(_catSearchId(ctx));
-  if (inp && inp.value) {
-    inp.value = '';
-    _catPickerFilter(ctx, '');
+  if (dd) {
+    dd.classList.remove('open');
+    dd.style.position = ''; dd.style.width = ''; dd.style.left = '';
+    dd.style.top = ''; dd.style.bottom = ''; dd.style.maxHeight = ''; dd.style.zIndex = '';
   }
+  if (btn) btn.classList.remove('open');
+  var inp = document.getElementById(_catSearchId(ctx));
+  if (inp && inp.value) { inp.value = ''; _catPickerFilter(ctx, ''); }
   if (_catPickerCtx === ctx) _catPickerCtx = null;
+  // Limpar flags de modo split
+  if (ctx === 'tx') {
+    var sm = window._txSplitCatMode; var sc = window._scSplitCatMode;
+    if (sm != null) Promise.resolve().then(function(){ if(window._txSplitCatMode===sm) window._txSplitCatMode=null; });
+    if (sc != null) Promise.resolve().then(function(){ if(window._scSplitCatMode===sc) window._scSplitCatMode=null; });
+  }
 }
 
 function closeCatPicker() { _closeCatPickerByCtx('tx'); }
 
 function setCatPickerValue(catId, ctx) {
   ctx = ctx || 'tx';
+  // Routing para split TX
+  if (window._txSplitCatMode != null && ctx === 'tx') {
+    var _cat = (state.categories||[]).find(function(x){return x.id===catId;});
+    var _rowId = window._txSplitCatMode;
+    window._txSplitCatMode = null;
+    _closeCatPickerByCtx(ctx);
+    if (typeof txCatSplitReceiveCategory==='function') txCatSplitReceiveCategory(_rowId, catId, _cat?_cat.name:'', _cat?(_cat.color||'#94a3b8'):'#94a3b8');
+    return;
+  }
+  // Routing para split SC
+  if (window._scSplitCatMode != null && ctx === 'tx') {
+    var _cat2 = (state.categories||[]).find(function(x){return x.id===catId;});
+    window._scSplitCatMode = null;
+    _closeCatPickerByCtx(ctx);
+    if (typeof scCatSplitReceiveCategory==='function') scCatSplitReceiveCategory(catId, _cat2?_cat2.name:'', _cat2?(_cat2.color||'#94a3b8'):'#94a3b8');
+    return;
+  }
   var c = _catCtx(ctx);
   var input = document.getElementById(c.inputId);
   if (input) input.value = catId || '';

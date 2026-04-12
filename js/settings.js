@@ -8,11 +8,21 @@ function cfgShowPane(paneId) {
   const tab = paneId.replace('pane-', '');
   const btn = document.getElementById('cfgNavBtn-' + tab);
   if (btn) btn.classList.add('active');
-  if (paneId === 'pane-avancado' && typeof initTranslationsAdmin === 'function') {
-    initTranslationsAdmin();
+  if (paneId === 'pane-avancado') {
+    if (typeof initTranslationsAdmin === 'function') initTranslationsAdmin();
+    // Auto-load demo selectors when advanced pane opens
+    setTimeout(() => { try { _loadDemoSelectors(); } catch(_) {} }, 150);
   }
   if (paneId === 'pane-feedbacks' && typeof loadFeedbackReports === 'function') {
     loadFeedbackReports();
+  }
+  // Show danger zone only to family owner (not admin, not regular member)
+  if (paneId === 'pane-familia') {
+    const dangerZone = document.getElementById('familyDangerZone');
+    if (dangerZone) {
+      const isOwner = currentUser?.role === 'owner';  // family owner only, not global admin
+      dangerZone.style.display = isOwner ? '' : 'none';
+    }
   }
   // Scroll active tab into view on mobile
   if (btn) btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
@@ -20,8 +30,12 @@ function cfgShowPane(paneId) {
 window.cfgShowPane = cfgShowPane;
 
 function _cfgApplyAdminNav() {
-  const role = (typeof currentUser !== 'undefined') ? currentUser?.role : null;
-  const isAdmin = role === 'admin' || role === 'owner';
+  // Settings page is admin-only (blocked at navigate() level for non-admin).
+  // Owner manages family via Menu do Usuário → Gerenciar Família, NOT via settings.
+  const role    = (typeof currentUser !== 'undefined') ? currentUser?.role : null;
+  const isAdmin = role === 'admin';
+
+  // All optional tabs visible only to admin
   ['cfgNavBtn-familia','cfgNavBtn-aparencia','cfgNavBtn-avancado','cfgNavBtn-feedbacks'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = isAdmin ? '' : 'none';
@@ -86,68 +100,289 @@ async function loadAppSettings() {
     // Will be re-applied in loadSettings() once page is open
 
 
-    // Hydrate EmailJS config
-    EMAILJS_CONFIG.serviceId  = _appSettingsCache['ej_service']  || localStorage.getItem('ej_service')  || '';
-    EMAILJS_CONFIG.templateId = _appSettingsCache['ej_template'] || localStorage.getItem('ej_template') || '';
-    EMAILJS_CONFIG.scheduledTemplateId = _appSettingsCache['ej_sched_template'] || localStorage.getItem('ej_sched_template') || '';
-    EMAILJS_CONFIG.publicKey  = _appSettingsCache['ej_key']      || localStorage.getItem('ej_key')      || '';
+    // Hydrate EmailJS config — only overwrite hardcoded defaults when DB has a real value
+    if (_appSettingsCache['ej_service'])       EMAILJS_CONFIG.serviceId           = _appSettingsCache['ej_service'];
+    if (_appSettingsCache['ej_template'])      EMAILJS_CONFIG.templateId          = _appSettingsCache['ej_template'];
+    if (_appSettingsCache['ej_sched_template'])EMAILJS_CONFIG.scheduledTemplateId = _appSettingsCache['ej_sched_template'];
+    if (_appSettingsCache['ej_key'])           EMAILJS_CONFIG.publicKey           = _appSettingsCache['ej_key'];
     // Hydrate masterPin
     const dbPin = _appSettingsCache['masterPin'];
     if (dbPin) localStorage.setItem('masterPin', dbPin); // keep local in sync
     // Hydrate auto-check config
     const dbAutoCheck = _appSettingsCache[AUTO_CHECK_CONFIG_KEY];
     if (dbAutoCheck) {
-      try { localStorage.setItem(AUTO_CHECK_CONFIG_KEY, JSON.stringify(dbAutoCheck)); } catch {}
+      // Auto-check config stored only in Supabase (family_settings)
     }
   } catch(e) {
     console.warn('loadAppSettings fallback to localStorage:', e.message);
-    // Fallback: load from localStorage
-    EMAILJS_CONFIG.serviceId  = localStorage.getItem('ej_service')  || '';
-    EMAILJS_CONFIG.templateId = localStorage.getItem('ej_template') || '';
-    EMAILJS_CONFIG.publicKey  = localStorage.getItem('ej_key')      || '';
+    // Fallback: only overwrite when value is non-empty
+    if (_appSettingsCache?.['ej_service'])  EMAILJS_CONFIG.serviceId  = _appSettingsCache['ej_service'];
+    if (_appSettingsCache?.['ej_template']) EMAILJS_CONFIG.templateId = _appSettingsCache['ej_template'];
+    if (_appSettingsCache?.['ej_key'])      EMAILJS_CONFIG.publicKey  = _appSettingsCache['ej_key'];
+  }
+  // Signal that app_settings are ready — lets modules do a cross-device restore pass
+  try { document.dispatchEvent(new CustomEvent('appsettings:loaded')); } catch(_) {}
+  // Sync module states from family_preferences table (new persistent store)
+  // Non-blocking: runs after boot, re-applies module visibility with DB truth
+  setTimeout(() => _seedModulesFromFamilyPreferences().catch(() => {}), 200);
+}
+
+// Reads family_preferences and seeds _familyFeaturesCache + _appSettingsCache.
+// Called after loadAppSettings() finishes — guarantees DB truth wins over
+// stale localStorage, without blocking the initial render.
+async function _seedModulesFromFamilyPreferences() {
+  if (!window.sb || !window.currentUser?.family_id) return;
+  const fid = window.currentUser.family_id;
+  try {
+    // Try RPC first (SECURITY DEFINER — imune a RLS)
+    let data = null;
+    try {
+      const { data: rpcRows, error: rpcErr } = await window.sb
+        .rpc('get_family_preferences', { p_family_id: fid });
+      if (!rpcErr && rpcRows && rpcRows.length > 0) data = rpcRows[0];
+    } catch(_) {}
+    // Fallback: direct SELECT (may be blocked by RLS for non-owners)
+    if (!data) {
+      const { data: row, error } = await window.sb
+        .from('family_preferences').select('*').eq('family_id', fid).maybeSingle();
+      if (!error && row) data = row;
+    }
+
+    // Additional path: read module flags from app_settings cache (written by saveAppSetting)
+    // This works for ALL family members regardless of RLS on family_preferences
+    const moduleKeys = ['ai_insights','ai_chat','debts','investments','grocery','prices','dreams','backup','snapshot'];
+    const fromCache = {};
+    moduleKeys.forEach(mod => {
+      const k = mod + '_enabled_' + fid;
+      if (window._appSettingsCache && k in window._appSettingsCache) {
+        fromCache[mod] = !!window._appSettingsCache[k];
+      } else {
+        const ls = localStorage.getItem(k);
+        if (ls !== null) fromCache[mod] = ls === 'true' || ls === true;
+      }
+    });
+
+    // Merge: family_preferences wins if available, else use app_settings cache
+    if (!data && Object.keys(fromCache).length === 0) return;
+    // Build modMap: prefer family_preferences (authoritative), fall back to app_settings cache
+    const modMap = {
+      ai_insights: data ? data.module_ai_insights : fromCache['ai_insights'],
+      ai_chat:     data ? data.module_ai_chat     : fromCache['ai_chat'],
+      debts:       data ? data.module_debts       : fromCache['debts'],
+      investments: data ? data.module_investments : fromCache['investments'],
+      grocery:     data ? data.module_grocery     : fromCache['grocery'],
+      prices:      data ? data.module_prices      : fromCache['prices'],
+      dreams:      data ? data.module_dreams      : fromCache['dreams'],
+    };
+    if (!window._familyFeaturesCache) window._familyFeaturesCache = {};
+    if (!window._appSettingsCache)    window._appSettingsCache    = {};
+    let changed = false;
+    Object.entries(modMap).forEach(([mod, enabled]) => {
+      const key = mod + '_enabled_' + fid;
+      const prev = window._appSettingsCache[key];
+      const next = !!enabled;
+      if (prev !== next) {
+        window._appSettingsCache[key]    = next;
+        window._familyFeaturesCache[key] = next;
+        // Counter stored in Supabase only
+        changed = true;
+      }
+    });
+    if (!changed) return; // nothing to re-apply
+    // Re-apply module visibility so nav items show/hide correctly
+    ['applyInvestmentsFeature','applyDebtsFeature','applyDreamsFeature',
+     'applyPricesFeature','applyGroceryFeature','applyAiInsightsFeature',
+    ].forEach(fn => {
+      if (typeof window[fn] === 'function') window[fn]().catch(() => {});
+    });
+  } catch(e) {
+    console.warn('[_seedModulesFromFamilyPreferences]', e.message);
+  }
+}
+window._seedModulesFromFamilyPreferences = _seedModulesFromFamilyPreferences;
+
+
+// ── Real-time sync: module flag changes propagate to all active family members ─
+function _initModuleFlagRealtimeSync() {
+  if (!sb || !currentUser?.family_id) return;
+  const fid = currentUser.family_id;
+  const modulePrefixes = ['ai_insights_enabled_','ai_chat_enabled_','debts_enabled_',
+    'investments_enabled_','grocery_enabled_','prices_enabled_','dreams_enabled_'];
+
+  try {
+    sb.channel('module_flags_' + fid)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'app_settings',
+      }, (payload) => {
+        const k = payload.new?.key || payload.old?.key || '';
+        const isModuleFlag = modulePrefixes.some(p => k.startsWith(p) && k.endsWith(fid));
+        if (!isModuleFlag) return;
+        // Update caches
+        const val = payload.eventType === 'DELETE' ? false : !!(payload.new?.value);
+        if (!window._appSettingsCache) window._appSettingsCache = {};
+        if (!window._familyFeaturesCache) window._familyFeaturesCache = {};
+        window._appSettingsCache[k] = val;
+        window._familyFeaturesCache[k] = val;
+        try { localStorage.setItem(k, String(val)); } catch(_) {}
+        // Re-apply module visibility
+        ['applyInvestmentsFeature','applyDebtsFeature','applyDreamsFeature',
+         'applyPricesFeature','applyGroceryFeature','applyAiInsightsFeature',
+        ].forEach(fn => {
+          if (typeof window[fn] === 'function') window[fn]().catch(() => {});
+        });
+      })
+      .subscribe();
+  } catch(e) {
+    console.warn('[_initModuleFlagRealtimeSync]', e.message);
+  }
+}
+window._initModuleFlagRealtimeSync = _initModuleFlagRealtimeSync;
+
+
+// ── Chaves de credenciais → sempre armazenadas por família no Supabase ────────
+// Nunca vão para localStorage (dados sensíveis / compartilhados com a família)
+const _FAMILY_SETTING_KEYS = new Set([
+  'gemini_api_key',
+  'gemini_model',
+  'gemini_use_global',
+  'agent_n8n_webhook_url',
+  'agent_n8n_secret_key',
+  'tg_bot_name',
+  'tg_link_token',
+  'emailjs_service_id',
+  'emailjs_template_id',
+  'emailjs_public_key',
+  // EmailJS legacy keys used in loadEmailJsConfig
+  'ej_service',
+  'ej_template',
+  'ej_sched_template',
+  'ej_key',
+]);
+
+// ── Helpers para family_settings table ───────────────────────────────────────
+async function _famSettingGet(key) {
+  const fid = typeof famId === 'function' ? famId() : null;
+  if (!fid || !sb) return null;
+  try {
+    const { data, error } = await sb.from('family_settings')
+      .select('value')
+      .eq('family_id', fid)
+      .eq('key', key)
+      .maybeSingle();
+    if (error || !data) return null;
+    try { return JSON.parse(data.value); } catch { return data.value; }
+  } catch { return null; }
+}
+
+async function _famSettingSet(key, value) {
+  const fid = typeof famId === 'function' ? famId() : null;
+  if (!fid || !sb) return;
+  const serialized = (value === null || value === undefined)
+    ? null
+    : (typeof value === 'object' ? JSON.stringify(value) : String(value));
+  try {
+    await sb.from('family_settings')
+      .upsert({ family_id: fid, key, value: serialized, updated_at: new Date().toISOString() },
+               { onConflict: 'family_id,key' });
+  } catch(e) {
+    console.warn('[famSetting] set error:', e?.message);
   }
 }
 
-async function saveAppSetting(key, value) {
-  // Always persist locally as fallback
+async function _famSettingDel(key) {
+  const fid = typeof famId === 'function' ? famId() : null;
+  if (!fid || !sb) return;
   try {
-    if (typeof value === 'object') {
-      localStorage.setItem(key, JSON.stringify(value));
-    } else {
-      localStorage.setItem(key, String(value));
-    }
+    await sb.from('family_settings').delete().eq('family_id', fid).eq('key', key);
   } catch {}
+}
+
+window._famSettingGet = _famSettingGet;
+window._famSettingSet = _famSettingSet;
+window._famSettingDel = _famSettingDel;
+
+async function saveAppSetting(key, value) {
+  // ── Credenciais de família → family_settings (Supabase), SEM localStorage ──
+  if (_FAMILY_SETTING_KEYS.has(key) || key.startsWith('tg_link_token_')) {
+    if (!_appSettingsCache) _appSettingsCache = {};
+    _appSettingsCache[key] = value;
+    await _famSettingSet(key, value);
+    return;
+  }
+
+  // ── Cache em memória (sem localStorage para dados sensíveis) ──
   if (!_appSettingsCache) _appSettingsCache = {};
   _appSettingsCache[key] = value;
   if (!sb) return;
-  try {
-    const m = String(key||'').match(/^(prices_enabled_|grocery_enabled_|backup_enabled_|snapshot_enabled_|investments_enabled_|debts_enabled_|ai_insights_enabled_)(.+)$/);
-    const family_id = m ? m[2] : null;
-    // Feature flags: try RPC SECURITY DEFINER first (bypasses RLS)
-    if (family_id) {
-      try {
-        const { error: rpcErr } = await sb.rpc('set_family_feature_flag', {
-          p_family_id: family_id, p_key: key, p_value: !!value
-        });
-        if (!rpcErr) return;
-      } catch {}
+
+  // Detecta flag de módulo (ex: "debts_enabled_<uuid>")
+  const m = String(key||'').match(/^(prices_enabled_|grocery_enabled_|backup_enabled_|snapshot_enabled_|investments_enabled_|debts_enabled_|ai_insights_enabled_|ai_chat_enabled_|dreams_enabled_)(.+)$/);
+  const family_id = m ? m[2] : null;
+
+  if (family_id) {
+    try {
+      const { error: rpcErr } = await sb.rpc('set_family_feature_flag', {
+        p_family_id: family_id, p_key: key, p_value: !!value
+      });
+    } catch {}
+    try {
+      await sb.from('app_settings')
+        .upsert({ key, value: !!value }, { onConflict: 'key' });
+    } catch(e2) {
+      console.warn('saveAppSetting module flag app_settings fallback:', e2?.message);
     }
-    // Standard upsert — no family_id column in payload for schema compatibility
+    return;
+  }
+
+  // Config geral não sensível: app_settings (sem localStorage)
+  try {
     const { error } = await sb.from('app_settings')
       .upsert({ key, value }, { onConflict: 'key' });
     if (error) throw error;
   } catch(e) {
-    console.warn('saveAppSetting DB error (saved locally):', e.message);
+    console.warn('saveAppSetting DB error:', e.message);
   }
 }
 
 async function getAppSetting(key, defaultValue = null) {
+  // ── Check memory cache first ──
   if (_appSettingsCache && key in _appSettingsCache) return _appSettingsCache[key];
-  // Fallback localStorage
-  const local = localStorage.getItem(key);
-  if (local !== null) {
-    try { return JSON.parse(local); } catch { return local; }
+
+  // ── Credentials → family_settings table ──
+  if (_FAMILY_SETTING_KEYS.has(key) || key.startsWith('tg_link_token_')) {
+    const val = await _famSettingGet(key);
+    if (val !== null) {
+      if (!_appSettingsCache) _appSettingsCache = {};
+      _appSettingsCache[key] = val;
+      return val;
+    }
+    // Migrate from localStorage if present (one-time migration for existing users)
+    try {
+      const legacy = localStorage.getItem(key);
+      if (legacy !== null) {
+        const parsed = (() => { try { return JSON.parse(legacy); } catch { return legacy; } })();
+        await _famSettingSet(key, parsed);
+        localStorage.removeItem(key);  // clean up after migrating
+        if (!_appSettingsCache) _appSettingsCache = {};
+        _appSettingsCache[key] = parsed;
+        return parsed;
+      }
+    } catch {}
+    return defaultValue;
   }
+
+  // ── General settings → app_settings table ──
+  try {
+    if (sb) {
+      const { data } = await sb.from('app_settings').select('value').eq('key', key).maybeSingle();
+      if (data?.value !== undefined && data?.value !== null) {
+        if (!_appSettingsCache) _appSettingsCache = {};
+        _appSettingsCache[key] = data.value;
+        return data.value;
+      }
+    }
+  } catch {}
+
   return defaultValue;
 }
 
@@ -155,10 +390,7 @@ async function getAppSetting(key, defaultValue = null) {
 // Usado pelo toggle de módulos. Persiste em: localStorage → _appSettingsCache →
 // _familyFeaturesCache → family_preferences (se disponível) → app_settings RPC/upsert.
 async function saveModuleFlag(key, value, famId) {
-  // 1. localStorage — sempre funciona, sobrevive reload
-  try { localStorage.setItem(key, String(value)); } catch(_) {}
-
-  // 2. Caches em memória — efeito imediato na sessão
+  // 1. Cache em memória — efeito imediato na sessão (sem localStorage)
   if (!window._appSettingsCache) window._appSettingsCache = {};
   window._appSettingsCache[key] = value;
   if (!window._familyFeaturesCache) window._familyFeaturesCache = {};
@@ -176,11 +408,14 @@ async function saveModuleFlag(key, value, famId) {
         .upsert({ family_id: famId, [col]: !!value, updated_at: new Date().toISOString() },
                  { onConflict: 'family_id' });
       if (!error) {
-        // Também atualiza o cache do family_prefs service
-        if (typeof getFamilyPreferences === 'function') {
-          const p = await getFamilyPreferences().catch(() => null);
-          if (p && p.modules) p.modules[modKey] = !!value;
+        // Atualiza _fpCache diretamente (sync, sem await que pode retornar stale)
+        if (window._fpCache && window._fpCache.modules) {
+          window._fpCache.modules[modKey] = !!value;
         }
+        // Dispara evento para que a UI reaja
+        document.dispatchEvent(new CustomEvent('familyprefs:changed', {
+          detail: { prefs: window._fpCache }
+        }));
         return; // persistiu no caminho novo
       }
     } catch(_) {}
@@ -195,13 +430,15 @@ async function saveModuleFlag(key, value, famId) {
     } catch(_) {}
   }
 
-  // 5. RPC set_family_module (da nossa migration)
+  // 5. RPCs SECURITY DEFINER (upsert_family_module e set_family_module)
   if (famId && modKey) {
-    try {
-      const { error } = await sb.rpc('set_family_module',
-        { p_family_id: famId, p_module: modKey, p_enabled: !!value });
-      if (!error) return;
-    } catch(_) {}
+    for (const rpcName of ['upsert_family_module', 'set_family_module']) {
+      try {
+        const { error } = await sb.rpc(rpcName,
+          { p_family_id: famId, p_module: modKey, p_enabled: !!value });
+        if (!error) return;
+      } catch(_) {}
+    }
   }
 
   // 6. Upsert direto em app_settings (pode falhar por RLS — best-effort)
@@ -298,7 +535,7 @@ async function saveEmailJSConfig() {
   await saveAppSetting('ej_template', tpl);
   await saveAppSetting('ej_sched_template', stpl);
   await saveAppSetting('ej_key',      key);
-  try { localStorage.setItem('ej_sched_template', stpl); } catch {}
+  // ej_sched_template stored in family_settings via saveAppSetting
   ejCheckStatus();
   closeModal('emailjsModal');
   toast(t('toast.emailjs_saved'), 'success');
@@ -617,7 +854,9 @@ function loadSettings() {
   if (tl && pt) { tl.style.display='none'; pt.style.display=''; }
   if (typeof initLogoSettings === 'function') initLogoSettings();
 
-  const isAdmin = (currentUser?.role==='admin');
+  const isAdmin = (currentUser?.role === 'admin'); // app-level admin
+  // isOwner = family owner (cannot see app-wide admin tools)
+  // isAdmin = can see everything including pane-avancado
 
   // DB Backup section — admin only
   const dbBackupSec = document.getElementById('dbBackupSection');
@@ -629,8 +868,14 @@ function loadSettings() {
   // IA settings
   if (typeof initAiSettings === 'function') initAiSettings();
 
-  // Telegram bot token
+  // Global Gemini key — admin only (app-wide key)
+  const globalGeminiCard = document.getElementById('globalGeminiCfgCard');
+  if (globalGeminiCard) globalGeminiCard.style.display = isAdmin ? '' : 'none';
+  if (isAdmin) loadGlobalGeminiKeyUI().catch(() => {});
+
+  // Telegram bot — load token UI + show admin section for owners/admins + load bot name
   if (typeof loadTelegramBotTokenUI === 'function') loadTelegramBotTokenUI();
+  _loadTgAdminSection();
 
 
 
@@ -2893,23 +3138,45 @@ function _applyNotifChannelVisibility() {
   const whatsappOn = isNotifChannelEnabled('whatsapp');
   const telegramOn = isNotifChannelEnabled('telegram');
 
-  // Seções de notificação em Programados
-  const emailSec    = document.getElementById('scNotifyEmailRow')    || document.querySelector('[data-notif-channel="email"]');
-  const whatsappSec = document.getElementById('scNotifyWhatsappRow') || document.querySelector('[data-notif-channel="whatsapp"]');
-  const telegramSec = document.getElementById('scNotifyTelegramRow') || document.querySelector('[data-notif-channel="telegram"]');
+  // ── Programados: linhas de canal ──
+  const sel = (id, attr) => document.getElementById(id) || document.querySelector(`[${attr}]`);
+  const emailSec    = sel('scNotifyEmailRow',    'data-notif-channel="email"');
+  const whatsappSec = sel('scNotifyWhatsappRow', 'data-notif-channel="whatsapp"');
+  const telegramSec = sel('scNotifyTelegramRow', 'data-notif-channel="telegram"');
   if (emailSec)    emailSec.style.display    = emailOn    ? '' : 'none';
   if (whatsappSec) whatsappSec.style.display = whatsappOn ? '' : 'none';
   if (telegramSec) telegramSec.style.display = telegramOn ? '' : 'none';
 
-  // Perfil: campos de contato
+  // ── Perfil: linhas de canal nas notificações de transação ──
+  const profEmailRow = document.getElementById('profNotifyTxEmailRow');
+  const profWaRow    = document.getElementById('profNotifyTxWaRow');
+  const profTgRow    = document.getElementById('profNotifyTxTgRow');
+  if (profEmailRow) profEmailRow.style.display = emailOn    ? '' : 'none';
+  if (profWaRow)    profWaRow.style.display    = whatsappOn ? '' : 'none';
+  if (profTgRow)    profTgRow.style.display    = telegramOn ? '' : 'none';
+
+  // Se channel desativado, também desmarcar o checkbox (não salvar — apenas UI)
+  if (!emailOn    && profEmailRow) { const c = document.getElementById('myProfileNotifyTxEmail'); if (c) c.checked = false; }
+  if (!whatsappOn && profWaRow)    { const c = document.getElementById('myProfileNotifyTxWa');   if (c) c.checked = false; }
+  if (!telegramOn && profTgRow)    { const c = document.getElementById('myProfileNotifyTxTg');   if (c) c.checked = false; }
+
+  // ── Perfil: campos de contato (WA number, Telegram Chat ID) ──
   const waProfileRow = document.getElementById('myProfileWhatsappRow');
   const tgProfileRow = document.getElementById('myProfileTelegramRow');
   if (waProfileRow) waProfileRow.style.display = whatsappOn ? '' : 'none';
   if (tgProfileRow) tgProfileRow.style.display = telegramOn ? '' : 'none';
 
-  // Canal 2FA: esconder Telegram se desativado
+  // ── Canal 2FA: esconder Telegram se desativado ──
   const tgChanLabel = document.getElementById('twoFaChanTgLabel');
   if (tgChanLabel) tgChanLabel.style.display = telegramOn ? '' : 'none';
+
+  // ── Transações: botões de notificação por canal ──
+  // Se canal desativado, esconder opções de notificação em transações
+  document.querySelectorAll('[data-notif-channel]').forEach(el => {
+    const ch = el.dataset.notifChannel;
+    const on = ch === 'email' ? emailOn : ch === 'whatsapp' ? whatsappOn : telegramOn;
+    el.style.display = on ? '' : 'none';
+  });
 }
 
 // Carregar ao navegar para settings
@@ -2932,15 +3199,19 @@ if (typeof window.cfgShowPane === 'function') {
 function _toggle2FAPanel(enabled) {
   const panel = document.getElementById('myProfile2faPanel');
   if (panel) panel.style.display = enabled ? '' : 'none';
+  // Show test section when enabling, hide when disabling
+  const testSection = document.getElementById('profile2faSection');
+  if (testSection) testSection.style.display = enabled ? '' : 'none';
+  // Remove stale confirm box when toggling off
+  if (!enabled) document.getElementById('twoFaSetupConfirmBox')?.remove();
 }
 
 // ── Carregar estado 2FA atual no modal de perfil ──
 function _load2FAIntoProfile() {
-  if (!currentUser) return;
-  // Buscar do banco para ter o estado mais recente
+  if (!currentUser?.email) return;
   sb.from('app_users')
     .select('two_fa_enabled, two_fa_channel, telegram_chat_id, email')
-    .eq('id', currentUser.app_user_id || currentUser.id)
+    .eq('email', currentUser.email)
     .maybeSingle()
     .then(({ data }) => {
       if (!data) return;
@@ -2948,9 +3219,25 @@ function _load2FAIntoProfile() {
       const channel = data.two_fa_channel || 'email';
       const hasTg   = !!data.telegram_chat_id;
 
+      // ── Sync currentUser so saveMyProfile() detects no change ───────────
+      if (currentUser) {
+        currentUser.two_fa_enabled = enabled;
+        currentUser.two_fa_channel = channel;
+      }
+
       const chk = document.getElementById('myProfile2faEnabled');
       if (chk) chk.checked = enabled;
       _toggle2FAPanel(enabled);
+
+      const testSection = document.getElementById('profile2faSection');
+      if (testSection && enabled) {
+        const statusEl = document.getElementById('profile2faStatus');
+        if (statusEl) {
+          statusEl.textContent = '✓ 2FA já ativo. Clique em "Testar 2FA" para revalidar o canal.';
+          statusEl.style.color = '#16a34a';
+          statusEl.style.display = '';
+        }
+      }
 
       const chanEl = document.getElementById(channel === 'telegram' ? 'twoFaChanTelegram' : 'twoFaChanEmail');
       if (chanEl) chanEl.checked = true;
@@ -2977,6 +3264,7 @@ function _load2FAIntoProfile() {
     .catch(() => {});
 }
 
+
 // ── Salvar configurações 2FA (chamado junto com saveMyProfile) ──
 async function _save2FASettings(appUserId) {
   const enabled  = !!(document.getElementById('myProfile2faEnabled')?.checked);
@@ -3002,89 +3290,1322 @@ async function _save2FASettings(appUserId) {
 ══════════════════════════════════════════════════════════════════ */
 
 let _tgLinkPollInterval = null;
+let _tgLinkCountdownInterval = null;
 
 async function openTelegramLinkFlow() {
-  const btn    = document.getElementById('tgLinkFlowBtn');
-  const status = document.getElementById('tgLinkStatus');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Gerando link...'; }
-  if (status) status.textContent = '';
+  const btn      = document.getElementById('tgLinkFlowBtn');
+  const status   = document.getElementById('tgLinkStatus');
+  const progress = document.getElementById('tgLinkProgress');
+  const bar      = document.getElementById('tgLinkProgressBar');
+  const countdown= document.getElementById('tgLinkCountdown');
+
+  // Clear any previous poll
+  if (_tgLinkPollInterval)    clearInterval(_tgLinkPollInterval);
+  if (_tgLinkCountdownInterval) clearInterval(_tgLinkCountdownInterval);
+
+  if (btn)    { btn.disabled = true; btn.textContent = '⏳ Gerando link...'; }
+  if (status) { status.textContent = ''; status.style.color = 'var(--muted)'; }
+  if (progress) progress.style.display = 'none';
+  // Also drive the cfg panel progress if settings is open
+  const cfgProgress  = document.getElementById('tgLinkProgressCfg');
+  const cfgBar       = document.getElementById('tgLinkProgressBarCfg');
+  const cfgCountdown = document.getElementById('tgLinkCountdownCfg');
+  const cfgStatusDiv = document.getElementById('tgLinkStatusCfg');
+  const cfgBtn       = document.getElementById('tgLinkFlowBtnCfg');
+  if (cfgProgress) cfgProgress.style.display = 'none';
+  if (cfgStatusDiv) cfgStatusDiv.style.display = 'none';
+  if (cfgBtn) { cfgBtn.disabled = true; cfgBtn.textContent = '⏳'; }
 
   try {
-    // 1. Gerar token único
+    // 1. Token único de 32 hex chars
     const token = Array.from(crypto.getRandomValues(new Uint8Array(16)))
       .map(b => b.toString(16).padStart(2, '0')).join('');
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10min
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 min
 
-    // 2. Salvar token no app_settings com user_id
+    // 2. Salvar token em app_settings (lido pelo bot ao receber /start TOKEN)
     const userId = currentUser?.app_user_id || currentUser?.id;
-    await saveAppSetting('tg_link_token_' + token, JSON.stringify({
-      user_id: userId,
-      expires_at: expiresAt,
-      used: false,
-    }));
-
-    // 3. Buscar nome do bot
-    let botName = 'FinTrackBot'; // fallback
     try {
-      const { data: botRow } = await sb.from('app_settings').select('value').eq('key', 'tg_bot_name').maybeSingle();
+      await sb.from('app_settings').upsert({
+        key:   'tg_link_token_' + token,
+        value: JSON.stringify({ user_id: userId, expires_at: expiresAt, used: false }),
+      }, { onConflict: 'key' });
+    } catch(dbErr) {
+      console.warn('[TgLink] token save failed:', dbErr?.message);
+      // Continue anyway — may still work via bot direct lookup
+    }
+
+    // 3. Buscar nome do bot configurado (fallback: FamilyFintrack_bot)
+    let botName = 'FamilyFintrack_bot';
+    try {
+      const { data: botRow } = await sb.from('app_settings')
+        .select('value').eq('key', 'tg_bot_name').maybeSingle();
       if (botRow?.value) botName = String(botRow.value).replace(/^@/, '');
     } catch(_) {}
 
-    // 4. Abrir Telegram com deep link
+    // 4. Abrir Telegram
     const tgUrl = `https://t.me/${botName}?start=${token}`;
     window.open(tgUrl, '_blank');
 
-    if (status) status.textContent = '📱 Aguardando vinculação no Telegram...';
     if (btn) { btn.disabled = false; btn.textContent = '✈️ Abrir novamente'; }
+    if (cfgBtn) { cfgBtn.disabled = false; cfgBtn.innerHTML = '✈️ Abrir novamente'; }
+    if (status) status.textContent = `📱 Abriu @${botName} — envie /start ou toque em Iniciar no bot.`;
 
-    // 5. Poll por resultado a cada 3s por até 2min
-    if (_tgLinkPollInterval) clearInterval(_tgLinkPollInterval);
+    // 5. Mostrar barra de progresso + countdown
+    if (progress) progress.style.display = '';
+    if (cfgProgress) cfgProgress.style.display = '';
+    const POLL_MAX = 120;
     let elapsed = 0;
+    if (bar)      { bar.style.transition = 'none'; bar.style.width = '0%'; }
+    if (cfgBar)   { cfgBar.style.transition = 'none'; cfgBar.style.width = '0%'; }
+    if (countdown) countdown.textContent = POLL_MAX;
+    if (cfgCountdown) cfgCountdown.textContent = POLL_MAX;
+
+    // Animate bar smoothly
+    setTimeout(() => {
+      if (bar)    { bar.style.transition = `width ${POLL_MAX}s linear`; bar.style.width = '100%'; }
+      if (cfgBar) { cfgBar.style.transition = `width ${POLL_MAX}s linear`; cfgBar.style.width = '100%'; }
+    }, 100);
+
+    // Countdown seconds
+    _tgLinkCountdownInterval = setInterval(() => {
+      elapsed += 1;
+      if (countdown)    countdown.textContent    = Math.max(0, POLL_MAX - elapsed);
+      if (cfgCountdown) cfgCountdown.textContent = Math.max(0, POLL_MAX - elapsed);
+    }, 1000);
+
+    // 6. Poll a cada 3s por até 2min
     _tgLinkPollInterval = setInterval(async () => {
-      elapsed += 3;
-      if (elapsed > 120) {
+      if (elapsed >= POLL_MAX) {
         clearInterval(_tgLinkPollInterval);
-        if (status) status.textContent = '⏱ Tempo esgotado. Tente novamente.';
+        clearInterval(_tgLinkCountdownInterval);
+        if (progress) progress.style.display = 'none';
+        if (status) {
+          status.textContent = '⏱ Tempo esgotado. Use o @userinfobot abaixo para obter o ID manualmente.';
+          status.style.color = '#d97706';
+        }
         return;
       }
+
       try {
         const { data: tokenRow } = await sb.from('app_settings')
-          .select('value').eq('key', 'tg_link_token_' + token).maybeSingle();
-        if (!tokenRow) return;
-        const payload = typeof tokenRow.value === 'string' ? JSON.parse(tokenRow.value) : tokenRow.value;
+          .select('value')
+          .eq('key', 'tg_link_token_' + token)
+          .maybeSingle();
+
+        if (!tokenRow) return; // Ainda não respondeu
+
+        let payload;
+        try {
+          payload = typeof tokenRow.value === 'string'
+            ? JSON.parse(tokenRow.value) : tokenRow.value;
+        } catch(_) { return; }
+
         if (payload?.chat_id) {
-          // Chat ID recebido!
+          // ✅ Chat ID recebido do bot!
           clearInterval(_tgLinkPollInterval);
+          clearInterval(_tgLinkCountdownInterval);
+          if (progress) progress.style.display = 'none';
+          if (bar) { bar.style.transition = 'none'; bar.style.width = '100%'; bar.style.background = 'var(--accent)'; }
+
           const chatId = String(payload.chat_id);
 
-          // Atualizar campo no perfil
+          // Preencher campo
           const inp = document.getElementById('myProfileTelegramChatId');
           if (inp) inp.value = chatId;
 
-          // Salvar imediatamente no app_users
+          // Persistir em app_users
           if (currentUser?.app_user_id) {
-            await sb.from('app_users').update({ telegram_chat_id: chatId }).eq('id', currentUser.app_user_id);
-            currentUser.telegram_chat_id = chatId;
+            try {
+              await sb.from('app_users')
+                .update({ telegram_chat_id: chatId })
+                .eq('id', currentUser.app_user_id);
+              currentUser.telegram_chat_id = chatId;
+            } catch(_) {}
           }
 
-          // Limpar token do banco
-          await sb.from('app_settings').delete().eq('key', 'tg_link_token_' + token);
+          // Limpar token usado
+          try { await sb.from('app_settings').delete().eq('key', 'tg_link_token_' + token); } catch(_) {}
 
           if (status) {
-            status.textContent = '✅ Telegram vinculado! Chat ID: ' + chatId;
+            status.textContent = '✅ Chat ID ' + chatId + ' vinculado!';
             status.style.color = 'var(--accent)';
           }
-          toast('✅ Telegram vinculado com sucesso!', 'success');
-          // Recarregar 2FA hints
-          _load2FAIntoProfile();
+          if (cfgStatusDiv) {
+            cfgStatusDiv.style.display = '';
+            cfgStatusDiv.innerHTML = '<div style="font-size:.78rem;font-weight:700;color:var(--accent)">✅ Conta vinculada ao Telegram!</div>' +
+              '<div style="font-size:.7rem;color:var(--muted);margin-top:2px">Chat ID: ' + chatId + '</div>';
+          }
+          if (cfgProgress) cfgProgress.style.display = 'none';
+          // Update status dot
+          const cfgDot = document.getElementById('tgBotStatusDot');
+          if (cfgDot) cfgDot.style.background = '#22c55e';
+          const cfgName = document.getElementById('tgBotNameBadge');
+          if (cfgName) { cfgName.textContent = 'Vinculado'; cfgName.style.display = ''; }
+          toast('✅ Telegram vinculado com sucesso! Chat ID: ' + chatId, 'success');
+          if (typeof _load2FAIntoProfile === 'function') _load2FAIntoProfile();
         }
-      } catch(_) {}
+      } catch(_) { /* ignora erros de rede no poll */ }
     }, 3000);
 
   } catch(e) {
+    clearInterval(_tgLinkPollInterval);
+    clearInterval(_tgLinkCountdownInterval);
+    if (progress) progress.style.display = 'none';
     if (status) { status.textContent = 'Erro: ' + e.message; status.style.color = 'var(--red)'; }
-    if (btn) { btn.disabled = false; btn.textContent = '✈️ Vincular via Telegram'; }
-    toast('Erro ao iniciar vinculação: ' + e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '✈️ Abrir @FamilyFintrack_bot'; }
+    console.error('[TgLink]', e);
   }
 }
 
+
+// ── Expor funções públicas no window ──────────────────────────────────────────
+window._applyNotifChannelVisibility        = _applyNotifChannelVisibility;
+
+// ════════════════════════════════════════════════════════════════════════════
+//  DEMO DATA IMPORT — Importador de massa de dados de demonstração
+//  Uso exclusivo do administrador global
+// ════════════════════════════════════════════════════════════════════════════
+
+async function importDemoData(userId, familyId, progressCb) {
+  if (!userId || !familyId) throw new Error('Usuário e família são obrigatórios.');
+  const log = (msg, pct) => { console.log(`[DemoImport] ${msg}`); if (progressCb) progressCb(msg, pct); };
+  const errors = [];
+
+  if (typeof generateDemoData !== 'function') throw new Error('Gerador não disponível. Verifique demo_data_generator.js.');
+  const data = generateDemoData();
+  log(`Dados gerados: ${data._meta.txCount} transações, ${data._meta.catCount} categorias`, 3);
+
+  // ── Column whitelists — only send columns that exist in each table ────────
+  const COLS = {
+    account_groups: ['id','name','emoji','color','currency','family_id','created_at'],
+    accounts:       ['id','name','type','currency','initial_balance','icon','color',
+                     'group_id','is_favorite','due_day','best_purchase_day','card_limit',
+                     'notes','family_id','created_at'],
+    categories:     ['id','name','type','parent_id','icon','color','family_id','created_at'],
+    payees:         ['id','name','type','default_category_id','notes','family_id','created_at'],
+    budgets:        ['id','month','category_id','amount','auto_reset','notes','family_id','created_at'],
+    scheduled_transactions: ['id','description','type','amount','currency','account_id',
+                     'transfer_to_account_id','payee_id','category_id','memo','tags',
+                     'status','start_date','frequency','auto_register','auto_confirm',
+                     'family_id','created_at'],
+    debts:          ['id','name','creditor_payee_id','original_amount','current_balance','currency',
+                     'adjustment_type','periodicity','start_date','status','notes','family_id','created_at'],
+    dreams:         ['id','title','dream_type','target_amount','target_date',
+                     'status','priority','description','family_id','created_by','created_at','updated_at'],
+    price_items:    ['id','name','description','unit','category_id','family_id','created_at'],
+    price_stores:   ['id','name','address','family_id','created_at'],
+    price_history:  ['id','item_id','store_id','unit_price','purchased_at','quantity','family_id','created_at'],
+    grocery_lists:  ['id','name','status','family_id','created_at'],
+    grocery_items:  ['id','list_id','name','qty','unit','checked','suggested_price','family_id','created_at'],
+    investment_positions: ['id','family_id','account_id','ticker','asset_type','name',
+                     'quantity','avg_cost','current_price','currency','notes','created_at'],
+    financial_objectives: ['id','family_id','name','icon','description','start_date',
+                     'end_date','budget_limit','status','created_at','updated_at'],
+    transactions:   ['id','date','description','amount','brl_amount','account_id',
+                     'category_id','payee_id','is_transfer','is_card_payment',
+                     'transfer_to_account_id','status','currency','memo',
+                     'family_id','created_at','updated_at'],
+  };
+
+  function pick(row, cols) {
+    const out = {};
+    cols.forEach(c => { if (c in row) out[c] = row[c]; });
+    return out;
+  }
+
+  // ── Helper: insert in batches, collect per-table results ────────────────────
+  const tableResults = {}; // { tableName: { sent, ok, errors: [] } }
+
+  // Tables where name+family_id must be unique — use upsert to skip duplicates
+  const UPSERT_TABLES = new Set([
+    'account_groups','accounts','payees','price_stores',
+    'categories',
+  ]);
+
+  async function ins(table, rows, label, batchSize = 50) {
+    if (!rows || !rows.length) {
+      tableResults[table] = { label, sent: 0, ok: 0, errors: [] };
+      log(`${label}: 0 (skipped)`, null);
+      return 0;
+    }
+    const cols = COLS[table];
+    const enriched = rows.map(r => {
+      const base = { ...r, family_id: familyId, created_at: r.created_at || new Date().toISOString() };
+      return cols ? pick(base, cols) : base;
+    });
+    tableResults[table] = { label, sent: rows.length, ok: 0, errors: [] };
+    let ok = 0;
+    const useUpsert = UPSERT_TABLES.has(table);
+    for (let i = 0; i < enriched.length; i += batchSize) {
+      const batch = enriched.slice(i, i + batchSize);
+      let error;
+      if (useUpsert) {
+        // ON CONFLICT DO NOTHING — tries id first, falls back to insert-ignore on duplicate
+        ({ error } = await sb.from(table).upsert(batch, { onConflict: 'id', ignoreDuplicates: true }));
+        if (!error) {
+          // Success (inserted or skipped duplicate) — count all as ok
+          ok += batch.length; tableResults[table].ok += batch.length;
+          continue;
+        }
+        if (error.message?.includes('duplicate') || error.code === '23505') {
+          // Conflict on unique constraint other than id — row-by-row fallback
+          let rowOk = 0;
+          for (const row of batch) {
+            const { error: re } = await sb.from(table).insert(row);
+            if (!re || re.code === '23505' || re.message?.includes('duplicate')) rowOk++;
+          }
+          ok += rowOk; tableResults[table].ok += rowOk;
+          continue;
+        }
+      } else {
+        ({ error } = await sb.from(table).insert(batch));
+        if (!error) { ok += batch.length; tableResults[table].ok += batch.length; continue; }
+      }
+      if (error) {
+        // Last resort: upsert already tried above; just record the error
+        if (useUpsert) {
+          // Already handled row-by-row above, but if we're here upsert succeeded with error
+        }
+        const msg = `Batch ${Math.floor(i/batchSize)+1}: ${error.message}`;
+        console.warn('[DemoImport]', table, msg);
+        tableResults[table].errors.push(msg);
+        errors.push(`${table}: ${msg}`);
+      } else {
+        ok += batch.length;
+        tableResults[table].ok += batch.length;
+      }
+    }
+    log(`${label}: ${ok}/${rows.length}`, null);
+    return ok;
+  }
+
+  // ── 1. Account Groups ─────────────────────────────────────────────────────
+  log('Criando grupos de contas…', 8);
+  await ins('account_groups', data.accountGroups, 'Grupos');
+
+  // Build group ID map immediately after insert (before accounts need it)
+  const groupIdMap = await buildIdMap('account_groups', data.accountGroups, 'name');
+  console.log('[DemoImport] groupIdMap entries:', Object.keys(groupIdMap).length);
+
+  // ── 2. Accounts (with remapped group_id, row-by-row to handle FK gracefully) ──
+  log('Criando contas…', 14);
+  {
+    let accountsInserted = 0;
+    const accountErrors = [];
+    for (const a of data.accounts) {
+      const realGroupId = a.group_id ? (groupIdMap[a.group_id] || null) : null;
+      const acctRow = {
+        ...a, family_id: familyId,
+        group_id: realGroupId,
+        created_at: a.created_at || new Date().toISOString(),
+      };
+      // Remove columns not in schema
+      const cols = ['id','name','type','currency','initial_balance','icon','color',
+                    'group_id','is_favorite','due_day','best_purchase_day','card_limit',
+                    'notes','family_id','created_at'];
+      const row = Object.fromEntries(cols.filter(c => c in acctRow).map(c => [c, acctRow[c]]));
+
+      let { error: ae } = await sb.from('accounts').upsert(row, { onConflict: 'id', ignoreDuplicates: true });
+      if (!ae) { accountsInserted++; continue; }
+
+      // Duplicate name constraint → account already exists with different id → count as success
+      if (ae.code === '23505' || ae.message?.includes('duplicate') || ae.message?.includes('unique')) {
+        accountsInserted++;
+        continue;
+      }
+
+      // FK error on group_id → retry without group_id
+      if (ae.message?.includes('group_id') || ae.message?.includes('accounts_group_id')) {
+        const rowNoGroup = { ...row }; delete rowNoGroup.group_id;
+        const { error: ae2 } = await sb.from('accounts').upsert(rowNoGroup, { onConflict: 'id', ignoreDuplicates: true });
+        if (!ae2) { accountsInserted++; continue; }
+        // If still duplicate, account exists
+        if (ae2.code === '23505' || ae2.message?.includes('duplicate')) { accountsInserted++; continue; }
+        ae = ae2;
+      }
+      accountErrors.push(a.name + ': ' + ae.message);
+    }
+    tableResults['accounts'] = { label: 'Contas', sent: data.accounts.length, ok: accountsInserted, errors: accountErrors.slice(0,2) };
+    if (accountErrors.length) errors.push('accounts: ' + accountErrors[0]);
+    log('Contas: ' + accountsInserted + '/' + data.accounts.length, null);
+  }
+
+  // ── 3. Categories (parents first) ─────────────────────────────────────────
+  log('Criando categorias…', 20);
+  await ins('categories', data.categories.filter(c => !c.parent_id),  'Cats (pais)');
+  await ins('categories', data.categories.filter(c =>  c.parent_id), 'Cats (filhas)');
+
+  // ── 4. Payees ─────────────────────────────────────────────────────────────
+  log('Criando beneficiários…', 27);
+  // Remap category_id → default_category_id
+  await ins('payees', data.payees.map(p => ({
+    ...p,
+    default_category_id: p.category_id || p.default_category_id || null,
+  })), 'Beneficiários');
+
+  // ── 5. Family Members ─────────────────────────────────────────────────────
+  log('Criando membros…', 32);
+  for (const m of data.familyMembers) {
+    const { error } = await sb.from('family_members').insert({
+      family_id: familyId, user_id: userId,
+      name: m.name, role: m.role || 'viewer',
+      color: m.color, icon: m.icon,
+      created_at: new Date().toISOString(),
+    });
+    if (error && !error.message.includes('duplicate')) {
+      errors.push(`family_member ${m.name}: ${error.message}`);
+    }
+  }
+
+  // ── 5b. Build ID remap tables — CRITICAL for FK consistency ──────────────
+  // When upsert skips a duplicate (family+name exists), the DB keeps the OLD uuid.
+  // Transactions/scheduled reference the NEW demo UUIDs → FK fails.
+  // Fix: query actual IDs by name after insert, remap all FKs.
+  log('Mapeando IDs reais do banco…', 35);
+
+  // Helper: query name→id for a table
+  // Tries with family_id first; falls back to no filter if empty (handles global tables)
+  async function buildIdMap(table, demoRows, nameCol) {
+    const names = demoRows.map(r => r[nameCol]).filter(Boolean);
+    if (!names.length) return {};
+    try {
+      // Try with family_id filter
+      let { data: rows, error: mapErr } = await sb.from(table)
+        .select('id,' + nameCol)
+        .eq('family_id', familyId)
+        .in(nameCol, names);
+      if (mapErr || !rows?.length) {
+        // Fallback: query without family_id (table may not have the column)
+        const { data: rows2 } = await sb.from(table)
+          .select('id,' + nameCol)
+          .in(nameCol, names);
+        rows = rows2 || [];
+      }
+      const byName = {};
+      (rows || []).forEach(r => { byName[r[nameCol]] = r.id; });
+      const map = {};
+      let mapped = 0;
+      demoRows.forEach(r => {
+        if (r[nameCol] && byName[r[nameCol]]) { map[r.id] = byName[r[nameCol]]; mapped++; }
+      });
+      console.log('[DemoImport] buildIdMap', table + ':', mapped + '/' + demoRows.length, 'mapped', JSON.stringify(map).slice(0,120));
+      return map;
+    } catch(e) {
+      console.warn('[DemoImport] buildIdMap exception', table, ':', e.message);
+      return {};
+    }
+  }
+
+  const accIdMap  = await buildIdMap('accounts',   data.accounts,    'name');
+  const payIdMap  = await buildIdMap('payees',      data.payees,      'name');
+  const catIdMap  = await buildIdMap('categories',  data.categories,  'name');
+  log('Mapas de IDs prontos', 36);
+
+  // Patch payees.default_category_id now that catIdMap is available
+  const payeesWithCat = data.payees.filter(p => p.category_id || p.default_category_id);
+  if (payeesWithCat.length && Object.keys(payIdMap).length) {
+    for (const p of payeesWithCat) {
+      const realPayeeId  = payIdMap[p.id];
+      const demoCatId    = p.category_id || p.default_category_id;
+      const realCatId    = demoCatId ? remap(catIdMap, demoCatId) : null;
+      if (realPayeeId && realCatId && realCatId !== demoCatId) {
+        try {
+          await sb.from('payees')
+            .update({ default_category_id: realCatId })
+            .eq('id', realPayeeId)
+            .eq('family_id', familyId);
+        } catch(_) {}
+      }
+    }
+  }
+
+  // Remap helper: translate demo UUID → actual DB UUID (or keep original if already ok)
+  function remap(map, id) { return (id && map[id]) ? map[id] : id; }
+
+  // ── 6. Transactions ───────────────────────────────────────────────────────
+  log('Importando transações…', 37);
+  const txTotal = data.transactions.length;
+  let txOk = 0;
+  const txCols = COLS['transactions'];
+  for (let i = 0; i < txTotal; i += 100) {
+    const batch = data.transactions.slice(i, i + 100).map(t => {
+      const base = {
+        ...t,
+        family_id:  familyId,
+        // Remap account/payee/category to actual DB IDs
+        account_id:            remap(accIdMap,  t.account_id),
+        transfer_to_account_id: t.transfer_to_account_id ? remap(accIdMap, t.transfer_to_account_id) : null,
+        payee_id:              remap(payIdMap,  t.payee_id),
+        category_id:           remap(catIdMap,  t.category_id),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        brl_amount: t.brl_amount ?? (typeof toBRL === 'function' ? toBRL(t.amount, t.currency || 'BRL') : t.amount),
+      };
+      return pick(base, txCols);
+    });
+    const { error } = await sb.from('transactions').insert(batch);
+    if (error) {
+      errors.push('transactions batch ' + (Math.floor(i/100)+1) + ': ' + error.message);
+      console.error('[DemoImport]', error.message, error);
+    } else {
+      txOk += batch.length;
+    }
+    log('Transações: ' + Math.min(i+100,txTotal) + '/' + txTotal + '…', 37 + Math.round(Math.min(i+100,txTotal)/txTotal*32));
+  }
+  log('Transações: ' + txOk + '/' + txTotal + ' inseridas', 69);
+
+  // ── 7. Scheduled ─────────────────────────────────────────────────────────
+  log('Criando programados…', 71);
+  // Remap account/payee/category IDs and skip rows whose account doesn't exist
+  const scheduledRemapped = data.scheduled.map(sc => ({
+    ...sc,
+    account_id:            remap(accIdMap, sc.account_id),
+    transfer_to_account_id: sc.transfer_to_account_id ? remap(accIdMap, sc.transfer_to_account_id) : null,
+    payee_id:              remap(payIdMap,  sc.payee_id),
+    category_id:           remap(catIdMap,  sc.category_id),
+    start_date:    sc.start_date || new Date().toISOString().slice(0,10),
+    auto_register: sc.auto_register ?? false,
+    auto_confirm:  sc.auto_confirm ?? true,
+  }));
+  await ins('scheduled_transactions', scheduledRemapped, 'Programados', 20);
+
+  // ── 8. Budgets ───────────────────────────────────────────────────────────
+  log('Criando orçamentos…', 74);
+  await ins('budgets', data.budgets.map(b => ({
+    ...b,
+    // DB column is date type — needs YYYY-MM-DD, not YYYY-MM
+    month: b.month && b.month.length === 7 ? b.month + '-01' : b.month,
+  })), 'Orçamentos');
+
+  // ── 9. Debts ─────────────────────────────────────────────────────────────
+  log('Criando dívidas…', 77);
+  // debts: creditor_payee_id is NOT NULL — create creditor payees on-the-fly
+  log('Criando dívidas…', 77);
+  {
+    const debtData = data.debts || [];
+    if (!debtData.length) {
+      tableResults['debts'] = { label: 'Dívidas', sent: 0, ok: 0, errors: [] };
+    } else {
+      const debtCols = ['id','name','creditor_payee_id','original_amount',
+        'current_balance','currency','interest_rate','min_payment','due_day',
+        'status','start_date','notes','family_id','created_at'];
+      let debtOk = 0; const debtErrors = [];
+
+      for (const d of debtData) {
+        // Try to get/create a creditor payee
+        // Use any payee from payIdMap as creditor placeholder
+        const payeeIds = Object.values(payIdMap);
+        let creditorId = payeeIds.length > 0 ? payeeIds[0] : null;
+
+        if (!creditorId) {
+          try {
+            const { data: anyP } = await sb.from('payees')
+              .select('id').eq('family_id', familyId).limit(1).maybeSingle();
+            if (anyP?.id) creditorId = anyP.id;
+          } catch(_) {}
+        }
+
+        if (!creditorId) { debtErrors.push(d.name + ': sem credor disponível'); continue; }
+
+        const debtRow = {};
+        debtCols.forEach(c => { if (c in d) debtRow[c] = d[c]; });
+        debtRow.family_id         = familyId;
+        debtRow.creditor_payee_id = creditorId;
+        debtRow.currency          = debtRow.currency || 'BRL';
+        debtRow.created_at        = debtRow.created_at || new Date().toISOString();
+        // Remove undefined values
+        Object.keys(debtRow).forEach(k => { if (debtRow[k] === undefined) delete debtRow[k]; });
+
+        const { error: de } = await sb.from('debts').upsert(debtRow, { onConflict: 'id', ignoreDuplicates: true });
+        if (!de) { debtOk++; }
+        else if (de.code === '23505' || de.message?.includes('duplicate')) { debtOk++; }
+        else debtErrors.push(d.name + ': ' + de.message.slice(0, 60));
+      }
+      tableResults['debts'] = { label: 'Dívidas', sent: debtData.length, ok: debtOk, errors: debtErrors.slice(0,2) };
+      if (debtErrors.length) errors.push('debts: ' + debtErrors[0]);
+      log('Dívidas: ' + debtOk + '/' + debtData.length, null);
+    }
+  }
+
+  // ── 10. Dreams ───────────────────────────────────────────────────────────
+  log('Criando objetivos…', 80);
+  // dreams: created_by must match auth.uid() for RLS
+  // Fetch the actual auth.uid() from Supabase session (most reliable)
+  // Always use the CURRENT SESSION auth.uid() for dreams.created_by
+  // RLS checks auth.uid() = created_by — only the logged-in user can insert.
+  let dreamsAuthUid = null;
+  try {
+    const { data: { user: _au } } = await sb.auth.getUser();
+    dreamsAuthUid = _au?.id || null;
+  } catch(_) {}
+  // Fallback chain
+  if (!dreamsAuthUid && typeof currentUser !== 'undefined') {
+    dreamsAuthUid = currentUser?.auth_uid || currentUser?.supabase_uid || null;
+  }
+  if (!dreamsAuthUid) {
+    // Last resort: read directly from supabase session
+    const _sess = sb.auth?.currentSession?.()?.data?.session;
+    dreamsAuthUid = _sess?.user?.id || userId;
+  }
+  console.log('[DemoImport] dreams auth_uid:', dreamsAuthUid);
+  // Try inserting dreams row-by-row (RLS requires auth.uid() match on created_by)
+  {
+    const dreamRows = data.dreams.map(dr => ({
+      ...pick({
+        ...dr,
+        created_by:  dreamsAuthUid,
+        dream_type:  dr.dream_type || dr.type || 'outro',
+        target_date: dr.target_date || dr.deadline || null,
+        updated_at:  new Date().toISOString(),
+        family_id:   familyId,
+        status:      dr.status || 'active',
+        priority:    dr.priority || 1,
+        title:       dr.title || dr.name || 'Objetivo',
+        target_amount: dr.target_amount || dr.goal_amount || 0,
+      }, ['id','title','description','target_amount','dream_type',
+          'target_date','priority','status','created_by','family_id',
+          'updated_at','created_at']),
+    }));
+    let dreamOk = 0;
+    const dreamErrors = [];
+    for (const row of dreamRows) {
+      // Try with current auth.uid() as created_by
+      const tryRow = { ...row, created_by: dreamsAuthUid };
+      const { error: de } = await sb.from('dreams').insert(tryRow);
+      if (!de) { dreamOk++; continue; }
+      // If RLS blocks, try strategies
+      if (de.code === '42501' || de.message?.includes('policy') || de.message?.includes('row-level')) {
+        // Strategy 2: null created_by
+        const { error: de2 } = await sb.from('dreams').insert({ ...tryRow, created_by: null });
+        if (!de2) { dreamOk++; continue; }
+        // Strategy 3: strip demo UUID, let DB auto-generate id
+        const { id: _skip, ...rowNoId } = tryRow;
+        const { error: de3 } = await sb.from('dreams').insert({ ...rowNoId, created_by: dreamsAuthUid });
+        if (!de3) { dreamOk++; continue; }
+        // Strategy 4: try with family_id and auth_uid explicitly from current session
+        try {
+          const { data: { user: _au } } = await sb.auth.getUser();
+          if (_au?.id && _au.id !== dreamsAuthUid) {
+            const { error: de4 } = await sb.from('dreams').insert({ ...rowNoId, created_by: _au.id });
+            if (!de4) { dreamOk++; continue; }
+          }
+        } catch(_) {}
+        // Strategy 5: the RLS policy may require the family_id to be in the
+        // logged-in user's authorized families. Try with explicit family_id only.
+        try {
+          const { id: _id2, created_by: _cb2, ...bareRow } = rowNoId;
+          const { error: de5 } = await sb.from('dreams').insert({
+            ...bareRow,
+            family_id:  familyId,
+            created_by: dreamsAuthUid,
+          });
+          if (!de5) { dreamOk++; continue; }
+        } catch(_) {}
+        dreamErrors.push(de.message.slice(0, 80));
+      } else {
+        dreamErrors.push(de.message.slice(0, 80));
+      }
+    }
+    tableResults['dreams'] = { label: 'Sonhos', sent: dreamRows.length, ok: dreamOk, errors: dreamErrors.slice(0,2) };
+    if (dreamErrors.length) errors.push('dreams: ' + dreamErrors[0]);
+    log('Sonhos: ' + dreamOk + '/' + dreamRows.length, null);
+  }
+
+  // ── 11. Investment Positions ─────────────────────────────────────────────
+  log('Criando carteira de investimentos…', 81);
+  if (data.investments && data.investments.length) {
+    const accIdMapLocal = await buildIdMap('accounts', data.accounts, 'name');
+    let invOk = 0; const invErrors = [];
+    for (const inv of data.investments) {
+      try {
+        const realAccId = accIdMapLocal[data.accounts.find(a => a.id === inv.account_id)?.name] || inv.account_id;
+        const invRow = {
+          id:            inv.id,
+          family_id:     familyId,
+          account_id:    realAccId,
+          ticker:        inv.ticker || null,
+          asset_type:    inv.type   || 'acao',
+          name:          inv.name,
+          quantity:      inv.quantity  || 0,
+          avg_cost:      inv.purchase_price || 0,
+          current_price: inv.current_price  || inv.purchase_price || 0,
+          currency:      'BRL',
+          notes:         inv.notes || null,
+          created_at:    new Date().toISOString(),
+        };
+        const { error: ie } = await sb.from('investment_positions')
+          .upsert(invRow, { onConflict: 'id', ignoreDuplicates: true });
+        if (!ie || ie.code === '23505') invOk++;
+        else {
+          // Try without id (let DB generate)
+          const { id: _skip, ...rowNoId } = invRow;
+          const { error: ie2 } = await sb.from('investment_positions').insert(rowNoId);
+          if (!ie2) invOk++;
+          else invErrors.push(inv.name + ': ' + ie2.message.slice(0,60));
+        }
+      } catch(e_) { invErrors.push(inv.name + ': ' + e_.message.slice(0,60)); }
+    }
+    tableResults['investment_positions'] = { label: 'Investimentos', sent: data.investments.length, ok: invOk, errors: invErrors.slice(0,2) };
+    if (invErrors.length) errors.push('investments: ' + invErrors[0]);
+    log('Investimentos: ' + invOk + '/' + data.investments.length, null);
+  }
+
+  // ── 11b. Financial Objectives ─────────────────────────────────────────────
+  log('Criando objetivos financeiros…', 82);
+  if (data.financialObjectives && data.financialObjectives.length) {
+    let objOk = 0; const objErrors = [];
+    const now = new Date().toISOString();
+    for (const obj of data.financialObjectives) {
+      const objRow = {
+        id:           obj.id,
+        family_id:    familyId,
+        name:         obj.name,
+        icon:         obj.icon  || '🎯',
+        description:  obj.notes || null,
+        start_date:   new Date().toISOString().slice(0,10),
+        end_date:     obj.target_date || null,
+        budget_limit: obj.target_amount || null,
+        status:       obj.status || 'active',
+        created_at:   now,
+        updated_at:   now,
+      };
+      const { error: oe } = await sb.from('financial_objectives')
+        .upsert(objRow, { onConflict: 'id', ignoreDuplicates: true });
+      if (!oe || oe.code === '23505') objOk++;
+      else {
+        const { id: _skip, ...rowNoId } = objRow;
+        const { error: oe2 } = await sb.from('financial_objectives').insert(rowNoId);
+        if (!oe2) objOk++;
+        else objErrors.push(obj.name + ': ' + oe2.message.slice(0,60));
+      }
+    }
+    tableResults['financial_objectives'] = { label: 'Objetivos Financeiros', sent: data.financialObjectives.length, ok: objOk, errors: objErrors.slice(0,2) };
+    if (objErrors.length) errors.push('objectives: ' + objErrors[0]);
+    log('Objetivos: ' + objOk + '/' + data.financialObjectives.length, null);
+  }
+
+  // ── 12. Prices ───────────────────────────────────────────────────────────
+  log('Criando preços…', 83);
+  // price_items.category_id references a grocery-specific category (not transaction categories)
+  // These demo UUIDs (priceCatFood, etc.) are ephemeral and not in catIdMap → always null
+  const validPriceItems = data.priceItems.map(pi => ({
+    ...pi,
+    category_id: null,  // price items have their own category system, not tied to transaction categories
+  }));
+  // price_items has unique constraint on (family_id, name) — handle per-row
+  // Must enrich with family_id before upsert (ins() not used here)
+  {
+    const piCols = COLS['price_items'] || ['id','name','description','unit','category_id','family_id','created_at'];
+    let piOk = 0; const piErrs = [];
+    for (const pi of validPriceItems) {
+      // Enrich: add family_id and created_at, pick only valid columns
+      const piRow = {};
+      piCols.forEach(c => { if (c in pi) piRow[c] = pi[c]; });
+      piRow.family_id  = familyId;
+      piRow.created_at = piRow.created_at || new Date().toISOString();
+
+      // Attempt 1: upsert with category_id
+      let { error: pie } = await sb.from('price_items')
+        .upsert(piRow, { onConflict: 'family_id,name', ignoreDuplicates: true });
+
+      // FK violation on category_id → retry without it
+      if (pie?.message?.includes('category_id') || pie?.message?.includes('price_items_category')) {
+        const piRowNoCat = { ...piRow, category_id: null };
+        const { error: pie2 } = await sb.from('price_items')
+          .upsert(piRowNoCat, { onConflict: 'family_id,name', ignoreDuplicates: true });
+        pie = pie2;
+      }
+
+      if (!pie) { piOk++; continue; }
+      if (pie.message?.includes('duplicate') || pie.code === '23505') { piOk++; continue; }
+      piErrs.push(pi.name + ': ' + pie.message);
+    }
+    tableResults['price_items'] = { label: 'Itens de preço', sent: validPriceItems.length, ok: piOk, errors: piErrs.slice(0,2) };
+    if (piErrs.length) errors.push('price_items: ' + piErrs[0]);
+    log('Itens de preço: ' + piOk + '/' + validPriceItems.length, null);
+  }
+  await ins('price_stores', data.priceStores, 'Lojas');
+
+  // Build actual ID maps for price_items and price_stores after insert
+  const piIdMap = await buildIdMap('price_items',  data.priceItems,  'name');
+  const psIdMap = await buildIdMap('price_stores',  data.priceStores, 'name');
+
+  await ins('price_history', data.priceHistory
+    .map(ph => ({
+      ...ph,
+      item_id:      remap(piIdMap, ph.item_id),
+      store_id:     remap(psIdMap, ph.store_id),
+      purchased_at: ph.purchased_at || ph.date,
+      unit_price:   ph.unit_price   || ph.price,
+      quantity:     ph.quantity     || ph.qty || 1,
+      date:         undefined, price: undefined, qty: undefined,
+    }))
+    .filter(ph => ph.item_id),   // skip entries with no resolvable item
+    'Histórico');
+
+  // ── 12. Grocery ──────────────────────────────────────────────────────────
+  log('Criando mercado…', 88);
+  const grocery = data.groceries;
+  // grocery_lists: 'type' col doesn't exist; status must be 'open' (not 'active')
+  const glRaw = { ...grocery.list, family_id: familyId, created_at: new Date().toISOString(),
+    status: 'open' };  // DB check constraint: status IN ('open','done',...)
+  delete glRaw.type;
+  const glBase = pick(glRaw, COLS['grocery_lists'].filter(c => c !== 'type'));
+  const { error: glErr } = await sb.from('grocery_lists').upsert(glBase, { onConflict: 'id', ignoreDuplicates: true });
+  if (!glErr) {
+    await ins('grocery_items', grocery.items.map(x => ({
+      ...x,
+      list_id:         grocery.list.id,
+      qty:             x.qty || x.quantity || 1,
+      suggested_price: x.suggested_price || x.estimated_price || null,
+      quantity:        undefined, estimated_price: undefined,
+    })), 'Itens mercado');
+  } else {
+    errors.push(`grocery_list: ${glErr.message}`);
+    console.warn('[DemoImport] grocery_list:', glErr.message);
+  }
+
+  // ── Track grocery manually since it uses a direct insert ────────────────
+  if (!tableResults['grocery_lists']) {
+    tableResults['grocery_lists'] = { label: 'Lista de mercado', sent: 1, ok: glErr ? 0 : 1, errors: glErr ? [glErr.message] : [] };
+  }
+
+  const errSummary = errors.length > 0 ? ` (${errors.length} erro${errors.length>1?'s':''})` : '';
+  log(`Importação concluída!${errSummary}`, 100);
+
+  return {
+    success: true,
+    txCount: txOk,
+    errors,
+    tableResults,
+    message: `${txOk} transações, ${data.categories.length} categorias, ${data.payees.length} beneficiários.${errSummary}`,
+  };
+}
+window.importDemoData = importDemoData;
+
+
+// ── Demo Data UI Controller ──────────────────────────────────────────────────
+
+// ── deleteAllFamilyData: wipe all data for current family ───────────────────
+async function deleteAllFamilyData() {
+  const fid = typeof famId === 'function' ? famId() : null;
+  const fname = (state.families||[]).find(f=>f.id===fid)?.name || 'família atual';
+
+  if (!fid) { toast('Nenhuma família ativa.', 'warning'); return; }
+
+  // Only family owner can delete all data
+  // Only the family owner (role='owner' in family_members) can delete all data
+  // Global 'admin' is NOT allowed here — this is a family management action
+  const isOwner = currentUser?.role === 'owner';
+  if (!isOwner) {
+    toast('Apenas o proprietário da família pode excluir todos os dados.', 'error');
+    return;
+  }
+
+  // Two-step confirmation
+  const confirm1 = await new Promise(res => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    overlay.innerHTML=`<div style="background:var(--surface);border-radius:18px;padding:28px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="font-size:2.5rem;text-align:center;margin-bottom:12px">⚠️</div>
+      <div style="font-size:1rem;font-weight:800;color:var(--text);text-align:center;margin-bottom:8px">Excluir todos os dados?</div>
+      <div style="font-size:.84rem;color:var(--muted);text-align:center;line-height:1.6;margin-bottom:20px">
+        Você está prestes a excluir <strong>TODOS</strong> os dados da família <strong>${esc(fname)}</strong>:<br>
+        transações, contas, categorias, orçamentos, programados,
+        <strong>beneficiários e fontes pagadoras</strong>,
+        <strong>dívidas e lançamentos de dívidas</strong>,
+        objetivos, preços, lista de supermercado,
+        programas de fidelidade e membros.<br><br>
+        <span style="color:#dc2626;font-weight:700">Esta ação é irreversível.</span>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button id="_delConfCancelBtn" style="flex:1;padding:12px;border-radius:10px;border:1.5px solid var(--border);background:var(--surface2);color:var(--text);font-size:.88rem;font-weight:700;cursor:pointer;font-family:inherit">Cancelar</button>
+        <button id="_delConfBtn" style="flex:1;padding:12px;border-radius:10px;border:none;background:#dc2626;color:#fff;font-size:.88rem;font-weight:700;cursor:pointer;font-family:inherit">Sim, excluir tudo</button>
+      </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#_delConfCancelBtn').onclick = () => { overlay.remove(); res(false); };
+    overlay.querySelector('#_delConfBtn').onclick = () => { overlay.remove(); res(true); };
+  });
+  if (!confirm1) return;
+
+  // Second confirmation — type family name
+  const typedName = window.prompt(`Para confirmar, digite o nome da família:
+"${fname}"`);
+  if (typedName?.trim() !== fname.trim()) {
+    toast('Nome incorreto — exclusão cancelada.', 'error');
+    return;
+  }
+
+  // Progress overlay
+  const prog = document.createElement('div');
+  prog.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+  prog.innerHTML=`<div style="background:var(--surface);border-radius:18px;padding:28px;max-width:400px;width:100%">
+    <div style="font-size:1rem;font-weight:800;color:var(--text);margin-bottom:16px;text-align:center">🗑️ Excluindo dados…</div>
+    <div id="_delProgStatus" style="font-size:.82rem;color:var(--muted);margin-bottom:10px;text-align:center">Iniciando…</div>
+    <div style="height:10px;background:var(--border);border-radius:6px;overflow:hidden;margin-bottom:8px">
+      <div id="_delProgBar" style="height:100%;width:0%;background:#dc2626;border-radius:6px;transition:width .4s ease"></div>
+    </div>
+    <div id="_delProgPct" style="font-size:.75rem;color:var(--muted);text-align:center">0%</div>
+  </div>`;
+  document.body.appendChild(prog);
+
+  const setProgress = (msg, pct) => {
+    const s=document.getElementById('_delProgStatus'); if(s) s.textContent=msg;
+    const b=document.getElementById('_delProgBar');    if(b) b.style.width=pct+'%';
+    const p=document.getElementById('_delProgPct');    if(p) p.textContent=pct+'%';
+  };
+
+  try {
+    const tables=[
+      // Telemetria / logs
+      ['app_telemetry',              3],
+      // AI insights
+      ['ai_insight_recommendations', 5],
+      ['ai_insight_snapshots',       7],
+      // Prices
+      ['price_history',             10],
+      // Grocery
+      ['grocery_items',             12],
+      ['grocery_lists',             14],
+      ['price_stores',              16],
+      ['price_items',               18],
+      // Loyalty — deve vir antes de accounts (linked_account_id)
+      ['loyalty_transactions',      21],
+      ['loyalty_programs',          23],
+      // Debts — deve vir antes de accounts e payees
+      ['debt_ledger',               26],
+      ['debts',                     29],
+      // Dreams / objectives
+      ['dream_items',               32],
+      ['dream_contributions',       35],
+      ['dreams',                    38],
+      ['financial_objectives',      40],
+      // Investments
+      ['investment_price_history',  43],
+      ['investment_transactions',   46],
+      ['investment_positions',      49],
+      // Scheduled
+      ['scheduled_occurrences',     52],
+      ['scheduled_run_logs',        55],
+      ['scheduled_transactions',    58],
+      // Budgets
+      ['budgets',                   61],
+      // Receivables
+      ['scheduled_ar_records',      63],
+      // Transactions — deve vir antes de accounts, payees e categories
+      ['transactions',              67],
+      // Accounts + groups
+      ['accounts',                  71],
+      ['account_groups',            74],
+      // Beneficiários e fontes pagadoras — após transactions e scheduled
+      ['payees',                    78],
+      // Categorias — após transactions e budgets
+      ['categories',                82],
+      // Family structure — por último
+      ['family_composition',        86],
+      ['family_members',            92],
+      // NOTE: app_settings NÃO é deletado — contém config do sistema
+      // (EmailJS, flags de módulo, etc.) que deve persistir entre resets
+    ];
+
+    for (const [table, pct] of tables) {
+      setProgress(`Excluindo ${table}…`, pct);
+      try {
+        const { error } = await sb.from(table).delete().eq('family_id', fid);
+        if (error) console.warn(`[deleteAll] ${table}:`, error.message);
+      } catch(err) {
+        console.warn(`[deleteAll] ${table} exception:`, err?.message);
+      }
+    }
+
+    setProgress('Finalizando…', 98);
+    await new Promise(r=>setTimeout(r,400));
+    prog.remove();
+
+    toast('✅ Todos os dados da família foram removidos com sucesso.', 'success');
+
+    // Clear ALL in-memory state caches
+    if (typeof state !== 'undefined') {
+      state.transactions=[]; state.accounts=[]; state.categories=[];
+      state.payees=[]; state.budgets=[]; state.dreams=[]; state.debts=[];
+      state.groups=[]; state.familyMembers=[]; state.scheduled=[];
+      state._scFiltered=null;
+    }
+    if (typeof DB !== 'undefined') {
+      if (DB._cache) DB._cache={};
+      if (DB.accounts?.invalidate) DB.accounts.invalidate();
+      if (DB.categories?.invalidate) DB.categories.invalidate();
+    }
+    // Clear module-level caches
+    if (typeof _dbt !== 'undefined') { _dbt.debts=[]; _dbt.loaded=false; }
+    if (typeof _drm !== 'undefined') { _drm.dreams=[]; _drm.loaded=false; }
+    if (typeof _loy !== 'undefined') { _loy.programs=[]; _loy.loaded=false; }
+
+    await new Promise(r => setTimeout(r, 600));
+    toast('🔄 Recarregando…', 'info');
+    // Full page reload ensures all modules start fresh
+    setTimeout(() => { window.location.reload(); }, 800);
+
+  } catch(e) {
+    prog.remove();
+    toast('Erro ao excluir dados: '+(e.message||e), 'error');
+    console.error('[deleteAllFamilyData]', e);
+  }
+}
+window.deleteAllFamilyData = deleteAllFamilyData;
+
+async function _loadDemoSelectors() {
+  const famSel  = document.getElementById('demoFamilySelect');
+  const userSel = document.getElementById('demoUserSelect');
+  if (!famSel) return;
+
+  famSel.innerHTML = '<option value="">⏳ Carregando…</option>';
+  try {
+    // ── Buscar apenas famílias marcadas como is_demo = true ────────────────
+    let families = [];
+
+    // 1. Tentar via RPC get_demo_families (SECURITY DEFINER)
+    try {
+      const { data: rpcData, error: rpcErr } = await sb.rpc('get_demo_families');
+      if (!rpcErr && Array.isArray(rpcData)) {
+        families = rpcData;
+      }
+    } catch(_) {}
+
+    // 2. Fallback: query direta com filtro is_demo
+    if (!families.length) {
+      try {
+        const { data, error } = await sb.from('families')
+          .select('id,name,is_demo')
+          .eq('is_demo', true)
+          .order('name');
+        if (!error) families = data || [];
+      } catch(_) {}
+    }
+
+    // 3. Se ainda vazio, mostrar aviso instrutivo
+    if (!families.length) {
+      famSel.innerHTML = '<option value="">⚠️ Nenhuma família marcada como demo</option>';
+      if (userSel) userSel.innerHTML = '<option value="">— Selecione uma família primeiro —</option>';
+      // Show hint
+      const hint = document.getElementById('demoFamilyHint');
+      if (hint) {
+        hint.style.display = '';
+        hint.innerHTML = '⚠️ Nenhuma família está marcada como <strong>Demonstração</strong>. ' +
+          'Acesse <strong>Configurações → Usuários → Famílias</strong>, edite uma família e ative a flag 🎭 Demo.';
+      }
+      return;
+    }
+
+    // Hide hint if families found
+    const hint = document.getElementById('demoFamilyHint');
+    if (hint) hint.style.display = 'none';
+
+    famSel.innerHTML = '<option value="">— Selecionar família demo —</option>'
+      + families.map(f => `<option value="${f.id}">🎭 ${esc(f.name)}</option>`).join('');
+    famSel.onchange = () => _loadDemoUsers(famSel.value);
+    // Auto-select if only one demo family
+    if (families.length === 1) {
+      famSel.value = families[0].id;
+      _loadDemoUsers(families[0].id);
+    }
+  } catch(e) {
+    famSel.innerHTML = `<option value="">Erro: ${e.message}</option>`;
+    console.error('[_loadDemoSelectors]', e);
+  }
+}
+
+async function _loadDemoUsers(familyId) {
+  const userSel = document.getElementById('demoUserSelect');
+  if (!userSel) return;
+  if (!familyId) { userSel.innerHTML = '<option value="">— Selecione uma família primeiro —</option>'; return; }
+
+  userSel.innerHTML = '<option value="">⏳ Carregando usuários…</option>';
+  try {
+    const { data: members, error } = await sb.from('app_users')
+      .select('id,name,email,family_id')
+      .eq('family_id', familyId)
+      .order('name');
+    if (error) throw error;
+    const list = members || [];
+    userSel.innerHTML = '<option value="">— Selecionar usuário —</option>'
+      + list.map(u => `<option value="${u.id}">${esc(u.name||u.email||u.id)}</option>`).join('');
+    // Auto-select current user if in this family
+    if (currentUser && currentUser.family_id === familyId) {
+      const me = list.find(u => u.id === currentUser.id);
+      if (me) userSel.value = me.id;
+    } else if (list.length === 1) {
+      userSel.value = list[0].id;
+    }
+  } catch(e) {
+    userSel.innerHTML = `<option value="">Erro: ${e.message}</option>`;
+    console.error('[_loadDemoUsers]', e);
+  }
+}
+
+
+// ── Purge all family data before demo import ─────────────────────────────
+async function _purgeFamilyForDemo(fid) {
+  if (!fid) return;
+  const tables = [
+    'ai_insight_recommendations','ai_insight_snapshots',
+    'price_history','grocery_items','grocery_lists','price_stores','price_items',
+    'debt_ledger','debts','dream_items','dream_contributions','dreams',
+    'investment_price_history','investment_transactions','investment_positions',
+    'scheduled_occurrences','scheduled_run_logs','scheduled_ar_records','scheduled_transactions',
+    'budgets','financial_objectives',
+    'transactions','accounts','account_groups',
+    'categories','payees','family_composition',
+  ];
+  for (const table of tables) {
+    try { await sb.from(table).delete().eq('family_id', fid); }
+    catch(e) { console.warn('[purgeDemo]', table, e?.message); }
+  }
+  console.log('[purgeDemo] Done:', fid);
+}
+
+async function _startDemoImport() {
+  const familyId = document.getElementById('demoFamilySelect')?.value;
+  const userId   = document.getElementById('demoUserSelect')?.value;
+  const btn      = document.getElementById('demoImportBtn');
+  const progress = document.getElementById('demoImportProgress');
+  const statusEl = document.getElementById('demoImportStatus');
+  const pctEl    = document.getElementById('demoImportPct');
+  const barEl    = document.getElementById('demoImportBar');
+  const resultEl = document.getElementById('demoImportResult');
+
+  if (!familyId) { toast('Selecione uma família.','warning'); return; }
+  if (!userId)   { toast('Selecione um usuário.','warning'); return; }
+
+  const fam = document.getElementById('demoFamilySelect')?.options[document.getElementById('demoFamilySelect').selectedIndex]?.text;
+  const usr = document.getElementById('demoUserSelect')?.options[document.getElementById('demoUserSelect').selectedIndex]?.text;
+
+  if (!confirm(`⚠️ ATENÇÃO: Importar dados demo para:\n\nFamília: ${fam}\nUsuário: ${usr}\n\nEsta ação VAI APAGAR todos os dados existentes desta família antes de importar os dados de demonstração. Continuar?`)) return;
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Importando…'; }
+  if (progress) progress.style.display = '';
+  if (resultEl) resultEl.style.display = 'none';
+
+  try {
+    // ── STEP 0: Purge existing family data ────────────────────────────
+    if (statusEl) statusEl.textContent = '🗑️ Removendo dados existentes…';
+    if (barEl) barEl.style.width = '2%';
+    await _purgeFamilyForDemo(familyId);
+    if (statusEl) statusEl.textContent = '✅ Dados removidos. Importando dados demo…';
+    if (barEl) barEl.style.width = '5%';
+
+    const result = await importDemoData(userId, familyId, (msg, pct) => {
+      if (statusEl) statusEl.textContent = msg;
+      if (pct !== null && barEl) barEl.style.width = pct + '%';
+      if (pct !== null && pctEl) pctEl.textContent = pct + '%';
+    });
+
+    if (barEl) barEl.style.width = '100%';
+
+    // ── Build per-table summary ──────────────────────────────────────────
+    const tr = result.tableResults || {};
+    const tableOrder = [
+      ['account_groups','Grupos de contas'],['accounts','Contas'],
+      ['categories','Categorias'],['payees','Beneficiários'],
+      ['transactions','Transações'],['scheduled_transactions','Programados'],
+      ['budgets','Orçamentos'],['debts','Dívidas'],['dreams','Sonhos'],
+      ['price_items','Itens de preço'],['price_stores','Lojas'],
+      ['price_history','Histórico de preços'],['grocery_lists','Lista mercado'],
+      ['grocery_items','Itens mercado'],
+    ];
+
+    const totalSent = Object.values(tr).reduce((s,t) => s + (t.sent||0), 0);
+    const totalOk   = Object.values(tr).reduce((s,t) => s + (t.ok||0), 0);
+    const hasErrors = result.errors && result.errors.length > 0;
+
+    const rows = tableOrder.map(([key, label]) => {
+      const t = tr[key];
+      if (!t) return '';
+      const icon = t.errors?.length ? '❌' : t.ok === 0 && t.sent === 0 ? '⚪' : '✅';
+      const errMsg = t.errors?.length ? `<div style="font-size:.67rem;color:#dc2626;margin-top:2px">${esc(t.errors[0])}</div>` : '';
+      return `<tr>
+        <td style="padding:5px 8px;font-size:.77rem;color:var(--text)">${icon} ${esc(label)}</td>
+        <td style="padding:5px 8px;font-size:.77rem;text-align:right;color:var(--muted)">${t.sent}</td>
+        <td style="padding:5px 8px;font-size:.77rem;text-align:right;font-weight:700;color:${t.ok===t.sent?'#16a34a':t.ok>0?'#d97706':'#dc2626'}">${t.ok}</td>
+        <td style="padding:5px 8px;font-size:.73rem;color:#dc2626">${t.errors?.length||''}</td>
+      </tr>` + (errMsg ? `<tr><td colspan="4" style="padding:0 8px 6px 28px">${errMsg}</td></tr>` : '');
+    }).join('');
+
+    if (resultEl) {
+      resultEl.style.display = '';
+      resultEl.style.background = hasErrors ? '#fff7ed' : '#f0fdf4';
+      resultEl.style.border = `1px solid ${hasErrors?'#fed7aa':'#bbf7d0'}`;
+      resultEl.style.color = 'var(--text)';
+      resultEl.style.padding = '12px 14px';
+      resultEl.style.borderRadius = '10px';
+      resultEl.innerHTML = `
+        <div style="font-weight:800;font-size:.88rem;margin-bottom:10px;color:${hasErrors?'#c2410c':'#166534'}">
+          ${hasErrors?'⚠️':'✅'} ${hasErrors?'Importação com avisos':'Importação concluída!'}
+        </div>
+        <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+          <thead>
+            <tr style="background:var(--surface2)">
+              <th style="padding:6px 8px;font-size:.68rem;font-weight:700;color:var(--muted);text-align:left;text-transform:uppercase">Tabela</th>
+              <th style="padding:6px 8px;font-size:.68rem;font-weight:700;color:var(--muted);text-align:right;text-transform:uppercase">Gerado</th>
+              <th style="padding:6px 8px;font-size:.68rem;font-weight:700;color:var(--muted);text-align:right;text-transform:uppercase">Inserido</th>
+              <th style="padding:6px 8px;font-size:.68rem;font-weight:700;color:var(--muted);text-align:center;text-transform:uppercase">Erros</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+          <tfoot>
+            <tr style="background:var(--surface2);border-top:1.5px solid var(--border)">
+              <td style="padding:6px 8px;font-size:.77rem;font-weight:800">Total</td>
+              <td style="padding:6px 8px;font-size:.77rem;font-weight:800;text-align:right">${totalSent}</td>
+              <td style="padding:6px 8px;font-size:.77rem;font-weight:800;text-align:right;color:${hasErrors?'#d97706':'#16a34a'}">${totalOk}</td>
+              <td style="padding:6px 8px;font-size:.77rem;font-weight:800;text-align:center;color:${hasErrors?'#dc2626':'#9ca3af'}">${result.errors?.length||0}</td>
+            </tr>
+          </tfoot>
+        </table>
+        ${hasErrors ? `<div style="margin-top:8px;font-size:.72rem;color:#c2410c">Veja o console do navegador para detalhes dos erros.</div>` : ''}`;
+    }
+    toast(hasErrors ? '⚠️ Importação concluída com avisos' : '✅ Dados demo importados!', hasErrors ? 'warning' : 'success');
+
+  } catch(e) {
+    if (resultEl) {
+      resultEl.style.display = '';
+      resultEl.style.background = '#fee2e2';
+      resultEl.style.border = '1px solid #fca5a5';
+      resultEl.style.color = '#991b1b';
+      resultEl.innerHTML = `❌ Erro: ${esc(e.message||String(e))}`;
+    }
+    toast('Erro na importação: ' + (e.message||e), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🎭 Gerar e Importar Dados Demo'; }
+  }
+}
+window._loadDemoSelectors = _loadDemoSelectors;
+window._loadDemoUsers     = _loadDemoUsers;
+window._startDemoImport   = _startDemoImport;
+
+window._load2FAIntoProfile                 = _load2FAIntoProfile;
+window.advancePinStep                      = advancePinStep;
+window.clearServiceRoleKey                 = clearServiceRoleKey;
+window.copyEjField                         = copyEjField;
+window.ensureSupabaseClient                = ensureSupabaseClient;
+window.getAppSetting                       = getAppSetting;
+window.getMasterPin                        = getMasterPin;
+window.getUserPreference                   = getUserPreference;
+window.initEmailJSStatus                   = initEmailJSStatus;
+window.isNotifChannelEnabled               = isNotifChannelEnabled;
+window.loadAppSettings                     = loadAppSettings;
+window.loadNotifChannelSettings            = loadNotifChannelSettings;
+window.loadSettings                        = loadSettings;
+window.openNormalizeNamesPreview           = openNormalizeNamesPreview;
+/* ── Telegram — Admin section: show bot name config for owners/admins ──────── */
+async function _loadTgAdminSection() {
+  const section = document.getElementById('tgAdminSection');
+  const dot     = document.getElementById('tgBotStatusDot');
+  const nameBadge = document.getElementById('tgBotNameBadge');
+  const statusEl  = document.getElementById('tgBotStatus');
+  const isAdmin = (currentUser?.role === 'admin' || currentUser?.role === 'owner');
+
+  // Show admin section only for admin/owner
+  if (section) section.style.display = isAdmin ? '' : 'none';
+
+  // Load current bot name for everyone (drives the link)
+  try {
+    const { data: botRow } = await sb.from('app_settings')
+      .select('value').eq('key', 'tg_bot_name').maybeSingle();
+    const botName = botRow?.value ? String(botRow.value).replace(/^@/, '') : 'FamilyFintrack_bot';
+
+    // Populate admin input
+    const inp = document.getElementById('tgBotNameInput');
+    if (inp) inp.value = botName;
+
+    // Show badge with bot name
+    if (nameBadge) { nameBadge.textContent = '@' + botName; nameBadge.style.display = ''; }
+
+    // If user already has chat_id linked, show as connected
+    if (currentUser?.telegram_chat_id) {
+      if (dot) dot.style.background = '#22c55e';
+      if (statusEl) statusEl.textContent = '✅ Vinculado — Chat ID: ' + currentUser.telegram_chat_id;
+    } else {
+      if (dot) dot.style.background = '#f59e0b';
+      if (statusEl) statusEl.textContent = 'Clique em Vincular para conectar sua conta ao Telegram';
+    }
+  } catch(_) {}
+}
+
+window.saveTgBotName = async function() {
+  const inp = document.getElementById('tgBotNameInput');
+  const name = (inp?.value || '').trim().replace(/^@/, '');
+  if (!name) { toast('Informe o @username do bot', 'error'); return; }
+  try {
+    await sb.from('app_settings').upsert({ key: 'tg_bot_name', value: name }, { onConflict: 'key' });
+    toast('✅ Nome do bot salvo: @' + name, 'success');
+    // Refresh badge
+    const badge = document.getElementById('tgBotNameBadge');
+    if (badge) { badge.textContent = '@' + name; badge.style.display = ''; }
+    // Refresh profile modal button label
+    const flowBtn = document.getElementById('tgLinkFlowBtn');
+    if (flowBtn) flowBtn.textContent = '✈️ Abrir @' + name;
+  } catch(e) {
+    toast('Erro ao salvar: ' + e.message, 'error');
+  }
+};
+
+/* ── Chave Gemini Global (admin) ─────────────────────────────────────────── */
+async function loadGlobalGeminiKeyUI() {
+  const input  = document.getElementById('globalGeminiKeyInput');
+  const status = document.getElementById('globalGeminiStatus');
+  if (!input || !sb) return;
+  try {
+    const { data } = await sb.from('app_settings')
+      .select('value').eq('key', '_global_gemini_key').maybeSingle();
+    const key = typeof data?.value === 'string' ? data.value.trim() : '';
+    if (key) {
+      input.value = key;
+      window._globalGeminiKey = key;
+      if (status) {
+        status.textContent = '✅ Chave global configurada · ' + key.slice(0,12) + '…';
+        status.style.color = 'var(--green)';
+      }
+    }
+  } catch(_) {}
+}
+
+window.saveGlobalGeminiKey = async function() {
+  const input  = document.getElementById('globalGeminiKeyInput');
+  const status = document.getElementById('globalGeminiStatus');
+  const key    = (input?.value || '').trim();
+  if (key && !key.startsWith('AIza')) {
+    toast('Chave inválida — deve começar com AIza…', 'error'); return;
+  }
+  try {
+    if (key) {
+      await sb.from('app_settings').upsert({ key: '_global_gemini_key', value: key }, { onConflict: 'key' });
+      window._globalGeminiKey = key;
+      if (status) { status.textContent = '✅ Chave global salva!'; status.style.color = 'var(--green)'; }
+    } else {
+      await sb.from('app_settings').delete().eq('key', '_global_gemini_key');
+      window._globalGeminiKey = '';
+      if (status) { status.textContent = 'Chave removida.'; status.style.color = 'var(--muted)'; }
+    }
+    toast(key ? '✅ Chave Gemini global salva!' : 'Chave global removida.', 'success');
+  } catch(e) { toast('Erro ao salvar: ' + e.message, 'error'); }
+};
+
+window.toggleGlobalGeminiVisibility = function() {
+  const inp = document.getElementById('globalGeminiKeyInput');
+  const btn = document.getElementById('globalGeminiToggle');
+  if (!inp) return;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  if (btn) btn.textContent = inp.type === 'password' ? '👁' : '🙈';
+};
+
+window.openTelegramLinkFlow                = openTelegramLinkFlow;
+window.resetAppLogo                        = resetAppLogo;
+window.runNormalizeNames                   = runNormalizeNames;
+window.saveAppLogo                         = saveAppLogo;
+window.saveAppSetting                      = saveAppSetting;
+window.saveEmailJSConfig                   = saveEmailJSConfig;
+window.saveServiceRoleKey                  = saveServiceRoleKey;
+window.showEmailConfig                     = showEmailConfig;
+window.testEmailJSConnection               = testEmailJSConnection;
+window.toggleEjKey                         = toggleEjKey;
